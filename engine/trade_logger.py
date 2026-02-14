@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Optional
 
 import numpy as np
@@ -23,14 +25,14 @@ class TradeLoggerConfig:
     ----------
     log_root : Path
         日次ログCSVを保存するルートディレクトリ。
-        例: Path("output")
+        例: resolve_repo_path("output")
     log_file_pattern : str
         銘柄ごとの日次ログCSVファイル名パターン。
         "{symbol}" を銘柄コードで置き換える。
         例: "daily_log_{symbol}.csv"
     """
 
-    log_root: Path = Path("output")
+    log_root: Path = resolve_repo_path("output")
     log_file_pattern: str = "daily_log_{symbol}.csv"
 
 

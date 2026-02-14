@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Sequence
 
 from ai_core.config.rl_config import EnvConfig, RLSingleConfig, RLMARLConfig
+from ai_core.utils.paths import ensure_dir, resolve_repo_path
 
 
 # StepE / StepF で使いたいエージェント名のデフォルト
@@ -21,8 +22,8 @@ class DummyPaths:
       - paths.data_root
     が参照される想定。
     """
-    output_root: Path = Path("output")
-    data_root: Path = Path("data")
+    output_root: Path = resolve_repo_path("output")
+    data_root: Path = resolve_repo_path("data")
 
 
 @dataclass
@@ -80,7 +81,10 @@ def create_dummy_app_config(
     """
     REPL やテストから一発で DummyAppConfig を作るためのヘルパ。
     """
-    paths = DummyPaths(output_root=Path(output_root), data_root=Path(data_root))
+    paths = DummyPaths(
+        output_root=resolve_repo_path(Path(output_root)),
+        data_root=resolve_repo_path(Path(data_root)),
+    )
 
     single_configs: Dict[str, RLSingleConfig] = {
         name: RLSingleConfig() for name in agent_names
@@ -130,12 +134,12 @@ def make_dummy_app_config(repo_root: str | Path) -> Any:
     Any
         AppConfig instance if possible, otherwise DummyAppConfig.
     """
-    rr = Path(repo_root).resolve()
+    rr = resolve_repo_path(Path(repo_root))
 
     # best-effort: create common directories used by services
     for p in (rr / "output", rr / "data", rr / "config", rr / "artifacts", rr / "logs"):
         try:
-            p.mkdir(parents=True, exist_ok=True)
+            ensure_dir(p)
         except Exception:
             pass
 

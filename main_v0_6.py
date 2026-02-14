@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from datetime import datetime, date, timedelta
 
 import pandas as pd
@@ -68,7 +70,7 @@ class MainApp(tk.Tk):
         self.title("SOXL RL GUI (Tkinter v0.6)")
         self.geometry("1200x820")
 
-        self.output_root = Path("output")
+        self.output_root = resolve_repo_path("output")
         self.symbol_var = tk.StringVar(value="SOXL")
         self.config_path_var = tk.StringVar(value="")
         self.train_end_var = tk.StringVar(value="2024-12-31")
@@ -108,7 +110,7 @@ class MainApp(tk.Tk):
 
         # 2) fallback
         if cfg is None:
-            data_root = Path("data")
+            data_root = resolve_repo_path("data")
             output_root = self.output_root
             symbols = ["SOXL", "SOXS", "SPY"]
             cfg = AppConfig(
@@ -139,7 +141,7 @@ class MainApp(tk.Tk):
 
         # デフォルト補完
         if data_root is None:
-            data_root = Path("data")
+            data_root = resolve_repo_path("data")
         if output_root is None:
             output_root = self.output_root
         if symbols is None:

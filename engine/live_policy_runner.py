@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 import numpy as np
@@ -29,7 +31,7 @@ class LivePolicyConfig:
         LivePolicyConfig(
             symbol="SOXL",
             mode="single",
-            policy_path="output/policies/policy_stepE_XSR_SOXL.npz",
+            policy_path=str(resolve_repo_path("output/policies/policy_stepE_XSR_SOXL.npz")),
             agent_names=["xsr"],
         )
 
@@ -39,9 +41,9 @@ class LivePolicyConfig:
             mode="marl",
             agent_names=["xsr", "mamba", "fed"],
             policy_paths={
-                "xsr":   "output/policies/policy_stepE_XSR_SOXL.npz",
-                "mamba": "output/policies/policy_stepE_MAMBA_SOXL.npz",
-                "fed":   "output/policies/policy_stepE_FED_SOXL.npz",
+                "xsr":   str(resolve_repo_path("output/policies/policy_stepE_XSR_SOXL.npz")),
+                "mamba": str(resolve_repo_path("output/policies/policy_stepE_MAMBA_SOXL.npz")),
+                "fed":   str(resolve_repo_path("output/policies/policy_stepE_FED_SOXL.npz")),
             },
             marl_weights={"xsr": 0.5, "mamba": 0.3, "fed": 0.2},
         )
@@ -52,12 +54,12 @@ class LivePolicyConfig:
             mode="router",
             agent_names=["dprime_bnf_h01", "dprime_mix_h01", "dprime_all_features_h01"],
             policy_paths={
-                "dprime_bnf_h01": "output/policies/policy_stepE_dprime_bnf_h01_SOXL.npz",
-                "dprime_mix_h01": "output/policies/policy_stepE_dprime_mix_h01_SOXL.npz",
-                "dprime_all_features_h01": "output/policies/policy_stepE_dprime_all_features_h01_SOXL.npz",
+                "dprime_bnf_h01": str(resolve_repo_path("output/policies/policy_stepE_dprime_bnf_h01_SOXL.npz")),
+                "dprime_mix_h01": str(resolve_repo_path("output/policies/policy_stepE_dprime_mix_h01_SOXL.npz")),
+                "dprime_all_features_h01": str(resolve_repo_path("output/policies/policy_stepE_dprime_all_features_h01_SOXL.npz")),
             },
-            router_table_path="output/stepF/sim/router_table_SOXL.yaml",
-            router_log_path="output/engine/router_log_SOXL.csv",
+            router_table_path=str(resolve_repo_path("output/stepF/sim/router_table_SOXL.yaml")),
+            router_log_path=str(resolve_repo_path("output/engine/router_log_SOXL.csv")),
         )
 
     Router table（YAML）の確定仕様（version=1）

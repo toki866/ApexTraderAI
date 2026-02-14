@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Any
 import yaml
 from ai_core.types.common import DateRange
 from ai_core.config.rl_config import EnvConfig, RLSingleConfig, RLMARLConfig
+from ai_core.utils.paths import resolve_repo_path
 
 @dataclass
 class DataConfig:
@@ -31,8 +32,8 @@ class AppConfig:
             raw = yaml.safe_load(f) or {}
         data_raw = raw.get("data", {}) or {}
         data_cfg = DataConfig(
-            data_root=Path(data_raw.get("data_root", "data")).expanduser(),
-            output_root=Path(data_raw.get("output_root", "output")).expanduser(),
+            data_root=resolve_repo_path(Path(data_raw.get("data_root", "data")).expanduser()),
+            output_root=resolve_repo_path(Path(data_raw.get("output_root", "output")).expanduser()),
             symbols=list(data_raw.get("symbols", [])),
         )
         env_raw = raw.get("env", raw.get("env_config", {})) or {}

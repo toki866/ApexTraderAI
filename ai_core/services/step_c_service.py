@@ -35,6 +35,8 @@ StepC: TimeRecon + ScaleCalib
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -103,7 +105,7 @@ class StepCService:
             out = getattr(data_cfg, "output_root", None)
             if out:
                 return Path(out)
-        return Path("output")
+        return resolve_repo_path("output")
 
     def run(self, symbol: str, date_range: DateRange) -> StepCResult:
         config = StepCConfig(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -164,7 +166,7 @@ class RLSingleAlgo:
 
         # 出力ディレクトリ
         if output_dir is None:
-            self.output_dir = Path("output") / "stepE_single" / agent_name
+            self.output_dir = resolve_repo_path("output") / "stepE_single" / agent_name
         else:
             self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
