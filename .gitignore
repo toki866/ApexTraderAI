@@ -37,3 +37,14 @@ _ctx_*.txt
 _grep_*.txt
 _reward_alignment*.txt
 _leak_*.txt
+
+# --- local-only tools / notes ---
+APPLY*.txt
+csv_results_viewer_tk.py
+export_repo_structure.py
+gen_repo_paths_and_imports.py
+router_bandit/
+run_viewer_soxl_rl_gui.bat
+stepB_daily_compare_viewer*.py
+validate_mamba_envelope*.py
+ai_core/services/*.patched_in_zip
