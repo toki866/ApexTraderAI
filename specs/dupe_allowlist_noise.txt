@@ -1,0 +1,5 @@
+# dupe_allowlist_noise.txt
+# build_global_symbols_v2.py 用: 「複数ファイルにあって自然」な名前を重複検出から除外する最小セット
+^logger$
+^main$
+^parse_args$

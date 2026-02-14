@@ -1,0 +1,39 @@
+# ===== local big artifacts =====
+data/
+output/
+outputs/
+logs/
+artifacts/
+pdf/
+
+# ===== backups / patches / zips =====
+old/
+patches/
+patch_files/
+*.zip
+_repo_structure/
+
+# ===== python caches =====
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# ===== env / secrets =====
+.venv/
+venv/
+.env
+*.key
+*.pem
+*.pfx
+
+# ===== OS/editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== analysis scratch files =====
+_ctx_*.txt
+_grep_*.txt
+_reward_alignment*.txt
+_leak_*.txt

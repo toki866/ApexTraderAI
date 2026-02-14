@@ -1,0 +1,6 @@
+# dupe_allowlist_noise_plus.txt
+# 「自然な重複」 + しばらくは許容する共通ヘルパ（統合しない場合）を除外。
+^logger$
+^main$
+^parse_args$
+^_ensure_datetime$
