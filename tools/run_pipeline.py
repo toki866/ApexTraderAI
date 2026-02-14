@@ -352,17 +352,34 @@ def _instantiate_service(cls, ctx: Dict[str, Any]):
         raise
 
 
-def _load_prices_dates(symbol: str, repo_root: Path) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_prices_dates(
+    symbol: str,
+    repo_root: Path,
+    output_root: Path,
+    data_root: Path,
+    mode: str,
+) -> Tuple[Optional[Any], Optional[Any], List[Path]]:
     import pandas as pd
+
+    mode = (mode or "sim").strip().lower()
+    if mode == "ops":
+        mode = "live"
+
     candidates = [
-        # New split outputs (preferred)
-        repo_root / "output" / "stepA" / "display" / "prices.csv",
-        repo_root / "output" / "stepA" / "raw" / f"stepA_prices_{symbol}.csv",
-        # Legacy outputs (compat)
+        # (Priority 1) split outputs in the requested mode
+        output_root / "stepA" / mode / f"stepA_prices_train_{symbol}.csv",
+        output_root / "stepA" / mode / f"stepA_prices_test_{symbol}.csv",
+        # (Priority 2) consolidated stepA prices (display and compatibility variants)
+        output_root / "stepA" / mode / f"stepA_prices_{symbol}.csv",
+        output_root / "stepA" / "display" / f"stepA_prices_{symbol}.csv",
+        output_root / f"stepA_prices_{symbol}.csv",
         repo_root / "output" / f"stepA_prices_{symbol}.csv",
-        # Raw source
-        repo_root / "data" / f"prices_{symbol}.csv",
+        # (Priority 3) raw source fallback
+        data_root / f"prices_{symbol}.csv",
     ]
+
+    selected_dates = None
+    selected_close = None
     for p in candidates:
         if p.exists():
             df = pd.read_csv(p)
@@ -376,8 +393,10 @@ def _load_prices_dates(symbol: str, repo_root: Path) -> Tuple[Optional[Any], Opt
             close_col = next((c for c in df.columns if c.lower() == "close"), None)
             dates = df[date_col]
             close = df[close_col] if close_col else None
-            return dates, close
-    return None, None
+            if selected_dates is None:
+                selected_dates = dates
+                selected_close = close
+    return selected_dates, selected_close, candidates
 
 
 def _build_date_range(
@@ -389,13 +408,32 @@ def _build_date_range(
     future_end: Optional[str] = None,
     mamba_mode: str = "sim",
     stepE_mode: str = "sim",
+    mode: str = "sim",
+    output_root: Optional[Path] = None,
+    data_root: Optional[Path] = None,
     env_horizon_days: Optional[int] = None,
 ):
     import pandas as pd
     from ai_core.types.common import DateRange
-    dates, _ = _load_prices_dates(symbol, repo_root)
+
+    out_root = Path(output_root) if output_root is not None else (repo_root / "output")
+    data_root = Path(data_root) if data_root is not None else (repo_root / "data")
+
+    dates, _, searched_paths = _load_prices_dates(
+        symbol=symbol,
+        repo_root=repo_root,
+        output_root=out_root,
+        data_root=data_root,
+        mode=mode,
+    )
     if dates is None or len(dates) == 0:
-        raise RuntimeError("Cannot build DateRange: no price dates found (StepA output or data CSV missing).")
+        searched = "\n".join(
+            f"  - {'FOUND (invalid/empty?)' if p.exists() else 'MISSING'}: {p}" for p in searched_paths
+        )
+        raise RuntimeError(
+            "Cannot build DateRange: no usable price dates found. Searched candidates:\n"
+            f"{searched}"
+        )
     ts = pd.to_datetime(test_start) if test_start else pd.to_datetime(dates.iloc[-1]) - pd.DateOffset(months=test_months)
     train_start = ts - pd.DateOffset(years=train_years)
     train_end = ts - pd.Timedelta(days=1)
@@ -414,6 +452,7 @@ def _build_date_range(
     fe = pd.to_datetime(future_end) if future_end else None
     extras = {
         "symbol": symbol,
+        "mode": str(mode or "sim").lower(),
         "future_end": fe,
         "mamba_mode": str(mamba_mode or "sim").lower(),
         "stepE_mode": str(stepE_mode or "sim").lower(),
@@ -830,9 +869,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
     ap.add_argument("--train-years", type=int, default=8)
     ap.add_argument("--test-months", type=int, default=3)
+    ap.add_argument("--output-root", dest="output_root", default=None, help="Output root directory. Defaults to config output_root or 'output'.")
+    ap.add_argument("--mode", dest="mode", default=None, choices=["sim", "live", "display"], help="Pipeline mode (legacy-compatible). If set, it overrides default values for --mamba-mode / --stepE-mode.")
     ap.add_argument("--future-end", dest="future_end", default=None, help="YYYY-MM-DD. Future end date for periodic features (can exceed last real price date). If omitted, uses TEST_END.")
-    ap.add_argument("--mamba-mode", dest="mamba_mode", default="sim", choices=["sim", "live"], help="MAMBA training/inference mode. sim=backtest split (train_end=test_start-1). live=train on all available up to test_end and optionally infer to future_end.")
-    ap.add_argument("--stepE-mode", dest="stepE_mode", default="sim", choices=["sim", "live"], help="StepE (RL) mode. sim=use only test_start..test_end for training/eval. live=use full train_start..test_end.")
+    ap.add_argument("--mamba-mode", dest="mamba_mode", default=None, choices=["sim", "live", "display"], help="MAMBA training/inference mode. If omitted, defaults to --mode (or sim).")
+    ap.add_argument("--stepE-mode", dest="stepE_mode", default=None, choices=["sim", "live", "display"], help="StepE (RL) mode. If omitted, defaults to --mode (or sim).")
     ap.add_argument("--stepE-use-stepd-prime", dest="stepE_use_stepd_prime", action="store_true",
                    help="StepE: consume StepD' transformer embeddings as sequential features (instead of StepD envelopes).")
     ap.add_argument("--stepE-dprime-sources", dest="stepE_dprime_sources", default=None,
@@ -875,6 +916,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sys.path.insert(0, str(repo_root))
 
     app_config = _get_app_config(repo_root)
+
+    cfg_output_root = Path(getattr(app_config, "output_root", "output"))
+    resolved_output_root = Path(args.output_root) if args.output_root else cfg_output_root
+    resolved_mode = (args.mode or "sim").strip().lower()
+    resolved_mamba_mode = (args.mode or args.mamba_mode or "sim").strip().lower()
+    resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
+
+    if isinstance(app_config, dict):
+        app_config["output_root"] = str(resolved_output_root)
+    else:
+        try:
+            setattr(app_config, "output_root", str(resolved_output_root))
+        except Exception:
+            app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
+
+    data_root = Path(getattr(app_config, "data_root", repo_root / "data"))
     # Pass envelope horizon preference into services (best-effort)
     if args.env_horizon_days is not None:
         if isinstance(app_config, dict):
@@ -892,8 +949,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.test_months,
         args.train_years,
         future_end=future_end,
-        mamba_mode=args.mamba_mode,
-        stepE_mode=args.stepE_mode,
+        mamba_mode=resolved_mamba_mode,
+        stepE_mode=resolved_stepE_mode,
+        mode=resolved_mode,
+        output_root=resolved_output_root,
+        data_root=data_root,
         env_horizon_days=args.env_horizon_days,
     )
 
@@ -960,7 +1020,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[StepB] done")
         # Ensure contract artifact exists
         try:
-            p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=(args.mamba_mode or "sim"))
+            p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=resolved_mamba_mode)
             print(f"[StepB] ensured: {p}")
         except Exception as e:
             print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
