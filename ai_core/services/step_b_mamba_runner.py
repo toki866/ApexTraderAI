@@ -42,6 +42,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Any, Dict, List, Tuple, Optional
 
 import json
@@ -402,7 +404,7 @@ def _infer_output_root(app_config: Any) -> Path:
             return Path(v)
     except Exception:
         pass
-    return Path("output")
+    return resolve_repo_path("output")
 
 
 def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp, str]:
@@ -907,7 +909,7 @@ def run_mamba_multi_model_by_horizon(
                 snap_path = daily_dir / snap_name
                 pd.DataFrame(rows).to_csv(snap_path, index=False, encoding="utf-8-sig")
 
-                pred_rel = str(Path("output") / "stepB" / mode / daily_dirname / snap_name).replace("\\", "/")
+                pred_rel = str(resolve_repo_path("output") / "stepB" / mode / daily_dirname / snap_name).replace("\\", "/")
                 row[f"pred_path_h{H:02d}"] = pred_rel
 
             manifest_rows.append(row)

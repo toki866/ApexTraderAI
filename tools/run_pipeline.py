@@ -1,0 +1,980 @@
+# NOTE: This is a local headless runner (no OpenAI/API calls). It runs Steps A-F and prints progress.
+# -*- coding: utf-8 -*-
+"""
+run_steps_a_f_headless_safe3_lazy_import.py
+
+Headless runner for soxl_rl_gui (StepA〜StepF).
+
+Purpose
+-------
+- Run StepA〜StepF sequentially from the repository root (no GUI).
+- Be robust to minor API/signature differences by using introspection.
+- Support autodebug_app by reading AUTODEBUG_* environment variables.
+
+How to run (examples)
+---------------------
+# simplest (symbol from env or default "SOXL")
+python run_steps_a_f_headless_safe3_lazy_import.py
+
+# explicit symbol
+python run_steps_a_f_headless_safe3_lazy_import.py --symbol SOXL
+
+# choose steps
+python run_steps_a_f_headless_safe3_lazy_import.py --steps A,B
+
+Notes
+-----
+- This script does not "hide" failures. Any exception will stop execution and return a non-zero exit code.
+- Heavy modules are imported lazily (inside functions) to reduce import-time issues.
+"""
+
+from __future__ import annotations
+import argparse
+import dataclasses
+import inspect
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence, Tuple, List
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from ai_core.utils.paths import get_repo_root
+class _DateRangeShim:
+    """Wrapper for DateRange that can carry extra attributes like `future_end` safely."""
+
+    def __init__(self, base: Any, **extras: Any) -> None:
+        self._base = base
+        self._extras = dict(extras)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._extras:
+            return self._extras[name]
+        return getattr(self._base, name)
+
+    def __repr__(self) -> str:
+        return f"_DateRangeShim(base={self._base!r}, extras={self._extras!r})"
+
+class _ConfigShim:
+    """Compatibility wrapper passed as `config`/`cfg` to services.
+
+    Some services expect `config.symbol` and `config.date_range` even when the global
+    AppConfig does not contain those fields. This shim provides those fields while
+    delegating all other attribute access to the wrapped base object.
+    """
+
+    def __init__(self, base: Any, **overrides: Any) -> None:
+        self._base = base
+        for k, v in overrides.items():
+            if v is not None:
+                setattr(self, k, v)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return getattr(self._base, name)
+        except AttributeError:
+            # Provide a soft default for missing fields expected by some services (e.g. StepE/StepF).
+            # Returning None lets the service apply its own defaults (e.g. config.agents or ['xsr']).
+            return None
+
+
+
+def _parse_int_list(v: Optional[str]) -> Optional[List[int]]:
+    """Parse comma/space-separated ints like '1,5,10,20' or '1 5 10 20'."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # allow both comma and spaces
+    parts = s.replace(',', ' ').split()
+    out: List[int] = []
+    for p in parts:
+        try:
+            out.append(int(p))
+        except Exception:
+            continue
+    out = [x for x in out if x >= 1]
+    if not out:
+        return None
+    return sorted(set(out))
+
+
+def _apply_mamba_overrides_to_stepb_config(cfg: Any, mamba_lookback: Optional[int], mamba_horizons: Optional[List[int]]) -> Any:
+    """Apply Mamba overrides (lookback/horizons) to a real StepBConfig instance.
+
+    IMPORTANT:
+      - StepBService.run() requires an actual StepBConfig (isinstance check).
+      - Therefore this function must NEVER return a wrapper object.
+
+    Strategy (best-effort):
+      1) Try setattr on cfg and cfg.mamba (if mutable)
+      2) If dataclass and frozen/slots, use dataclasses.replace to create a new instance
+
+    This keeps the returned object as a StepBConfig (or subclass) instance.
+    """
+    if mamba_lookback is None and mamba_horizons is None:
+        return cfg
+
+    def _is_dc(obj: Any) -> bool:
+        return hasattr(obj, '__dataclass_fields__')
+
+    def _try_set(obj: Any, name: str, value: Any) -> bool:
+        try:
+            setattr(obj, name, value)
+            return True
+        except Exception:
+            return False
+
+    # Normalize values
+    lb = int(mamba_lookback) if mamba_lookback is not None else None
+    hz = tuple(int(x) for x in (mamba_horizons or [])) if mamba_horizons is not None else None
+
+    # --- Prefer nested cfg.mamba ---
+    try:
+        m = getattr(cfg, 'mamba', None)
+    except Exception:
+        m = None
+
+    if m is not None:
+        # Try direct set
+        if lb is not None:
+            for nm in ('lookback_days', 'lookback', 'seq_len', 'window', 'lookback_bdays'):
+                if hasattr(m, nm) and _try_set(m, nm, lb):
+                    break
+        if hz is not None:
+            for nm in ('horizons', 'horizon_list', 'horizon_days', 'future_horizons'):
+                if hasattr(m, nm) and _try_set(m, nm, hz):
+                    break
+            # Keep periodic snapshot horizons in sync when present (periodic-only variant)
+            for nm in ('periodic_snapshot_horizons', 'periodic_endpoints'):
+                if hasattr(m, nm):
+                    _try_set(m, nm, hz)
+
+
+        # If dataclass (possibly frozen), try replace
+        if _is_dc(m):
+            kwargs = {}
+            if lb is not None:
+                for nm in ('lookback_days', 'lookback', 'seq_len', 'window', 'lookback_bdays'):
+                    if nm in getattr(m, '__dataclass_fields__', {}):
+                        kwargs[nm] = lb
+                        break
+            if hz is not None:
+                for nm in ('horizons', 'horizon_list', 'horizon_days', 'future_horizons'):
+                    if nm in getattr(m, '__dataclass_fields__', {}):
+                        kwargs[nm] = hz
+                        break
+                # Keep periodic snapshot horizons in sync when those fields exist
+                if 'periodic_snapshot_horizons' in getattr(m, '__dataclass_fields__', {}):
+                    kwargs['periodic_snapshot_horizons'] = hz
+                if 'periodic_endpoints' in getattr(m, '__dataclass_fields__', {}):
+                    kwargs['periodic_endpoints'] = hz
+            if kwargs:
+                try:
+                    m2 = dataclasses.replace(m, **kwargs)
+                    # set back into cfg
+                    if _is_dc(cfg) and 'mamba' in getattr(cfg, '__dataclass_fields__', {}):
+                        try:
+                            cfg = dataclasses.replace(cfg, mamba=m2)
+                        except Exception:
+                            pass
+                    else:
+                        _try_set(cfg, 'mamba', m2)
+                except Exception:
+                    pass
+
+    # --- Also try top-level cfg fields (in case the project uses them) ---
+    if lb is not None:
+        for nm in ('lookback_days', 'lookback'):
+            if hasattr(cfg, nm):
+                _try_set(cfg, nm, lb)
+    if hz is not None:
+        for nm in ('horizons',):
+            if hasattr(cfg, nm):
+                _try_set(cfg, nm, hz)
+
+    # Dataclass replace on cfg itself if needed
+    if _is_dc(cfg):
+        kwargs = {}
+        if lb is not None:
+            for nm in ('lookback_days', 'lookback'):
+                if nm in getattr(cfg, '__dataclass_fields__', {}):
+                    kwargs[nm] = lb
+                    break
+        if hz is not None:
+            if 'horizons' in getattr(cfg, '__dataclass_fields__', {}):
+                kwargs['horizons'] = hz
+        if kwargs:
+            try:
+                cfg = dataclasses.replace(cfg, **kwargs)
+            except Exception:
+                pass
+
+    return cfg
+
+def _ensure_date_range_aliases(date_range: Any) -> Any:
+    """Ensure DateRange instances provide .start and .end attributes.
+
+    Many services expect DateRange.start/end for the full span. In this project,
+    DateRange is typically constructed with train_start/train_end/test_start/test_end.
+    This function adds class-level @property aliases when missing:
+      - start -> train_start (fallbacks: test_start, start_date, etc.)
+      - end   -> test_end   (fallbacks: train_end, end_date, etc.)
+
+    The aliasing is intentionally defensive to tolerate minor schema differences.
+    """
+    cls = date_range.__class__
+
+    def _pick(self: Any, names: Sequence[str]) -> Any:
+        for n in names:
+            if hasattr(self, n):
+                v = getattr(self, n)
+                # prefer non-None values
+                if v is not None:
+                    return v
+        # last resort: try dataclass fields
+        fields = getattr(self, "__dataclass_fields__", None)
+        if fields:
+            for n in names:
+                if n in fields:
+                    v = getattr(self, n)
+                    if v is not None:
+                        return v
+        raise AttributeError(f"DateRange is missing expected attributes. available={sorted(set(dir(self)))[:50]}...")
+
+    if not hasattr(cls, "start"):
+        setattr(cls, "start", property(lambda self: _pick(self, ("train_start", "test_start", "start_date", "date_start", "begin", "from_date"))))
+    if not hasattr(cls, "end"):
+        setattr(cls, "end", property(lambda self: _pick(self, ("test_end", "train_end", "end_date", "date_end", "finish", "to_date"))))
+    return date_range
+
+
+def _env_get(*keys: str) -> Optional[str]:
+    for k in keys:
+        v = os.environ.get(k)
+        if v:
+            return v
+    return None
+
+
+def _repo_root() -> Path:
+    return get_repo_root()
+
+
+def _parse_steps(s: str) -> Tuple[str, ...]:
+    s = (s or "").strip()
+    if not s:
+        return ("A", "B", "C", "D", "E", "F")
+    parts = [p.strip().upper() for p in s.replace(" ", "").split(",") if p.strip()]
+    if any(p in ("ALL", "*") for p in parts):
+        return ("A", "B", "C", "D", "E", "F")
+    valid = {"A", "B", "C", "D", "E", "F"}
+    out = tuple([p for p in parts if p in valid])
+    return out if out else ("A", "B", "C", "D", "E", "F")
+
+
+def _try_call(fn, /, *pos, **kw):
+    return fn(*pos, **kw)
+
+
+def _call_with_best_effort(fn, ctx: Dict[str, Any]):
+    sig = inspect.signature(fn)
+    kwargs: Dict[str, Any] = {}
+    for name, p in sig.parameters.items():
+        if name in ("self",):
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if name in ctx:
+            kwargs[name] = ctx[name]
+            continue
+        # common aliases
+        if name == "sym" and "symbol" in ctx:
+            kwargs[name] = ctx["symbol"]
+            continue
+        if name == "symbol" and "sym" in ctx:
+            kwargs[name] = ctx["sym"]
+            continue
+        if name in ("config", "cfg") and "app_config" in ctx:
+            # Some services expect `config.symbol` / `config.date_range` even when the global AppConfig
+            # does not carry those fields. Provide them via a shim.
+            kwargs[name] = _ConfigShim(ctx["app_config"], symbol=ctx.get("symbol"), date_range=ctx.get("date_range"))
+            continue
+    return fn(**kwargs)
+
+def _build_kwargs_from_signature(sig: inspect.Signature, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Build kwargs for a function/ctor call from ctx, matching only supported parameter names."""
+    kwargs: Dict[str, Any] = {}
+    for name, p in sig.parameters.items():
+        if name in ("self",):
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        # direct match
+        if name in ctx:
+            kwargs[name] = ctx[name]
+            continue
+        # common aliases
+        if name == "sym" and "symbol" in ctx:
+            kwargs[name] = ctx["symbol"]
+            continue
+        if name == "symbol" and "sym" in ctx:
+            kwargs[name] = ctx["sym"]
+            continue
+        if name in ("config", "cfg") and "app_config" in ctx:
+            # Some code uses config=AppConfig instead of app_config=
+            kwargs[name] = ctx["app_config"]
+            continue
+    return kwargs
+
+
+def _instantiate_service(cls, ctx: Dict[str, Any]):
+    """Instantiate service class robustly by passing only accepted __init__ kwargs."""
+    try:
+        sig = inspect.signature(cls.__init__)
+        kwargs = _build_kwargs_from_signature(sig, ctx)
+        return cls(**kwargs)
+    except TypeError:
+        # Fallbacks: try the most common ctor forms
+        if "app_config" in ctx:
+            try:
+                return cls(ctx["app_config"])
+            except TypeError:
+                pass
+        if "app_config" in ctx and "symbol" in ctx and "date_range" in ctx:
+            try:
+                return cls(ctx["app_config"], ctx["symbol"], ctx["date_range"])
+            except TypeError:
+                pass
+        raise
+
+
+def _load_prices_dates(symbol: str, repo_root: Path) -> Tuple[Optional[Any], Optional[Any]]:
+    import pandas as pd
+    candidates = [
+        # New split outputs (preferred)
+        repo_root / "output" / "stepA" / "display" / "prices.csv",
+        repo_root / "output" / "stepA" / "raw" / f"stepA_prices_{symbol}.csv",
+        # Legacy outputs (compat)
+        repo_root / "output" / f"stepA_prices_{symbol}.csv",
+        # Raw source
+        repo_root / "data" / f"prices_{symbol}.csv",
+    ]
+    for p in candidates:
+        if p.exists():
+            df = pd.read_csv(p)
+            date_col = next((c for c in df.columns if c.lower() == "date"), None)
+            if date_col is None:
+                continue
+            try:
+                df[date_col] = pd.to_datetime(df[date_col])
+            except Exception:
+                pass
+            close_col = next((c for c in df.columns if c.lower() == "close"), None)
+            dates = df[date_col]
+            close = df[close_col] if close_col else None
+            return dates, close
+    return None, None
+
+
+def _build_date_range(
+    symbol: str,
+    repo_root: Path,
+    test_start: Optional[str],
+    test_months: int,
+    train_years: int,
+    future_end: Optional[str] = None,
+    mamba_mode: str = "sim",
+    stepE_mode: str = "sim",
+    env_horizon_days: Optional[int] = None,
+):
+    import pandas as pd
+    from ai_core.types.common import DateRange
+    dates, _ = _load_prices_dates(symbol, repo_root)
+    if dates is None or len(dates) == 0:
+        raise RuntimeError("Cannot build DateRange: no price dates found (StepA output or data CSV missing).")
+    ts = pd.to_datetime(test_start) if test_start else pd.to_datetime(dates.iloc[-1]) - pd.DateOffset(months=test_months)
+    train_start = ts - pd.DateOffset(years=train_years)
+    train_end = ts - pd.Timedelta(days=1)
+    test_end = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+    dmin = pd.to_datetime(dates.iloc[0])
+    dmax = pd.to_datetime(dates.iloc[-1])
+    train_start = max(train_start, dmin)
+    train_end = min(train_end, dmax)
+    ts = max(ts, dmin)
+    test_end = min(test_end, dmax)
+    kwargs = {"train_start": train_start, "train_end": train_end, "test_start": ts, "test_end": test_end}
+    dr = DateRange(**kwargs)
+    dr = _ensure_date_range_aliases(dr)
+    # Attach extra attributes via shim so downstream steps can branch safely.
+    # Some DateRange implementations are slots-like, so we wrap if direct setattr fails.
+    fe = pd.to_datetime(future_end) if future_end else None
+    extras = {
+        "symbol": symbol,
+        "future_end": fe,
+        "mamba_mode": str(mamba_mode or "sim").lower(),
+        "stepE_mode": str(stepE_mode or "sim").lower(),
+    }
+    if env_horizon_days is not None:
+        try:
+            extras['env_horizon_days'] = int(env_horizon_days)
+        except Exception:
+            pass
+    for k, v in list(extras.items()):
+        if v is None:
+            extras.pop(k, None)
+            continue
+        try:
+            setattr(dr, k, v)
+            extras.pop(k, None)
+        except Exception:
+            pass
+    if extras:
+        dr = _DateRangeShim(dr, **extras)
+    return dr
+
+
+def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path:
+    """Ensure stepB_pred_time_all_<SYMBOL>.csv exists under output/stepB/<mode>/.
+
+    Policy:
+      - Target is always mode-separated (output/stepB/<mode>/stepB_pred_time_all_<SYMBOL>.csv).
+      - We NEVER create or update legacy mixed paths like output/stepB/stepB_pred_time_all_<SYMBOL>.csv.
+      - If a legacy file exists, we may copy it into the mode folder for compatibility.
+
+    This prevents accidental training on mixed-mode artifacts.
+    """
+
+    mode = (mode or 'sim').strip().lower()
+    if mode not in ('sim', 'live', 'ops', 'display'):
+        # be permissive; create folder anyway
+        pass
+
+    out_root = repo_root / 'output'
+    stepb_mode_dir = out_root / 'stepB' / mode
+    stepb_mode_dir.mkdir(parents=True, exist_ok=True)
+
+    target = stepb_mode_dir / f'stepB_pred_time_all_{symbol}.csv'
+    if target.exists() and target.stat().st_size > 0:
+        return target
+
+    # If a legacy pred_time_all exists, copy it into the mode folder (do not delete legacy).
+    legacy_candidates = [
+        out_root / 'stepB' / f'stepB_pred_time_all_{symbol}.csv',
+        out_root / f'stepB_pred_time_all_{symbol}.csv',
+    ]
+    for c in legacy_candidates:
+        if c.exists() and c.stat().st_size > 0:
+            shutil.copy2(c, target)
+            return target
+
+    # Build from agent pred_close files.
+    prices_dates = _load_prices_dates(symbol, repo_root)
+    df = pd.DataFrame({'Date': prices_dates})
+
+    # Gather candidate files from mode dir first, then legacy stepB dir as fallback.
+    candidate_dirs = [stepb_mode_dir, out_root / 'stepB']
+    files: list[Path] = []
+    for d in candidate_dirs:
+        if d.exists():
+            files.extend(sorted(d.glob(f'*{symbol}*.csv')))
+
+    def _pick_best(files: list[Path], key: str) -> Path | None:
+        key_l = key.lower()
+        cands = [f for f in files if key_l in f.name.lower()]
+        if not cands:
+            return None
+        # Prefer pred_close, then pred_path, then anything else; avoid delta.
+        def score(f: Path) -> tuple:
+            n = f.name.lower()
+            return (
+                0 if 'pred_time_all' in n else 1,
+                0 if 'pred_close' in n else 1,
+                0 if 'pred_path' in n else 1,
+                1 if 'delta' in n else 0,
+                len(n),
+            )
+        cands.sort(key=score)
+        return cands[0]
+
+    agent_map = {
+        'XSR': _pick_best(files, 'xsr'),
+        'FED': _pick_best(files, 'fed'),
+        'MAMBA': _pick_best(files, 'mamba'),
+    }
+
+    for agent, path in agent_map.items():
+        if path is None:
+            continue
+        series = _load_pred_close(path, agent)
+        df = df.merge(series, on='Date', how='left')
+
+    df.to_csv(target, index=False, encoding='utf-8')
+    return target
+def _get_app_config(repo_root: Path):
+    """Load AppConfig from YAML if available, otherwise fall back to a minimal default.
+
+    Notes
+    -----
+    In this repository, some codepaths expect a module-level function
+    `ai_core.config.app_config.load_from_yaml(path)`, while other codepaths
+    provide `AppConfig.load_from_yaml(path)` as a classmethod.
+
+    This loader supports both, and will also generate a minimal AppConfig when:
+      - config/app_config.yaml does not exist, or
+      - no compatible loader is available.
+
+    The goal is to keep the headless runner robust so that downstream Step services
+    can execute and surface their own errors.
+    """
+    try:
+        from ai_core.config import app_config as app_config_mod
+    except Exception as e:
+        raise RuntimeError("Failed to import ai_core.config.app_config") from e
+
+    path = repo_root / "config" / "app_config.yaml"
+
+    # 1) Try to load from YAML using known loader entrypoints (module-level then class-level)
+    if path.exists():
+        # module-level loaders
+        for name in ("load_from_yaml", "load_yaml", "from_yaml", "load"):
+            fn = getattr(app_config_mod, name, None)
+            if callable(fn):
+                try:
+                    return fn(path)
+                except Exception:
+                    pass
+
+        # class-level loaders
+        AppConfig = getattr(app_config_mod, "AppConfig", None)
+        if AppConfig is not None:
+            for name in ("load_from_yaml", "load_yaml", "from_yaml", "load"):
+                fn = getattr(AppConfig, name, None)
+                if callable(fn):
+                    try:
+                        return fn(path)
+                    except Exception:
+                        pass
+
+    # 2) Fall back to a minimal default AppConfig (best-effort instantiation)
+    AppConfig = getattr(app_config_mod, "AppConfig", None)
+    if AppConfig is None:
+        # As a last resort, return a minimal dict-like config; most services expect an object,
+        # but this keeps the runner from crashing at the config stage.
+        return {
+            "repo_root": repo_root,
+            "data_root": repo_root / "data",
+            "output_root": repo_root / "output",
+            "config_root": repo_root / "config",
+            "artifacts_root": repo_root / "artifacts",
+            "workspace_root": repo_root / "workspace",
+            "log_root": repo_root / "logs",
+        }
+
+    import inspect
+
+    candidates = {
+        "repo_root": repo_root,
+        "project_root": repo_root,
+        "root": repo_root,
+        "base_dir": repo_root,
+        "data_root": repo_root / "data",
+        "data_dir": repo_root / "data",
+        "prices_dir": repo_root / "data",
+        "output_root": repo_root / "output",
+        "output_dir": repo_root / "output",
+        "config_root": repo_root / "config",
+        "config_dir": repo_root / "config",
+        "artifacts_root": repo_root / "artifacts",
+        "artifacts_dir": repo_root / "artifacts",
+        "workspace_root": repo_root / "workspace",
+        "workspace_dir": repo_root / "workspace",
+        "log_root": repo_root / "logs",
+        "log_dir": repo_root / "logs",
+    }
+
+    try:
+        sig = inspect.signature(AppConfig)
+        kwargs = {}
+        for pname, p in sig.parameters.items():
+            if pname == "self":
+                continue
+            if pname in candidates:
+                kwargs[pname] = candidates[pname]
+            elif p.default is not inspect._empty:
+                # use default
+                continue
+            else:
+                # required but unknown -> best-effort
+                ann = p.annotation
+                if ann is Path:
+                    kwargs[pname] = repo_root
+                else:
+                    kwargs[pname] = None
+        return AppConfig(**kwargs)  # type: ignore[arg-type]
+    except Exception:
+        # Best-effort: try no-arg constructor
+        try:
+            return AppConfig()  # type: ignore[call-arg]
+        except Exception as e:
+            raise RuntimeError("Failed to construct AppConfig (no YAML and incompatible signature)") from e
+
+
+def _run_stepA(app_config, symbol: str, date_range):
+    from ai_core.services.step_a_service import StepAService
+    ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
+    svc = _instantiate_service(StepAService, ctx)
+    fn = getattr(svc, "run", None)
+    if fn is None:
+        raise RuntimeError("StepAService has no run()")
+    return _call_with_best_effort(fn, ctx)
+
+
+
+def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedformer: bool) -> None:
+    """Best-effort enabling of StepB agents across differing config schemas.
+
+    This repository evolved over time; StepBConfig may expose:
+      - cfg.xsr.enabled / cfg.mamba.enabled / cfg.fedformer.enabled
+      - cfg.train_xsr / cfg.train_mamba / cfg.train_fedformer (bool)
+      - cfg.enable_xsr / cfg.enable_mamba / cfg.enable_fedformer (bool)
+      - cfg.use_xsr / cfg.use_mamba / cfg.use_fedformer (bool)
+      - cfg.agents = {"xsr": True, ...} or cfg.enabled_agents = ["mamba", ...]
+    We try common patterns without failing if the shape differs.
+    """
+    def _try_set(obj, attr: str, value):
+        if hasattr(obj, attr):
+            try:
+                setattr(obj, attr, value)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _try_set_in_mapping(obj, key: str, value):
+        try:
+            if isinstance(obj, dict):
+                obj[key] = value
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _enable_subcfg(subcfg, value: bool) -> None:
+        if isinstance(subcfg, bool):
+            # handled by parent setter
+            return
+        # common flags
+        for flag in ("enabled", "is_enabled", "enable", "train", "use", "on"):
+            _try_set(subcfg, flag, value)
+            _try_set_in_mapping(subcfg, flag, value)
+
+    desired = {
+        "xsr": bool(enable_xsr),
+        "mamba": bool(enable_mamba),
+        "fedformer": bool(enable_fedformer),
+    }
+
+    # 1) Direct boolean flags on cfg
+    for name, value in desired.items():
+        for prefix in ("train_", "enable_", "use_"):
+            _try_set(cfg, f"{prefix}{name}", value)
+
+    # 2) Nested sub-configs cfg.xsr / cfg.mamba / cfg.fedformer
+    for name, value in desired.items():
+        if hasattr(cfg, name):
+            try:
+                sub = getattr(cfg, name)
+            except Exception:
+                continue
+            if isinstance(sub, bool):
+                _try_set(cfg, name, value)
+            else:
+                _enable_subcfg(sub, value)
+
+    # 3) Aliases sometimes used
+    alias_map = {
+        "xsr": ("xsr_cfg", "xsr_config", "xsr_train", "xsr_model"),
+        "mamba": ("wavelet_mamba", "mamba_cfg", "mamba_config", "mamba_train", "mamba_model"),
+        "fedformer": ("fed", "fedformer_cfg", "fedformer_config", "fedformer_train", "fedformer_model"),
+    }
+    for name, aliases in alias_map.items():
+        value = desired[name]
+        for a in aliases:
+            if hasattr(cfg, a):
+                try:
+                    sub = getattr(cfg, a)
+                except Exception:
+                    continue
+                if isinstance(sub, bool):
+                    _try_set(cfg, a, value)
+                else:
+                    _enable_subcfg(sub, value)
+
+    # 4) Mapping/list styles
+    if hasattr(cfg, "agents"):
+        try:
+            agents = getattr(cfg, "agents")
+            if isinstance(agents, dict):
+                for name, value in desired.items():
+                    agents[name] = value
+            elif isinstance(agents, (list, tuple, set)):
+                # if list of enabled names
+                enabled = {n for n, v in desired.items() if v}
+                setattr(cfg, "agents", sorted(enabled))
+        except Exception:
+            pass
+
+    for list_attr in ("enabled_agents", "enabled_models", "models", "model_names"):
+        if hasattr(cfg, list_attr):
+            try:
+                enabled = [n for n, v in desired.items() if v]
+                cur = getattr(cfg, list_attr)
+                if isinstance(cur, (list, tuple, set)):
+                    setattr(cfg, list_attr, enabled)
+            except Exception:
+                pass
+
+
+def _run_stepB(app_config, symbol: str, date_range, enable_xsr: bool, enable_mamba: bool, enable_mamba_periodic: bool, enable_fedformer: bool, mamba_lookback: Optional[int], mamba_horizons: Optional[List[int]]):
+    from ai_core.services.step_b_service import StepBService
+    from ai_core.config.step_b_config import StepBConfig
+    ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
+    svc = _instantiate_service(StepBService, ctx)
+
+    # StepBConfig signature can vary; construct with best effort.
+    try:
+        cfg = StepBConfig(symbol=symbol, date_range=date_range)
+    except TypeError:
+        # fallback: try positional or reduced args
+        try:
+            cfg = StepBConfig(symbol=symbol)
+        except TypeError:
+            cfg = StepBConfig()
+
+    _enable_stepb_agents(cfg, enable_xsr=enable_xsr, enable_mamba=enable_mamba, enable_fedformer=enable_fedformer)
+
+    # Apply Mamba multi-horizon overrides (lookback/horizons) if provided
+    cfg = _apply_mamba_overrides_to_stepb_config(cfg, mamba_lookback=mamba_lookback, mamba_horizons=mamba_horizons)
+    # Periodic-only Mamba snapshots toggle (if supported by config/service)
+    try:
+        m = getattr(cfg, 'mamba', None)
+        if m is not None and hasattr(m, 'enable_periodic_snapshots'):
+            _try_set(m, 'enable_periodic_snapshots', bool(enable_mamba_periodic))
+        elif m is not None and hasattr(m, 'enable_mamba_periodic'):
+            _try_set(m, 'enable_mamba_periodic', bool(enable_mamba_periodic))
+        elif hasattr(cfg, 'enable_mamba_periodic'):
+            _try_set(cfg, 'enable_mamba_periodic', bool(enable_mamba_periodic))
+        # If horizons were provided, keep periodic snapshot horizons aligned
+        if enable_mamba_periodic and mamba_horizons:
+            hz = tuple(int(x) for x in mamba_horizons)
+            if m is not None and hasattr(m, 'periodic_snapshot_horizons'):
+                _try_set(m, 'periodic_snapshot_horizons', hz)
+            if m is not None and hasattr(m, 'periodic_endpoints'):
+                _try_set(m, 'periodic_endpoints', hz)
+    except Exception:
+        pass
+
+
+    fn = getattr(svc, "run", None)
+    if fn is None:
+        raise RuntimeError("StepBService has no run()")
+    # Some StepBService.run takes cfg as positional; keep it simple.
+    return fn(cfg)
+
+
+def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, prev_results: Dict[str, Any]):
+    mod_map = {
+        "C": ("ai_core.services.step_c_service", "StepCService"),
+        "D": ("ai_core.services.step_d_service", "StepDService"),
+        "E": ("ai_core.services.step_e_service", "StepEService"),
+        "F": ("ai_core.services.step_f_service", "StepFService"),
+    }
+    module_name, cls_name = mod_map[step_letter]
+    module = __import__(module_name, fromlist=[cls_name])
+    cls = getattr(module, cls_name)
+
+    # ctx is shared for ctor/run best-effort calls
+    ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range, **prev_results}
+    svc = _instantiate_service(cls, ctx)
+
+    # Prefer common entrypoints. Some services (notably StepE/StepF) may not expose run().
+    if step_letter == "E":
+        candidates = ["run", "run_all", "run_all_models", "run_all_agents", "run_agents", "train", "train_all", "train_single_model", "execute", "main"]
+    elif step_letter == "F":
+        candidates = ["run", "train_marl", "run_marl", "train", "train_all", "execute", "main"]
+    else:
+        candidates = ["run", "execute", "main"]
+
+    for name in candidates:
+        fn = getattr(svc, name, None)
+        if callable(fn):
+            return _call_with_best_effort(fn, ctx)
+
+    # If nothing matched, provide a helpful error with available callables.
+    available = []
+    for name in dir(svc):
+        if name.startswith("_"):
+            continue
+        v = getattr(svc, name, None)
+        if callable(v):
+            available.append(name)
+    raise RuntimeError(f"{cls_name} has no supported entrypoint. Tried={candidates}. Available={sorted(set(available))}")
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbol", default=None)
+    ap.add_argument("--steps", default=None, help="Comma-separated steps to run. Example: A,B,C (default ALL)")
+    ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
+    ap.add_argument("--train-years", type=int, default=8)
+    ap.add_argument("--test-months", type=int, default=3)
+    ap.add_argument("--future-end", dest="future_end", default=None, help="YYYY-MM-DD. Future end date for periodic features (can exceed last real price date). If omitted, uses TEST_END.")
+    ap.add_argument("--mamba-mode", dest="mamba_mode", default="sim", choices=["sim", "live"], help="MAMBA training/inference mode. sim=backtest split (train_end=test_start-1). live=train on all available up to test_end and optionally infer to future_end.")
+    ap.add_argument("--stepE-mode", dest="stepE_mode", default="sim", choices=["sim", "live"], help="StepE (RL) mode. sim=use only test_start..test_end for training/eval. live=use full train_start..test_end.")
+    ap.add_argument("--stepE-use-stepd-prime", dest="stepE_use_stepd_prime", action="store_true",
+                   help="StepE: consume StepD' transformer embeddings as sequential features (instead of StepD envelopes).")
+    ap.add_argument("--stepE-dprime-sources", dest="stepE_dprime_sources", default=None,
+                   help="StepE: comma-separated StepD' sources (e.g. 'mamba_periodic,mamba').")
+    ap.add_argument("--stepE-dprime-horizons", dest="stepE_dprime_horizons", default=None,
+                   help="StepE: comma-separated horizons for StepD' embeddings (e.g. '1,5,10,20').")
+    ap.add_argument("--stepE-dprime-join", dest="stepE_dprime_join", default="inner", choices=["inner", "left"],
+                   help="StepE: join method when merging embeddings by Date (inner or left).")
+    ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None, help="StepB(Mamba) lookback_days (sequence length).")
+    ap.add_argument("--mamba-horizons", dest="mamba_horizons", default=None, help="StepB(Mamba) horizons as CSV (e.g., 1,5,10,20).")
+    ap.add_argument("--env-horizon-days", dest="env_horizon_days", type=int, default=None, help="StepD envelope horizon preference (prefer *_hXX columns).")
+    ap.add_argument("--enable-xsr", action="store_true", help="Enable XSR training in StepB (best-effort).")
+    ap.add_argument("--enable-mamba", action="store_true", help="Enable Wavelet-Mamba training in StepB (best-effort).")
+    ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
+    ap.add_argument("--enable-fedformer", action="store_true", help="Enable FEDformer training in StepB (best-effort).")
+    ap.add_argument("--enable-all", action="store_true", help="Enable all StepB agents (xsr/mamba/fedformer).")
+    args = ap.parse_args(argv)
+
+    repo_root = _repo_root()
+
+    symbol = args.symbol or _env_get("AUTODEBUG_SYMBOL", "AUTO_DEBUG_SYMBOL") or "SOXL"
+    steps = _parse_steps(args.steps)
+
+    # StepB agent enabling (best-effort).
+    if args.enable_all:
+        enable_xsr = True
+        enable_mamba = True
+        enable_fedformer = True
+    else:
+        enable_xsr = bool(args.enable_xsr)
+        enable_mamba = bool(args.enable_mamba)
+        enable_fedformer = bool(args.enable_fedformer)
+        # If user didn't specify any, default to mamba only (matches current working path).
+        if not (enable_xsr or enable_mamba or enable_fedformer):
+            enable_mamba = True
+
+
+    # Ensure repo_root is on sys.path
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    app_config = _get_app_config(repo_root)
+    # Pass envelope horizon preference into services (best-effort)
+    if args.env_horizon_days is not None:
+        if isinstance(app_config, dict):
+            app_config['env_horizon_days'] = int(args.env_horizon_days)
+        else:
+            try:
+                setattr(app_config, 'env_horizon_days', int(args.env_horizon_days))
+            except Exception:
+                app_config = _ConfigShim(app_config, env_horizon_days=int(args.env_horizon_days))
+    future_end = args.future_end or _env_get("AUTODEBUG_FUTURE_END", "FUTURE_END", "FUTURE_END_DATE")
+    date_range = _build_date_range(
+        symbol,
+        repo_root,
+        args.test_start,
+        args.test_months,
+        args.train_years,
+        future_end=future_end,
+        mamba_mode=args.mamba_mode,
+        stepE_mode=args.stepE_mode,
+        env_horizon_days=args.env_horizon_days,
+    )
+
+    results: Dict[str, Any] = {}
+
+    # Enabled agents list (propagated to StepE/StepF via ctx so they can run multi-agent).
+    enabled_agents: List[str] = []
+    if enable_xsr:
+        enabled_agents.append('xsr')
+    if enable_mamba:
+        enabled_agents.append('mamba')
+    if enable_fedformer:
+        enabled_agents.append('fed')
+    # Store into results so _run_step_generic passes it as ctx['agents'].
+    results['agents'] = enabled_agents
+    # Optional: configure StepE to use StepD' transformer embeddings (compression-as-learning).
+    # This lets StepE consume embeddings from:
+    #   <output_root>/stepD_prime/<mode>/embeddings/stepDprime_{source}_h{HH}_{SYMBOL}_embeddings.csv
+    # rather than relying on StepD envelopes as sequential features.
+    stepe_use_dprime = bool(getattr(args, "stepE_use_stepd_prime", False) or getattr(args, "stepE_dprime_sources", None) or getattr(args, "stepE_dprime_horizons", None))
+    if stepe_use_dprime:
+        try:
+            from ai_core.services.step_e_service import StepEConfig  # lazy import
+            dprime_sources = (args.stepE_dprime_sources or "mamba_periodic,mamba").strip()
+            dprime_horizons = (args.stepE_dprime_horizons or "1,5,10,20").strip()
+            dprime_join = (args.stepE_dprime_join or "inner").strip().lower()
+            cfg_list = []
+            for a in (enabled_agents or ["mamba"]):
+                cfg = StepEConfig(agent=a)
+                cfg.output_root = str(getattr(app_config, "output_root", "output"))
+                cfg.use_stepd_prime = True
+                cfg.dprime_sources = dprime_sources
+                cfg.dprime_horizons = dprime_horizons
+                cfg.dprime_join = dprime_join
+                cfg_list.append(cfg)
+            setattr(app_config, "stepE", cfg_list if len(cfg_list) != 1 else cfg_list[0])
+            print(f"[headless] StepE configured to use StepD' embeddings: sources={dprime_sources} horizons={dprime_horizons} join={dprime_join}")
+        except Exception as e:
+            print(f"[headless] WARNING: failed to configure StepE StepD' embeddings: {type(e).__name__}: {e}")
+
+
+    print(f"[headless] repo_root={repo_root}")
+    print(f"[headless] symbol={symbol}")
+    if future_end:
+        print(f"[headless] future_end={future_end}")
+    print(f"[headless] steps={','.join(steps)}")
+    if args.mamba_lookback is not None:
+        print(f"[headless] mamba_lookback={args.mamba_lookback}")
+    if args.mamba_horizons:
+        print(f"[headless] mamba_horizons={args.mamba_horizons}")
+    if args.env_horizon_days is not None:
+        print(f"[headless] env_horizon_days={args.env_horizon_days}")
+
+    if "A" in steps:
+        print("[StepA] start")
+        results["stepA_result"] = _run_stepA(app_config, symbol, date_range)
+        print("[StepA] done")
+
+    if "B" in steps:
+        print("[StepB] start")
+        mamba_horizons_list = _parse_int_list(args.mamba_horizons)
+        results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_xsr, enable_mamba, args.enable_mamba_periodic, enable_fedformer, args.mamba_lookback, mamba_horizons_list)
+        print(f"[StepB] agents: xsr={enable_xsr}, mamba={enable_mamba}, fedformer={enable_fedformer}")
+        print("[StepB] done")
+        # Ensure contract artifact exists
+        try:
+            p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=(args.mamba_mode or "sim"))
+            print(f"[StepB] ensured: {p}")
+        except Exception as e:
+            print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+
+    for step in ("C", "D", "E", "F"):
+        if step not in steps:
+            continue
+        print(f"[Step{step}] start")
+        results[f"step{step}_result"] = _run_step_generic(step, app_config, symbol, date_range, results)
+        print(f"[Step{step}] done")
+
+    print("[headless] ALL DONE")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

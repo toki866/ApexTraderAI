@@ -4,6 +4,8 @@ import argparse
 import logging
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Dict, Tuple, Optional
 
 from zoneinfo import ZoneInfo  # Python 3.11 なら標準ライブラリ
@@ -37,7 +39,7 @@ MORNING_WINDOW_MINUTES = 30    # 9:30〜10:00
 CLOSE_WINDOW_MINUTES = 30      # 15:30〜16:00
 
 # 実行フラグ保存先
-FLAGS_FILE_PATH = Path("output") / "auto_trader_flags.txt"
+FLAGS_FILE_PATH = resolve_repo_path("output") / "auto_trader_flags.txt"
 
 
 # =========================================================
@@ -205,7 +207,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--decisions-log-path",
         type=Path,
-        default=Path("output/live_decisions.csv"),
+        default=resolve_repo_path("output/live_decisions.csv"),
         help="Path to log RL decisions if --log-decisions is set.",
     )
 

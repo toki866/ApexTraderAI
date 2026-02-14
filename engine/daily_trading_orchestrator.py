@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Dict, Tuple
 
 from engine.live_policy_runner import LivePolicyConfig, LivePolicyRunner
@@ -75,7 +77,7 @@ class DailyTradingConfig:
     safe_band_entry_pct: float = 0.01
     safe_band_exit_pct: float = 0.01
 
-    flags_path: Path = field(default_factory=lambda: Path("output/auto_trader_flags.txt"))
+    flags_path: Path = field(default_factory=lambda: resolve_repo_path("output/auto_trader_flags.txt"))
 
 
 # =========================

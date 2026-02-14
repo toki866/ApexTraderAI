@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile $(git ls-files '*.py')
+
+      - name: Import smoke check
+        run: |
+          python -c "import ai_core.utils.paths"
+          python -c "import ai_core.config.app_config"
+          python -c "import tools.run_pipeline"

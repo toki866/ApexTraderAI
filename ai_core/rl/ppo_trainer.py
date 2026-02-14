@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -269,7 +271,7 @@ def train_single_agent_with_ppo(
 
     env_cfg = env_config or TradingEnvConfig()
     if policy_output_dir is None:
-        policy_output_dir = Path("output") / "policies_sb3"
+        policy_output_dir = resolve_repo_path("output") / "policies_sb3"
 
     # Gym 環境の構築
     env = TradingEnv(
@@ -365,7 +367,7 @@ def train_single_agent_with_ppo_on_range(
         raise ValueError("df_obs_24d / dates / price_long / price_short の長さが一致していません。")
 
     if policy_output_dir is None:
-        policy_output_dir = Path("output") / "policies_sb3"
+        policy_output_dir = resolve_repo_path("output") / "policies_sb3"
 
     # 学習期間でサブセット
     d0 = pd.to_datetime(train_start)

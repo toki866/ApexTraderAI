@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
@@ -18,7 +20,7 @@ class StateBuilderConfig:
     ----------
     output_root : Path
         StepA〜F の出力CSVが置かれているルートディレクトリ。
-        例: Path("output")
+        例: resolve_repo_path("output")
     envelope_agent : str
         EnvelopeイベントをどのAIエージェントのものから取るか。
         例: "xsr", "mamba", "fed"
@@ -31,7 +33,7 @@ class StateBuilderConfig:
         例: "sim", "ops", "live", "display"
         None の場合は、存在するファイルを探索して見つかったものを使う（優先順: live→ops→sim→display→legacy）。
     """
-    output_root: Path = Path("output")
+    output_root: Path = resolve_repo_path("output")
     envelope_agent: str = "xsr"
     daily_log_pattern: str = "output/daily_log_{symbol}.csv"
     mode: Optional[str] = None

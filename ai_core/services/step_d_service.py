@@ -27,6 +27,8 @@ No realized future prices are used. Only prediction series values are used.
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from ai_core.utils.paths import resolve_repo_path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -222,7 +224,7 @@ class StepDService:
                     return Path(out)
             except Exception:
                 continue
-        return Path("output")
+        return resolve_repo_path("output")
 
     def _resolve_pred_time_all_path(self, output_root: Path, step: str, mode: str) -> Optional[Path]:
         step = str(step).strip()
