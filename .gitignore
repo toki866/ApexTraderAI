@@ -1,5 +1,5 @@
 # ===== local big artifacts =====
-data/
+data/*.csv
 output/
 outputs/
 logs/

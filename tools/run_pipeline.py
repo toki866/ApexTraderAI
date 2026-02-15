@@ -34,6 +34,7 @@ import dataclasses
 import inspect
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, List
 
@@ -275,6 +276,47 @@ def _parse_steps(s: str) -> Tuple[str, ...]:
     out = tuple([p for p in parts if p in valid])
     return out if out else ("A", "B", "C", "D", "E", "F")
 
+
+
+
+def _symbols_for_data_prep(primary_symbol: str) -> List[str]:
+    symbol = (primary_symbol or "SOXL").upper()
+    required = {symbol}
+    if symbol in {"SOXL", "SOXS"}:
+        required.update({"SOXL", "SOXS"})
+    return sorted(required)
+
+
+def _prepare_missing_data_if_needed(
+    *,
+    repo_root: Path,
+    data_root: Path,
+    primary_symbol: str,
+    auto_prepare_data: bool,
+    data_start: str,
+    data_end: str,
+) -> None:
+    required_symbols = _symbols_for_data_prep(primary_symbol)
+    missing = [s for s in required_symbols if not (data_root / f"prices_{s}.csv").exists()]
+    if not missing:
+        print(f"[headless] data ready: {','.join(required_symbols)}")
+        return
+    if not auto_prepare_data:
+        raise FileNotFoundError(
+            "Missing price CSV files and --auto-prepare-data=0 was set: "
+            + ", ".join(str(data_root / f"prices_{s}.csv") for s in missing)
+        )
+
+    from tools.prepare_data import ensure_price_csvs
+
+    print(f"[headless] auto prepare data for symbols={','.join(missing)} start={data_start} end={data_end}")
+    ensure_price_csvs(
+        symbols=missing,
+        start=data_start,
+        end=data_end,
+        data_dir=data_root,
+        force=False,
+    )
 
 def _try_call(fn, /, *pos, **kw):
     return fn(*pos, **kw)
@@ -901,6 +943,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
     ap.add_argument("--enable-fedformer", action="store_true", help="Enable FEDformer training in StepB (best-effort).")
     ap.add_argument("--enable-all", action="store_true", help="Enable all StepB agents (xsr/mamba/fedformer).")
+    ap.add_argument("--auto-prepare-data", type=int, default=1, choices=[0, 1], help="Automatically generate missing data/prices_<SYMBOL>.csv before StepA.")
+    ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
+    ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
     args = ap.parse_args(argv)
 
     repo_root = _repo_root()
@@ -963,6 +1008,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 setattr(app_config, 'env_horizons', list(env_horizon_list or []))
             except Exception:
                 app_config = _ConfigShim(app_config, env_horizon_days=env_horizon_base, env_horizons=list(env_horizon_list or []))
+    auto_prepare_data = bool(int(args.auto_prepare_data))
+    data_start = args.data_start
+    data_end = args.data_end or date.today().isoformat()
+
+    _prepare_missing_data_if_needed(
+        repo_root=repo_root,
+        data_root=data_root,
+        primary_symbol=symbol,
+        auto_prepare_data=auto_prepare_data,
+        data_start=data_start,
+        data_end=data_end,
+    )
+
     future_end = args.future_end or _env_get("AUTODEBUG_FUTURE_END", "FUTURE_END", "FUTURE_END_DATE")
     date_range = _build_date_range(
         symbol,
@@ -1022,6 +1080,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if future_end:
         print(f"[headless] future_end={future_end}")
     print(f"[headless] steps={','.join(steps)}")
+    print(f"[headless] auto_prepare_data={int(auto_prepare_data)} data_start={data_start} data_end={data_end}")
     if args.mamba_lookback is not None:
         print(f"[headless] mamba_lookback={args.mamba_lookback}")
     if args.mamba_horizons:
