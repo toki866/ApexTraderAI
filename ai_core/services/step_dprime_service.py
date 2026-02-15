@@ -154,6 +154,32 @@ def _collect_daily_pred_files(stepB_dir: Path, symbol: str, source: str, horizon
     return sorted(root.glob(pat))
 
 
+def _pred_close_column(source: str, horizon: int) -> str:
+    if source == "mamba_periodic":
+        return f"Pred_Close_MAMBA_PERIODIC_h{horizon:02d}"
+    if source == "mamba":
+        return f"Pred_Close_MAMBA_h{horizon:02d}"
+    raise ValueError(f"unsupported source: {source}")
+
+
+def _load_pred_close_aggregate(stepB_dir: Path, symbol: str, source: str) -> Optional[pd.DataFrame]:
+    if source == "mamba_periodic":
+        name = f"stepB_pred_close_mamba_periodic_{symbol}.csv"
+    elif source == "mamba":
+        name = f"stepB_pred_close_mamba_{symbol}.csv"
+    else:
+        raise ValueError(f"unsupported source: {source}")
+
+    cands = [stepB_dir / name] + sorted(stepB_dir.glob(f"**/{name}"))
+    for p in cands:
+        if p.exists():
+            df = pd.read_csv(p)
+            if "Date_anchor" not in df.columns:
+                raise ValueError(f"{p} missing Date_anchor")
+            return df
+    return None
+
+
 def _load_path_csv(p: Path) -> pd.DataFrame:
     df = pd.read_csv(p)
     req = ["Date_anchor", "step_ahead_bdays", "Date_target", "Pred_ret_from_anchor"]
@@ -191,6 +217,79 @@ def _make_label(close_map: Dict[str, float], anchor: str, target: str) -> Option
         return None
     ret = math.log(ct / ca) if ca > 0 and ct > 0 else (ct - ca)
     return 1 if ret > 0 else 0
+
+
+def _build_calendar_index(pr_train: pd.DataFrame, pr_test: pd.DataFrame) -> Tuple[List[str], Dict[str, int]]:
+    cal = pd.concat([pr_train[["Date"]], pr_test[["Date"]]], ignore_index=True)
+    cal = cal.drop_duplicates(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    keys = [_date_to_key(dt) for dt in cal["Date"]]
+    return keys, {k: int(i) for i, k in enumerate(keys)}
+
+
+def _shift_calendar_date(calendar_keys: List[str], calendar_idx: Dict[str, int], offset: int, anchor: str) -> Optional[str]:
+    i = calendar_idx.get(anchor)
+    if i is None:
+        return None
+    j = int(i + offset)
+    if j < 0 or j >= len(calendar_keys):
+        return None
+    return calendar_keys[j]
+
+
+def _build_sequences_from_pred_close(
+    df: pd.DataFrame,
+    source: str,
+    horizons: Tuple[int, ...],
+    max_len: int,
+    close_map: Dict[str, float],
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    if df is None or len(df) == 0:
+        return np.zeros((0, max_len, 2), dtype=np.float32), np.zeros((0, max_len), dtype=np.int64), []
+
+    work = df.copy()
+    work["Date_anchor"] = pd.to_datetime(work["Date_anchor"], errors="coerce")
+    work = work.dropna(subset=["Date_anchor"]).sort_values("Date_anchor").reset_index(drop=True)
+
+    X_list, M_list, dates = [], [], []
+    for _, row in work.iterrows():
+        anchor = _date_to_key(pd.to_datetime(row["Date_anchor"]))
+        close_anchor = close_map.get(anchor)
+        if close_anchor is None or close_anchor == 0:
+            continue
+
+        cum = []
+        for h in horizons:
+            col = _pred_close_column(source, int(h))
+            if col not in work.columns:
+                continue
+            pred_close = pd.to_numeric(pd.Series([row[col]]), errors="coerce").iloc[0]
+            if pd.isna(pred_close):
+                continue
+            cum.append(float(pred_close) / float(close_anchor) - 1.0)
+
+        if not cum:
+            continue
+
+        cum = np.asarray(cum, dtype=np.float32)
+        inc = np.empty_like(cum)
+        inc[0] = cum[0]
+        if len(cum) > 1:
+            inc[1:] = cum[1:] - cum[:-1]
+
+        t_eff = min(len(cum), int(max_len))
+        x = np.zeros((int(max_len), 2), dtype=np.float32)
+        m = np.zeros((int(max_len),), dtype=np.int64)
+        x[:t_eff, 0] = inc[:t_eff]
+        x[:t_eff, 1] = cum[:t_eff]
+        m[:t_eff] = 1
+
+        X_list.append(x)
+        M_list.append(m)
+        dates.append(anchor)
+
+    if not X_list:
+        return np.zeros((0, max_len, 2), dtype=np.float32), np.zeros((0, max_len), dtype=np.int64), []
+    return np.stack(X_list, axis=0), np.stack(M_list, axis=0), dates
 
 
 def _train_one(
@@ -361,6 +460,7 @@ class StepDPrimeService:
         pr_train, pr_test = _read_prices(stepA_dir, cfg.symbol)
         close_map = _build_close_map(pr_train, pr_test)
         train_end = _infer_train_end(pr_train)
+        calendar_keys, calendar_idx = _build_calendar_index(pr_train, pr_test)
 
         results = {
             "mode": cfg.mode,
@@ -378,57 +478,148 @@ class StepDPrimeService:
         embeds_dir.mkdir(parents=True, exist_ok=True)
 
         for source in cfg.sources:
-            for h in cfg.horizons:
-                files = _collect_daily_pred_files(stepB_dir, cfg.symbol, source, h)
-                if cfg.verbose:
-                    print(f"[StepD'] collect: source={source} h={h} files={len(files)} root={stepB_dir.as_posix()}")
-                if not files:
-                    results["warnings"].append(f"no files for source={source} h={h} under {stepB_dir}")
-                    continue
+            daily_files_by_h = {int(h): _collect_daily_pred_files(stepB_dir, cfg.symbol, source, int(h)) for h in cfg.horizons}
+            use_daily = any(len(v) > 0 for v in daily_files_by_h.values())
 
-                X_list, M_list, y_list, avail_list, dates = [], [], [], [], []
-                for fp in files:
-                    try:
-                        df = _load_path_csv(fp)
-                        x, m, anchor, target = _path_to_sequence(df, cfg.max_len)
-
-                        # Supervised label: whether Close(target) > Close(anchor).
-                        # NOTE: label may be unavailable for the last few anchors (e.g., h=20 near the dataset end).
-                        label = _make_label(close_map, anchor, target)
-                        if label is None:
-                            y_list.append(np.nan)
-                            avail_list.append(False)
-                        else:
-                            y_list.append(int(label))
-                            avail_list.append(True)
-
-                        X_list.append(x)
-                        M_list.append(m)
-                        dates.append(anchor)
-                    except Exception as e:
-                        results["warnings"].append(f"failed read {fp}: {e}")
+            if use_daily:
+                for h in cfg.horizons:
+                    files = daily_files_by_h[int(h)]
+                    if cfg.verbose:
+                        print(f"[StepD'] collect: source={source} h={h} files={len(files)} root={stepB_dir.as_posix()}")
+                    if not files:
+                        results["warnings"].append(f"no files for source={source} h={h} under {stepB_dir}")
                         continue
-                if not X_list:
-                    results["warnings"].append(f"no valid samples for source={source} h={h}")
-                    continue
 
-                X = np.stack(X_list, axis=0)
-                M = np.stack(M_list, axis=0)
-                y = np.asarray(y_list, dtype=np.float32)  # may contain NaN for unavailable labels
+                    X_list, M_list, y_list, avail_list, dates = [], [], [], [], []
+                    for fp in files:
+                        try:
+                            df = _load_path_csv(fp)
+                            x, m, anchor, target = _path_to_sequence(df, cfg.max_len)
+
+                            label = _make_label(close_map, anchor, target)
+                            if label is None:
+                                y_list.append(np.nan)
+                                avail_list.append(False)
+                            else:
+                                y_list.append(int(label))
+                                avail_list.append(True)
+
+                            X_list.append(x)
+                            M_list.append(m)
+                            dates.append(anchor)
+                        except Exception as e:
+                            results["warnings"].append(f"failed read {fp}: {e}")
+                            continue
+                    if not X_list:
+                        results["warnings"].append(f"no valid samples for source={source} h={h}")
+                        continue
+
+                    X = np.stack(X_list, axis=0)
+                    M = np.stack(M_list, axis=0)
+                    y = np.asarray(y_list, dtype=np.float32)
+                    label_avail = np.asarray(avail_list, dtype=bool)
+
+                    anchors = np.array(dates)
+                    is_train = anchors <= train_end
+                    is_test = anchors > train_end
+
+                    if cfg.fit_split == "train":
+                        sel = is_train & label_avail
+                    elif cfg.fit_split == "test":
+                        sel = is_test & label_avail
+                    elif cfg.fit_split in {"train+test", "available"}:
+                        sel = label_avail
+                    else:
+                        raise ValueError(f"invalid fit_split: {cfg.fit_split}")
+
+                    if not np.any(sel):
+                        results["warnings"].append(
+                            f"fit_split={cfg.fit_split} yielded 0 labeled samples for source={source} h={h}. "
+                            f"Fallback to fit_split=available for this model."
+                        )
+                        sel = label_avail
+
+                    Xfit, Mfit = X[sel], M[sel]
+                    yfit = y[sel].astype(np.int64)
+
+                    model_key = f"stepDprime_{source}_h{h:02d}_{cfg.symbol}"
+                    model, metrics = _train_one(cfg, Xfit, Mfit, yfit, models_dir, model_key, device)
+
+                    model.eval()
+                    embs = []
+                    with torch.no_grad():
+                        bs = 256
+                        for i in range(0, X.shape[0], bs):
+                            xb = torch.from_numpy(X[i:i+bs]).float().to(device)
+                            mb = torch.from_numpy(M[i:i+bs]).long().to(device)
+                            e = model.encode(xb, mb).detach().cpu().numpy()
+                            embs.append(e)
+                    E = np.concatenate(embs, axis=0)
+
+                    out_csv = embeds_dir / f"{model_key}_embeddings.csv"
+                    out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
+                    out_df.insert(0, "Date", dates)
+                    out_df.insert(1, "label_up", y)
+                    out_df.insert(2, "label_available", label_avail.astype(int))
+                    out_df.insert(3, "source", source)
+                    out_df.insert(4, "horizon_model", int(h))
+                    out_df.to_csv(out_csv, index=False)
+
+                    results["models"][model_key] = {
+                        "source": source,
+                        "horizon": int(h),
+                        "n_samples_all": int(X.shape[0]),
+                        "n_labels_available": int(label_avail.sum()),
+                        "n_samples_fit": int(Xfit.shape[0]),
+                        "metrics": metrics,
+                        "ckpt": str((models_dir / f"{model_key}.pt").as_posix()),
+                        "meta": str((models_dir / f"{model_key}.json").as_posix()),
+                    }
+                    results["embeddings"][model_key] = str(out_csv.as_posix())
+                continue
+
+            agg = _load_pred_close_aggregate(stepB_dir, cfg.symbol, source)
+            if agg is None:
+                results["warnings"].append(f"no StepB inputs for source={source} under {stepB_dir}")
+                continue
+            if cfg.verbose:
+                print(f"[StepD'] fallback aggregate: source={source} rows={len(agg)} root={stepB_dir.as_posix()}")
+
+            X, M, dates = _build_sequences_from_pred_close(
+                df=agg,
+                source=source,
+                horizons=cfg.horizons,
+                max_len=cfg.max_len,
+                close_map=close_map,
+            )
+            if X.shape[0] == 0:
+                results["warnings"].append(f"aggregate pred_close produced 0 usable samples for source={source}")
+                continue
+
+            anchors = np.array(dates)
+            is_train = anchors <= train_end
+            is_test = anchors > train_end
+
+            for h in cfg.horizons:
+                y_list, avail_list = [], []
+                for anchor in dates:
+                    target = _shift_calendar_date(calendar_keys, calendar_idx, int(h), anchor)
+                    label = _make_label(close_map, anchor, target) if target is not None else None
+                    if label is None:
+                        y_list.append(np.nan)
+                        avail_list.append(False)
+                    else:
+                        y_list.append(int(label))
+                        avail_list.append(True)
+
+                y = np.asarray(y_list, dtype=np.float32)
                 label_avail = np.asarray(avail_list, dtype=bool)
 
-                anchors = np.array(dates)
-                is_train = anchors <= train_end
-                is_test = anchors > train_end
-
-                # Training set selection always requires label availability.
                 if cfg.fit_split == "train":
                     sel = is_train & label_avail
                 elif cfg.fit_split == "test":
                     sel = is_test & label_avail
-                elif cfg.fit_split == "train+test":
-                    sel = label_avail
-                elif cfg.fit_split == "available":
+                elif cfg.fit_split in {"train+test", "available"}:
                     sel = label_avail
                 else:
                     raise ValueError(f"invalid fit_split: {cfg.fit_split}")
@@ -439,10 +630,12 @@ class StepDPrimeService:
                         f"Fallback to fit_split=available for this model."
                     )
                     sel = label_avail
+                if not np.any(sel):
+                    results["warnings"].append(f"no labeled samples for source={source} h={h} from aggregate pred_close")
+                    continue
 
                 Xfit, Mfit = X[sel], M[sel]
                 yfit = y[sel].astype(np.int64)
-
 
                 model_key = f"stepDprime_{source}_h{h:02d}_{cfg.symbol}"
                 model, metrics = _train_one(cfg, Xfit, Mfit, yfit, models_dir, model_key, device)
@@ -460,9 +653,8 @@ class StepDPrimeService:
 
                 out_csv = embeds_dir / f"{model_key}_embeddings.csv"
                 out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
-                out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
                 out_df.insert(0, "Date", dates)
-                out_df.insert(1, "label_up", y)  # float, may include NaN
+                out_df.insert(1, "label_up", y)
                 out_df.insert(2, "label_available", label_avail.astype(int))
                 out_df.insert(3, "source", source)
                 out_df.insert(4, "horizon_model", int(h))
