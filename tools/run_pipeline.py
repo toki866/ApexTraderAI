@@ -912,6 +912,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--train-years", type=int, default=8)
     ap.add_argument("--test-months", type=int, default=3)
     ap.add_argument("--output-root", dest="output_root", default=None, help="Output root directory. Defaults to config output_root or 'output'.")
+    ap.add_argument("--data-dir", dest="data_dir", default=None, help="Data root directory. Defaults to config data_root or 'data'.")
     ap.add_argument("--mode", dest="mode", default=None, choices=["sim", "live", "display"], help="Pipeline mode (legacy-compatible). If set, it overrides default values for --mamba-mode / --stepE-mode.")
     ap.add_argument("--future-end", dest="future_end", default=None, help="YYYY-MM-DD. Future end date for periodic features (can exceed last real price date). If omitted, uses TEST_END.")
     ap.add_argument("--mamba-mode", dest="mamba_mode", default=None, choices=["sim", "live", "display"], help="MAMBA training/inference mode. If omitted, defaults to --mode (or sim).")
@@ -987,7 +988,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception:
             app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
 
-    data_root = Path(getattr(app_config, "data_root", repo_root / "data"))
+    resolved_data_root = Path(args.data_dir) if args.data_dir else Path(getattr(app_config, "data_root", repo_root / "data"))
+    if isinstance(app_config, dict):
+        app_config["data_root"] = str(resolved_data_root)
+    else:
+        try:
+            setattr(app_config, "data_root", str(resolved_data_root))
+        except Exception:
+            app_config = _ConfigShim(app_config, data_root=str(resolved_data_root))
+
+    data_root = resolved_data_root
     env_horizon_list = _parse_int_list(args.env_horizons or args.env_horizon_days)
     env_horizon_base: Optional[int] = None
     if args.env_horizon_days is not None:
