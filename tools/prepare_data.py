@@ -34,8 +34,23 @@ def _normalize_download_df(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
     work = df.copy()
     if isinstance(work.columns, pd.MultiIndex):
-        if symbol in work.columns.get_level_values(0):
+        required_cols = {"Open", "High", "Low", "Close", "Volume"}
+
+        # yfinance can return (Ticker, Field) or (Field, Ticker) for a single ticker.
+        # Prefer the level that contains OHLCV field names and flatten to that level.
+        level_with_fields: Optional[int] = None
+        for level in range(work.columns.nlevels):
+            values = set(work.columns.get_level_values(level))
+            if required_cols.issubset(values):
+                level_with_fields = level
+                break
+
+        if level_with_fields is not None:
+            work.columns = work.columns.get_level_values(level_with_fields)
+        elif symbol in work.columns.get_level_values(0):
             work = work[symbol]
+        elif symbol in work.columns.get_level_values(-1):
+            work = work.xs(symbol, axis=1, level=-1)
         else:
             work.columns = work.columns.get_level_values(-1)
 
