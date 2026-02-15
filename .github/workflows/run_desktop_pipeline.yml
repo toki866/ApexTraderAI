@@ -2,6 +2,51 @@ name: Run Desktop Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode (sim/live/display)"
+        required: true
+        default: sim
+        type: choice
+        options:
+          - sim
+          - live
+          - display
+      symbols:
+        description: "Symbols for data preparation (comma-separated)"
+        required: true
+        default: "SOXL,SOXS"
+        type: string
+      start:
+        description: "Data start date (YYYY-MM-DD)"
+        required: true
+        default: "2014-01-01"
+        type: string
+      end:
+        description: "Data end date (YYYY-MM-DD)"
+        required: true
+        default: "2022-03-31"
+        type: string
+      test_start:
+        description: "Test start date (YYYY-MM-DD)"
+        required: true
+        default: "2022-01-03"
+        type: string
+      train_years:
+        description: "Train years"
+        required: true
+        default: "8"
+        type: string
+      test_months:
+        description: "Test months"
+        required: true
+        default: "3"
+        type: string
+      copy_to_onedrive:
+        description: "Reserved for future BAT integration"
+        required: true
+        default: true
+        type: boolean
 
 concurrency:
   group: desktop-pipeline
@@ -10,43 +55,84 @@ concurrency:
 jobs:
   run:
     runs-on: [self-hosted, windows]
-    outputs:
-      run_id: ${{ steps.run_bat.outputs.run_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Run desktop BAT
         id: run_bat
         shell: pwsh
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SYMBOLS: ${{ inputs.symbols }}
+          INPUT_START: ${{ inputs.start }}
+          INPUT_END: ${{ inputs.end }}
+          INPUT_TEST_START: ${{ inputs.test_start }}
+          INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
+          INPUT_TEST_MONTHS: ${{ inputs.test_months }}
+          INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
         run: |
-          $teeLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-          cmd /c scripts\run_all_local_then_copy.bat 2>&1 | Tee-Object -FilePath $teeLog
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          cmd /c scripts\run_all_local_then_copy.bat 2>&1 | Tee-Object -FilePath $consoleLog
           $exitCode = $LASTEXITCODE
-
-          $runIdLine = Select-String -Path $teeLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
-          if ($runIdLine) {
-            $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
-            "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-            "RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Host "Detected run_id=$runId"
-          } else {
-            Write-Warning 'run_id could not be parsed from BAT output.'
-          }
 
           if ($exitCode -ne 0) {
             exit $exitCode
+          }
+
+      - name: Resolve latest run artifacts
+        if: always()
+        id: resolve_artifacts
+        shell: pwsh
+        run: |
+          $workRoot = 'C:\work\apex_work\runs'
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+
+          $runId = ''
+          if (Test-Path $consoleLog) {
+            $runIdLine = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
+            if ($runIdLine) {
+              $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
+            }
+          }
+
+          $runDir = $null
+          if ($runId) {
+            $candidateDir = Join-Path $workRoot $runId
+            if (Test-Path $candidateDir) {
+              $runDir = Get-Item $candidateDir
+            }
+          }
+
+          if (-not $runDir -and (Test-Path $workRoot)) {
+            $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($runDir -and -not $runId) {
+              $runId = $runDir.Name
+            }
+          }
+
+          if ($runId) {
+            "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Resolved run_id=$runId"
+          } else {
+            Write-Warning 'Failed to resolve run_id from console log and latest run folder.'
+          }
+
+          if ($runDir) {
+            $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
+            $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
+            "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Resolved run directory: $($runDir.FullName)"
           }
 
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-run-${{ steps.run_bat.outputs.run_id || github.run_id }}
+          name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}\run_all_local_then_copy_console.log
-            C:\work\apex_work\runs\${{ steps.run_bat.outputs.run_id }}\logs\run_${{ steps.run_bat.outputs.run_id }}.log
-            C:\work\apex_work\runs\${{ steps.run_bat.outputs.run_id }}\run_${{ steps.run_bat.outputs.run_id }}.zip
+            ${{ steps.resolve_artifacts.outputs.log_glob }}
+            ${{ steps.resolve_artifacts.outputs.zip_path }}
