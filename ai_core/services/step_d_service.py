@@ -18,7 +18,7 @@ Multi-horizon support:
   DeltaP_pct_h01, Theta_norm_h01, ... (11 cols per horizon)
 - Also writes unsuffixed columns (backward compatibility) using a preferred horizon:
   - date_range.env_horizon_days if set and exists
-  - otherwise the smallest available horizon (usually h01)
+  - otherwise h20 if available, else the largest available horizon
 
 Leakage note:
 Daily features are computed CAUSALLY using only a rolling window (rbw) ending at each day.
@@ -122,6 +122,11 @@ class StepDService:
         }
 
         env_h = getattr(self.date_range, "env_horizon_days", None)
+        env_horizons_req = self._parse_horizon_list(
+            getattr(self.date_range, "env_horizons", None)
+            or getattr(self.app_config, "env_horizons", None)
+            or env_h
+        )
         try:
             env_h = int(env_h) if env_h is not None else None
         except Exception:
@@ -145,8 +150,12 @@ class StepDService:
 
             else:
                 daily_df = pd.DataFrame({"Date": df["Date"].dt.strftime("%Y-%m-%d")})
-                horizons_sorted = sorted(pred_cols_map.keys())
-                preferred_h = env_h if (env_h in pred_cols_map) else horizons_sorted[0]
+                horizons_available = sorted(pred_cols_map.keys())
+                horizons_sorted = [h for h in (env_horizons_req or horizons_available) if h in pred_cols_map]
+                if not horizons_sorted:
+                    horizons_sorted = horizons_available
+
+                preferred_h = self._pick_base_horizon(env_h=env_h, horizons=horizons_available)
                 used_cols_list: List[str] = []
 
                 for h_days in horizons_sorted:
@@ -166,7 +175,7 @@ class StepDService:
                 pref_suffix = f"_h{int(preferred_h):02d}"
                 for base_col in self._daily_feature_cols():
                     c_suf = f"{base_col}{pref_suffix}"
-                    if c_suf in daily_df.columns and base_col not in daily_df.columns:
+                    if c_suf in daily_df.columns:
                         daily_df[base_col] = daily_df[c_suf]
 
                 for c in daily_df.columns:
@@ -344,19 +353,48 @@ class StepDService:
             pass
         return int(default_rbw)
 
+    def _parse_horizon_list(self, v: Any) -> List[int]:
+        if v is None:
+            return []
+        if isinstance(v, (list, tuple, set)):
+            parts = list(v)
+        else:
+            parts = str(v).replace(",", " ").split()
+        out: List[int] = []
+        for p in parts:
+            try:
+                h = int(p)
+                if h >= 1:
+                    out.append(h)
+            except Exception:
+                continue
+        return sorted(set(out))
+
+    def _pick_base_horizon(self, env_h: Optional[int], horizons: List[int]) -> int:
+        hs = sorted(int(h) for h in horizons if int(h) >= 1)
+        if not hs:
+            return int(env_h or 1)
+        if env_h in hs:
+            return int(env_h)
+        if 20 in hs:
+            return 20
+        return hs[-1]
+
     # ---------- Agent / column selection ----------
     def _detect_agents(self, df: pd.DataFrame) -> List[str]:
         if df is None or len(df) == 0:
-            return ["xsr", "mamba", "fed"]
+            return ["xsr", "mamba", "mamba_periodic", "fed"]
         cols = [str(c).lower() for c in df.columns]
         agents: List[str] = []
         if any("xsr" in c for c in cols):
             agents.append("xsr")
-        if any("mamba" in c or "lstm" in c for c in cols):
+        if any("mamba_periodic" in c for c in cols):
+            agents.append("mamba_periodic")
+        if any(("mamba" in c and "mamba_periodic" not in c) or "lstm" in c for c in cols):
             agents.append("mamba")
         if any("fed" in c for c in cols):
             agents.append("fed")
-        return agents or ["xsr", "mamba", "fed"]
+        return agents or ["xsr", "mamba", "mamba_periodic", "fed"]
 
     def _agent_suffix(self, agent: str) -> str:
         a = (agent or "").strip().lower()
@@ -364,6 +402,8 @@ class StepDService:
             return "XSR"
         if a in {"mamba", "lstm"}:
             return "MAMBA"
+        if a in {"mamba_periodic", "periodic", "mamba-periodic"}:
+            return "MAMBA_PERIODIC"
         if a in {"fed", "fedformer"}:
             return "FED"
         return a.upper() if a else "MODEL"
@@ -371,6 +411,7 @@ class StepDService:
     def _pick_pred_cols(self, df: pd.DataFrame, agent: str) -> Dict[int, str]:
         if df is None or len(df) == 0:
             return {}
+        a = (agent or "").strip().lower()
         suf = self._agent_suffix(agent)
         cols = list(df.columns)
 
@@ -382,6 +423,8 @@ class StepDService:
                 continue
             h = int(m.group(1))
             if suf.lower() not in cl:
+                continue
+            if a in {"mamba", "lstm"} and "mamba_periodic" in cl:
                 continue
             if "pred" not in cl or "close" not in cl:
                 continue
@@ -408,6 +451,8 @@ class StepDService:
         for c in cols:
             cl = str(c).lower()
             if suf.lower() in cl and "pred" in cl and "close" in cl:
+                if a in {"mamba", "lstm"} and "mamba_periodic" in cl:
+                    continue
                 return {1: str(c)}
         return {}
 
