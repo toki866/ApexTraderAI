@@ -81,7 +81,9 @@ class StepDService:
         pred_path = self._resolve_pred_time_all_path(output_root, step="stepC", mode=mode)
         used_source = "stepC"
         if pred_path is None or not pred_path.exists():
-            pred_path = self._resolve_pred_time_all_path(output_root, step="stepB", mode=mode)
+            pred_path = self._resolve_stepb_pred_close_path(output_root, mode=mode)
+            if pred_path is None or not pred_path.exists():
+                pred_path = self._resolve_pred_time_all_path(output_root, step="stepB", mode=mode)
             used_source = "stepB"
 
         df = pd.DataFrame()
@@ -257,6 +259,24 @@ class StepDService:
         step_dir = output_root / step
         if step_dir.exists():
             hits = list(step_dir.glob(f"**/{name}"))
+            if hits:
+                return hits[0]
+        return None
+
+    def _resolve_stepb_pred_close_path(self, output_root: Path, mode: str) -> Optional[Path]:
+        mode = self._normalize_mode(mode)
+        cand = [
+            output_root / "stepB" / mode / f"stepB_pred_close_mamba_{self.symbol}.csv",
+            output_root / "stepB" / mode / f"stepB_pred_close_mamba_periodic_{self.symbol}.csv",
+            output_root / "stepB" / f"stepB_pred_close_mamba_{self.symbol}.csv",
+            output_root / "stepB" / f"stepB_pred_close_mamba_periodic_{self.symbol}.csv",
+        ]
+        for p in cand:
+            if p.exists():
+                return p
+        stepb_dir = output_root / "stepB"
+        if stepb_dir.exists():
+            hits = sorted(stepb_dir.glob(f"**/stepB_pred_close_*_{self.symbol}.csv"))
             if hits:
                 return hits[0]
         return None

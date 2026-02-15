@@ -118,7 +118,13 @@ class StepEService:
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None) -> None:
         mode = str(mode or getattr(date_range, "mode", None) or "sim")
 
-        cfgs: List[StepEConfig] = list(getattr(self.app_config, "stepE", []))
+        raw_cfgs = getattr(self.app_config, "stepE", None)
+        if raw_cfgs is None:
+            cfgs: List[StepEConfig] = []
+        elif isinstance(raw_cfgs, (list, tuple)):
+            cfgs = list(raw_cfgs)
+        else:
+            cfgs = [raw_cfgs]
         if agents:
             cfgs = [c for c in cfgs if c.agent in set(agents)]
 
