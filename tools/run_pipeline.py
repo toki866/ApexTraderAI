@@ -884,7 +884,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="StepE: join method when merging embeddings by Date (inner or left).")
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None, help="StepB(Mamba) lookback_days (sequence length).")
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default=None, help="StepB(Mamba) horizons as CSV (e.g., 1,5,10,20).")
-    ap.add_argument("--env-horizon-days", dest="env_horizon_days", type=int, default=None, help="StepD envelope horizon preference (prefer *_hXX columns).")
+    ap.add_argument(
+        "--env-horizon-days",
+        dest="env_horizon_days",
+        default=None,
+        help="StepD envelope horizon preference/base horizon. Accepts single int or CSV (e.g. 20 or 1,5,10,20).",
+    )
+    ap.add_argument(
+        "--env-horizons",
+        dest="env_horizons",
+        default=None,
+        help="StepD envelope horizons as CSV list (e.g. 1,5,10,20). Overrides --env-horizon-days list component.",
+    )
     ap.add_argument("--enable-xsr", action="store_true", help="Enable XSR training in StepB (best-effort).")
     ap.add_argument("--enable-mamba", action="store_true", help="Enable Wavelet-Mamba training in StepB (best-effort).")
     ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
@@ -932,15 +943,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
 
     data_root = Path(getattr(app_config, "data_root", repo_root / "data"))
-    # Pass envelope horizon preference into services (best-effort)
+    env_horizon_list = _parse_int_list(args.env_horizons or args.env_horizon_days)
+    env_horizon_base: Optional[int] = None
     if args.env_horizon_days is not None:
+        parsed_base = _parse_int_list(args.env_horizon_days)
+        if parsed_base and len(parsed_base) == 1:
+            env_horizon_base = int(parsed_base[0])
+
+    # Pass envelope horizon preference into services (best-effort)
+    if env_horizon_base is not None or env_horizon_list:
         if isinstance(app_config, dict):
-            app_config['env_horizon_days'] = int(args.env_horizon_days)
+            if env_horizon_base is not None:
+                app_config['env_horizon_days'] = int(env_horizon_base)
+            app_config['env_horizons'] = list(env_horizon_list or [])
         else:
             try:
-                setattr(app_config, 'env_horizon_days', int(args.env_horizon_days))
+                if env_horizon_base is not None:
+                    setattr(app_config, 'env_horizon_days', int(env_horizon_base))
+                setattr(app_config, 'env_horizons', list(env_horizon_list or []))
             except Exception:
-                app_config = _ConfigShim(app_config, env_horizon_days=int(args.env_horizon_days))
+                app_config = _ConfigShim(app_config, env_horizon_days=env_horizon_base, env_horizons=list(env_horizon_list or []))
     future_end = args.future_end or _env_get("AUTODEBUG_FUTURE_END", "FUTURE_END", "FUTURE_END_DATE")
     date_range = _build_date_range(
         symbol,
@@ -954,7 +976,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mode=resolved_mode,
         output_root=resolved_output_root,
         data_root=data_root,
-        env_horizon_days=args.env_horizon_days,
+        env_horizon_days=env_horizon_base,
     )
 
     results: Dict[str, Any] = {}
@@ -1004,8 +1026,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[headless] mamba_lookback={args.mamba_lookback}")
     if args.mamba_horizons:
         print(f"[headless] mamba_horizons={args.mamba_horizons}")
-    if args.env_horizon_days is not None:
-        print(f"[headless] env_horizon_days={args.env_horizon_days}")
+    if env_horizon_base is not None:
+        print(f"[headless] env_horizon_days={env_horizon_base}")
+    if env_horizon_list:
+        print(f"[headless] env_horizons={','.join(str(x) for x in env_horizon_list)}")
 
     if "A" in steps:
         print("[StepA] start")
