@@ -43,7 +43,19 @@ set "LAST_EXIT=0"
 call :run "git rev-parse --short HEAD"
 if errorlevel 1 goto :failed
 
-call :run "git status --short"
+call :run "git rev-parse --is-inside-work-tree"
+if errorlevel 1 goto :failed
+
+set "HAS_DIRTY="
+for /f %%s in ('git status --porcelain 2^>nul') do set "HAS_DIRTY=1"
+if defined HAS_DIRTY (
+  echo [ERROR] working tree is dirty. commit/stash changes before running.>> "%LOG_FILE%"
+  set "LAST_CMD=git status --porcelain"
+  set "LAST_EXIT=4"
+  goto :failed
+)
+
+call :run "git pull --ff-only"
 if errorlevel 1 goto :failed
 
 call :run "\"%PYTHON_EXE%\" tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir \"%DATA_DIR%\""
@@ -114,10 +126,45 @@ if "%ZIP_ON_SUCCESS%"=="1" if exist "%ZIP_FILE%" (
   )
 )
 
+set "SNAPSHOT_ROOT="
+if defined ONE_DRIVE_SNAPSHOTS_ROOT (
+  set "SNAPSHOT_ROOT=%ONE_DRIVE_SNAPSHOTS_ROOT%"
+) else if defined OneDrive (
+  set "SNAPSHOT_ROOT=%OneDrive%\ApexTraderAI\repo_snapshots"
+) else (
+  echo [ERROR] OneDrive snapshot path is not set. Define OneDrive or ONE_DRIVE_SNAPSHOTS_ROOT.>> "%LOG_FILE%"
+  set "LAST_CMD=resolve OneDrive snapshot destination"
+  set "LAST_EXIT=3"
+  goto :failed
+)
+
+call :run "mkdir \"%SNAPSHOT_ROOT%\""
+if errorlevel 1 goto :failed
+
+for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "SNAPSHOT_SHA=%%h"
+if not defined SNAPSHOT_SHA (
+  echo [ERROR] failed to resolve current short commit id for snapshot.>> "%LOG_FILE%"
+  set "LAST_CMD=git rev-parse --short HEAD"
+  set "LAST_EXIT=2"
+  goto :failed
+)
+
+set "SNAPSHOT_ZIP=%SNAPSHOT_ROOT%\repo_%SNAPSHOT_SHA%_%RUN_ID%.zip"
+if exist "%SNAPSHOT_ZIP%" del /f /q "%SNAPSHOT_ZIP%" >nul 2>&1
+
+call :run "git archive --format=zip --output=\"%SNAPSHOT_ZIP%\" HEAD"
+if errorlevel 1 (
+  call :run "powershell -NoProfile -Command \"Compress-Archive -Path '%REPO_ROOT%\*' -DestinationPath '%SNAPSHOT_ZIP%' -Force\""
+  if errorlevel 1 goto :failed
+)
+
+if exist "%SNAPSHOT_ZIP%" attrib +R "%SNAPSHOT_ZIP%" >nul 2>&1
+
 (
   echo [SUCCESS] Completed run_id=%RUN_ID%
   echo [SUCCESS] local_run_dir=%RUN_DIR%
   echo [SUCCESS] onedrive_dest=%ONE_DEST%
+  echo [SUCCESS] repo_snapshot=%SNAPSHOT_ZIP%
   echo [SUCCESS] reproducible_command=%~nx0
 ) >> "%LOG_FILE%" 2>&1
 
