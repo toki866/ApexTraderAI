@@ -1,0 +1,52 @@
+name: Run Desktop Pipeline
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    outputs:
+      run_id: ${{ steps.run_bat.outputs.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run desktop BAT
+        id: run_bat
+        shell: pwsh
+        run: |
+          $teeLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          cmd /c scripts\run_all_local_then_copy.bat 2>&1 | Tee-Object -FilePath $teeLog
+          $exitCode = $LASTEXITCODE
+
+          $runIdLine = Select-String -Path $teeLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
+          if ($runIdLine) {
+            $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
+            "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Detected run_id=$runId"
+          } else {
+            Write-Warning 'run_id could not be parsed from BAT output.'
+          }
+
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-run-${{ steps.run_bat.outputs.run_id || github.run_id }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}\run_all_local_then_copy_console.log
+            C:\work\apex_work\runs\${{ steps.run_bat.outputs.run_id }}\logs\run_${{ steps.run_bat.outputs.run_id }}.log
+            C:\work\apex_work\runs\${{ steps.run_bat.outputs.run_id }}\run_${{ steps.run_bat.outputs.run_id }}.zip

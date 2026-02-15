@@ -46,6 +46,8 @@ if errorlevel 1 goto :failed
 call :run "git rev-parse --is-inside-work-tree"
 if errorlevel 1 goto :failed
 
+if /i "%GITHUB_ACTIONS%"=="true" goto :skip_git_sync
+
 set "HAS_DIRTY="
 for /f %%s in ('git status --porcelain 2^>nul') do set "HAS_DIRTY=1"
 if defined HAS_DIRTY (
@@ -57,6 +59,8 @@ if defined HAS_DIRTY (
 
 call :run "git pull --ff-only"
 if errorlevel 1 goto :failed
+
+:skip_git_sync
 
 call :run "\"%PYTHON_EXE%\" tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir \"%DATA_DIR%\""
 if errorlevel 1 goto :failed
