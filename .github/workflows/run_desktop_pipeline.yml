@@ -63,12 +63,19 @@ jobs:
         shell: cmd
         run: |
           echo RUNNER_OS=%RUNNER_OS%
+          echo === powershell path ===
           where powershell
-          where pwsh || echo pwsh_not_found
+          echo === pwsh path (optional) ===
+          where pwsh >nul 2>&1
+          if %ERRORLEVEL% EQU 0 (
+            pwsh -v
+          ) else (
+            echo pwsh_not_found (OK)
+          )
 
       - name: Run desktop BAT
         id: run_bat
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass -Command "{0}"
         env:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
@@ -90,7 +97,7 @@ jobs:
       - name: Resolve latest run artifacts
         if: always()
         id: resolve_artifacts
-        shell: powershell
+        shell: powershell -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $workRoot = 'C:\work\apex_work\runs'
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
