@@ -40,11 +40,15 @@ set "LAST_EXIT=0"
   echo ==================================================
 ) >> "%LOG_FILE%" 2>&1
 
-call :run "git rev-parse --short HEAD"
+call :run git rev-parse --short HEAD
 if errorlevel 1 goto :failed
 
-call :run "git rev-parse --is-inside-work-tree"
+call :run git rev-parse --is-inside-work-tree
 if errorlevel 1 goto :failed
+
+rem --- diagnostics (non-fatal): python resolution/version for runner troubleshooting ---
+call :run where python
+call :run "%PYTHON_EXE%" -V
 
 if /i "%GITHUB_ACTIONS%"=="true" goto :skip_git_sync
 
@@ -57,22 +61,22 @@ if defined HAS_DIRTY (
   goto :failed
 )
 
-call :run "git pull --ff-only"
+call :run git pull --ff-only
 if errorlevel 1 goto :failed
 
 :skip_git_sync
 
-call :run "\"%PYTHON_EXE%\" tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir \"%DATA_DIR%\""
+call :run "%PYTHON_EXE%" tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
-set "PIPELINE_CMD=\"%PYTHON_EXE%\" tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root \"%OUTPUT_DIR%\" --data-dir \"%DATA_DIR%\" --auto-prepare-data %AUTO_PREPARE_DATA%"
-if "%ENABLE_ALL%"=="1" set "PIPELINE_CMD=!PIPELINE_CMD! --enable-all"
-if "%ENABLE_XSR%"=="1" set "PIPELINE_CMD=!PIPELINE_CMD! --enable-xsr"
-if "%ENABLE_MAMBA%"=="1" set "PIPELINE_CMD=!PIPELINE_CMD! --enable-mamba"
-if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_CMD=!PIPELINE_CMD! --enable-mamba-periodic"
-if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_CMD=!PIPELINE_CMD! --enable-fedformer"
+set "PIPELINE_FLAGS="
+if "%ENABLE_ALL%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-all"
+if "%ENABLE_XSR%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-xsr"
+if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
+if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
+if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-fedformer"
 
-call :run "!PIPELINE_CMD!"
+call :run "%PYTHON_EXE%" tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed
 
 > "%OUTPUT_DIR%\DONE.txt" (
@@ -82,7 +86,7 @@ if errorlevel 1 goto :failed
 )
 
 if "%ZIP_ON_SUCCESS%"=="1" (
-  call :run "powershell -NoProfile -Command \"Compress-Archive -Path '%OUTPUT_DIR%','%LOG_DIR%' -DestinationPath '%ZIP_FILE%' -Force\""
+  call :run powershell -NoProfile -Command "Compress-Archive -Path '%OUTPUT_DIR%','%LOG_DIR%' -DestinationPath '%ZIP_FILE%' -Force"
   if errorlevel 1 goto :failed
 )
 
@@ -98,10 +102,10 @@ if defined ONE_DRIVE_RUNS_ROOT (
   goto :failed
 )
 
-call :run "mkdir \"%ONE_DEST%\""
+call :run mkdir "%ONE_DEST%"
 if errorlevel 1 goto :failed
 
-call :run "robocopy \"%OUTPUT_DIR%\" \"%ONE_DEST%\output\" /E /Z /R:2 /W:2"
+call :run robocopy "%OUTPUT_DIR%" "%ONE_DEST%\output" /E /Z /R:2 /W:2
 set "ROBO_RC=%LAST_EXIT%"
 if %ROBO_RC% GEQ 8 (
   echo [ERROR] robocopy output failed with code %ROBO_RC%>> "%LOG_FILE%"
@@ -110,7 +114,7 @@ if %ROBO_RC% GEQ 8 (
   goto :failed
 )
 
-call :run "robocopy \"%LOG_DIR%\" \"%ONE_DEST%\logs\" /E /Z /R:2 /W:2"
+call :run robocopy "%LOG_DIR%" "%ONE_DEST%\logs" /E /Z /R:2 /W:2
 set "ROBO_RC=%LAST_EXIT%"
 if %ROBO_RC% GEQ 8 (
   echo [ERROR] robocopy logs failed with code %ROBO_RC%>> "%LOG_FILE%"
@@ -120,7 +124,7 @@ if %ROBO_RC% GEQ 8 (
 )
 
 if "%ZIP_ON_SUCCESS%"=="1" if exist "%ZIP_FILE%" (
-  call :run "robocopy \"%RUN_DIR%\" \"%ONE_DEST%\" run_%RUN_ID%.zip /R:2 /W:2"
+  call :run robocopy "%RUN_DIR%" "%ONE_DEST%" run_%RUN_ID%.zip /R:2 /W:2
   set "ROBO_RC=%LAST_EXIT%"
   if %ROBO_RC% GEQ 8 (
     echo [ERROR] robocopy zip failed with code %ROBO_RC%>> "%LOG_FILE%"
@@ -142,7 +146,7 @@ if defined ONE_DRIVE_SNAPSHOTS_ROOT (
   goto :failed
 )
 
-call :run "mkdir \"%SNAPSHOT_ROOT%\""
+call :run mkdir "%SNAPSHOT_ROOT%"
 if errorlevel 1 goto :failed
 
 for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "SNAPSHOT_SHA=%%h"
@@ -156,9 +160,9 @@ if not defined SNAPSHOT_SHA (
 set "SNAPSHOT_ZIP=%SNAPSHOT_ROOT%\repo_%SNAPSHOT_SHA%_%RUN_ID%.zip"
 if exist "%SNAPSHOT_ZIP%" del /f /q "%SNAPSHOT_ZIP%" >nul 2>&1
 
-call :run "git archive --format=zip --output=\"%SNAPSHOT_ZIP%\" HEAD"
+call :run git archive --format=zip --output="%SNAPSHOT_ZIP%" HEAD
 if errorlevel 1 (
-  call :run "powershell -NoProfile -Command \"Compress-Archive -Path '%REPO_ROOT%\*' -DestinationPath '%SNAPSHOT_ZIP%' -Force\""
+  call :run powershell -NoProfile -Command "Compress-Archive -Path '%REPO_ROOT%\*' -DestinationPath '%SNAPSHOT_ZIP%' -Force"
   if errorlevel 1 goto :failed
 )
 
@@ -179,16 +183,20 @@ popd >nul
 exit /b 0
 
 :run
-set "LAST_CMD=%~1"
+set "LAST_CMD=%*"
 echo.>> "%LOG_FILE%"
-echo [CMD] %~1>> "%LOG_FILE%"
-cmd /d /v:off /c "%~1" >> "%LOG_FILE%" 2>&1
+echo [CMD] %*>> "%LOG_FILE%"
+%* >> "%LOG_FILE%" 2>&1
 set "LAST_EXIT=%ERRORLEVEL%"
 echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
 if %LAST_EXIT% GEQ 1 exit /b %LAST_EXIT%
 exit /b 0
 
 :failed
+set "_LAST_EXIT_NUM=%LAST_EXIT%"
+for /f "delims=0123456789-" %%A in ("%_LAST_EXIT_NUM%") do set "_LAST_EXIT_NUM=-1"
+if not defined _LAST_EXIT_NUM set "_LAST_EXIT_NUM=-1"
+set "LAST_EXIT=%_LAST_EXIT_NUM%"
 echo [FAILED] command=%LAST_CMD%>> "%LOG_FILE%"
 echo [FAILED] exit_code=%LAST_EXIT%>> "%LOG_FILE%"
 echo [FAILED] run_id=%RUN_ID%>> "%LOG_FILE%"
