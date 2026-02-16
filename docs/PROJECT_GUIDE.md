@@ -116,9 +116,11 @@ The tree below was generated from the current repository state (depth-limited).
 1. **Checkout** repo (`actions/checkout@v4`).
 2. **Debug shells** (cmd): confirms `powershell`, optionally `pwsh`.
    - `pwsh` missing is treated as acceptable (`pwsh_not_found (OK)`).
-3. **Run desktop BAT** in PowerShell with ExecutionPolicy Bypass:
+3. **Run desktop BAT** in PowerShell (`-NoProfile -ExecutionPolicy Bypass`):
    - invokes `cmd /c scripts\run_all_local_then_copy.bat`
    - captures full console output to `%RUNNER_TEMP%\run_all_local_then_copy_console.log`
+   - BAT logs non-fatal python diagnostics before execution (`where python`, `python --version`)
+   - BAT normalizes malformed escaped quotes in `PYTHON_EXE` (e.g., `\"python\"` -> `python`)
 4. **BAT internal execution** (`run_all_local_then_copy.bat`):
    - loads defaults from `scripts\bat_config.bat`
    - creates run folder structure under `%WORK_ROOT%\<run_id>`
@@ -135,12 +137,10 @@ The tree below was generated from the current repository state (depth-limited).
    - extracts `run_id` from console log
    - resolves run folder under `C:\work\apex_work\runs`
    - sets outputs `log_glob` + `zip_path`
-6. **Upload artifacts** (`actions/upload-artifact@v4`):
+6. **Stage + upload artifacts** (`actions/upload-artifact@v4`):
    - artifact name: `desktop-run-${{ run_id || github.run_id }}`
-   - uploads:
-     - runner console log
-     - run logs glob
-     - run zip
+   - workflow first copies required files to `%RUNNER_TEMP%\desktop_artifacts`
+   - upload step uses a single rooted path (`%RUNNER_TEMP%\desktop_artifacts\**`) to avoid mixed-root `rootDirectory` failures
 
 ---
 
@@ -205,10 +205,12 @@ Snapshot zip naming:
 
 ## GitHub Actions artifacts
 - Artifact name pattern: `desktop-run-<run_id>` (fallback `desktop-run-<github.run_id>`)
-- Uploaded paths:
-  - `%RUNNER_TEMP%\run_all_local_then_copy_console.log`
-  - `<run_dir>\logs\run_*.log`
-  - `<run_dir>\run_<run_id>.zip`
+- Staging root: `%RUNNER_TEMP%\desktop_artifacts`
+- Uploaded path: `%RUNNER_TEMP%\desktop_artifacts\**`
+- Staged files:
+  - `run_all_local_then_copy_console.log`
+  - `run_<run_id>.log`
+  - `run_<run_id>.zip`
 
 ---
 
@@ -235,7 +237,7 @@ Treat these as generated/runtime artifacts:
 
 ## PowerShell policy notes
 - Current workflow uses:
-  - `shell: powershell -ExecutionPolicy Bypass -Command "{0}"`
+  - `shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"`
 - Preferred hardened style for new/edited workflow steps:
   - `powershell -NoProfile -ExecutionPolicy Bypass -Command "..."`
   - (NoProfile reduces profile-side side effects.)
@@ -263,7 +265,7 @@ Treat these as generated/runtime artifacts:
 
 - Mitigation for workflow/local automation:
   - use `powershell -NoProfile -ExecutionPolicy Bypass -Command "..."`
-- Existing workflow already applies `-ExecutionPolicy Bypass`; adding `-NoProfile` is recommended for future edits.
+- Existing workflow already applies `-NoProfile -ExecutionPolicy Bypass`.
 
 ## 6.4 OneDrive path/permission/encoding/long-path issues
 **Symptoms:** `robocopy` return code `>=8`, copy failures, path encoding problems.
@@ -308,4 +310,3 @@ Before changing orchestration:
 - Re-run at least:
   - `python -m py_compile $(git ls-files '*.py')` (or CI)
   - a local dry run (`scripts\doctor.bat`) on Windows host
-
