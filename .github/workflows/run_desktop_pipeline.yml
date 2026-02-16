@@ -80,6 +80,14 @@ jobs:
           )
           exit /b 0
 
+      - name: Debug python environment
+        shell: cmd
+        run: |
+          where python
+          python --version
+          echo RUNNER_TEMP=%RUNNER_TEMP%
+          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
+
       - name: Run desktop BAT
         id: run_bat
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -92,6 +100,14 @@ jobs:
           INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
+          RUN_MODE: ${{ inputs.mode }}
+          SYMBOLS: ${{ inputs.symbols }}
+          DATA_START: ${{ inputs.start }}
+          DATA_END: ${{ inputs.end }}
+          TEST_START: ${{ inputs.test_start }}
+          TRAIN_YEARS: ${{ inputs.train_years }}
+          TEST_MONTHS: ${{ inputs.test_months }}
+          PYTHON_EXE: python
         run: |
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
           cmd /c scripts\run_all_local_then_copy.bat 2>&1 | Tee-Object -FilePath $consoleLog
@@ -99,6 +115,21 @@ jobs:
 
           if ($exitCode -ne 0) {
             exit $exitCode
+          }
+
+      - name: Stage console log in workspace
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $workspaceTemp = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $workspaceConsoleLog = Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'
+          if (Test-Path $consoleLog) {
+            Copy-Item -Path $consoleLog -Destination $workspaceConsoleLog -Force
+            Write-Host "Staged console log: $workspaceConsoleLog"
+          } else {
+            Write-Warning "Console log not found at: $consoleLog"
           }
 
       - name: Resolve latest run artifacts
@@ -155,10 +186,10 @@ jobs:
         id: stage_artifacts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $artifactRoot = Join-Path $env:RUNNER_TEMP 'desktop_artifacts'
+          $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
           $null = New-Item -Path $artifactRoot -ItemType Directory -Force
 
-          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
           if (Test-Path $consoleLog) {
             Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
           }
