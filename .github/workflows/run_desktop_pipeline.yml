@@ -82,7 +82,7 @@ jobs:
 
       - name: Run desktop BAT
         id: run_bat
-        shell: powershell -ExecutionPolicy Bypass -Command "{0}"
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
@@ -104,7 +104,7 @@ jobs:
       - name: Resolve latest run artifacts
         if: always()
         id: resolve_artifacts
-        shell: powershell -ExecutionPolicy Bypass -Command "{0}"
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $workRoot = 'C:\work\apex_work\runs'
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
@@ -142,10 +142,39 @@ jobs:
           if ($runDir) {
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
+            $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
             "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "run_dir=$($runDir.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host "Resolved run directory: $($runDir.FullName)"
           }
+
+      - name: Stage run artifacts
+        if: always()
+        id: stage_artifacts
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'desktop_artifacts'
+          $null = New-Item -Path $artifactRoot -ItemType Directory -Force
+
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          if (Test-Path $consoleLog) {
+            Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
+          }
+
+          $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ($runLog -and (Test-Path $runLog)) {
+            Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot (Split-Path -Path $runLog -Leaf)) -Force
+          }
+
+          $zipPath = '${{ steps.resolve_artifacts.outputs.zip_path }}'
+          if ($zipPath -and (Test-Path $zipPath)) {
+            Copy-Item -Path $zipPath -Destination (Join-Path $artifactRoot (Split-Path -Path $zipPath -Leaf)) -Force
+          }
+
+          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Staged artifacts under: $artifactRoot"
 
       - name: Upload run artifacts
         if: always()
@@ -153,7 +182,4 @@ jobs:
         with:
           name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: |
-            ${{ runner.temp }}\run_all_local_then_copy_console.log
-            ${{ steps.resolve_artifacts.outputs.log_glob }}
-            ${{ steps.resolve_artifacts.outputs.zip_path }}
+          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**

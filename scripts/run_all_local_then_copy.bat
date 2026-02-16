@@ -8,6 +8,12 @@ pushd "%REPO_ROOT%" >nul || (echo [ERROR] failed to enter repo root & exit /b 2)
 
 if exist "%SCRIPT_DIR%bat_config.bat" call "%SCRIPT_DIR%bat_config.bat"
 
+rem Normalize malformed escaped quotes from runner/env overrides (e.g. \"python\")
+set "PYTHON_EXE=%PYTHON_EXE:\\"=%"
+if defined PYTHON_EXE if "%PYTHON_EXE:~0,1%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~1%"
+if defined PYTHON_EXE if "%PYTHON_EXE:~-1%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~0,-1%"
+if not defined PYTHON_EXE set "PYTHON_EXE=python"
+
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_ID=%%i"
 if not defined RUN_ID (
   echo [ERROR] failed to generate run_id
@@ -48,7 +54,8 @@ if errorlevel 1 goto :failed
 
 rem --- diagnostics (non-fatal): python resolution/version for runner troubleshooting ---
 call :run where python
-call :run "%PYTHON_EXE%" -V
+call :run python --version
+call :run "%PYTHON_EXE%" --version
 
 if /i "%GITHUB_ACTIONS%"=="true" goto :skip_git_sync
 
