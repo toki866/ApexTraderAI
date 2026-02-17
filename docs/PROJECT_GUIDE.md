@@ -126,8 +126,8 @@ The tree below was generated from the current repository state (depth-limited).
    - creates run folder structure under `%WORK_ROOT%\<run_id>`
    - logs commit and all executed commands
    - runs:
-     - `python tools\prepare_data.py ... --data-dir <RUN_DIR>\data`
-     - `python tools\run_pipeline.py ... --output-root <RUN_DIR>\output --data-dir <RUN_DIR>\data`
+     - `python tools\run_with_python.py tools\prepare_data.py ... --data-dir <RUN_DIR>\data`
+     - `python tools\run_with_python.py tools\run_pipeline.py ... --output-root <RUN_DIR>\output --data-dir <RUN_DIR>\data`
    - writes `DONE.txt` under output
    - creates zip `run_<run_id>.zip` containing output + logs (via `Compress-Archive`)
    - copies output/logs/zip to OneDrive run destination (`robocopy`)
@@ -139,8 +139,8 @@ The tree below was generated from the current repository state (depth-limited).
    - sets outputs `log_glob` + `zip_path`
 6. **Stage + upload artifacts** (`actions/upload-artifact@v4`):
    - artifact name: `desktop-run-${{ run_id || github.run_id }}`
-   - workflow first copies required files to `%RUNNER_TEMP%\desktop_artifacts`
-   - upload step uses a single rooted path (`%RUNNER_TEMP%\desktop_artifacts\**`) to avoid mixed-root `rootDirectory` failures
+   - workflow first copies required files to `%GITHUB_WORKSPACE%\temp\desktop_artifacts`
+   - upload step uses a single rooted path (`%GITHUB_WORKSPACE%\temp\desktop_artifacts\**`) to avoid mixed-root `rootDirectory` failures
 
 ---
 
@@ -205,8 +205,8 @@ Snapshot zip naming:
 
 ## GitHub Actions artifacts
 - Artifact name pattern: `desktop-run-<run_id>` (fallback `desktop-run-<github.run_id>`)
-- Staging root: `%RUNNER_TEMP%\desktop_artifacts`
-- Uploaded path: `%RUNNER_TEMP%\desktop_artifacts\**`
+- Staging root: `%GITHUB_WORKSPACE%\temp\desktop_artifacts`
+- Uploaded path: `%GITHUB_WORKSPACE%\temp\desktop_artifacts\**`
 - Staged files:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`

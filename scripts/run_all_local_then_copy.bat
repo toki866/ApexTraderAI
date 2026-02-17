@@ -9,7 +9,10 @@ pushd "%REPO_ROOT%" >nul || (echo [ERROR] failed to enter repo root & exit /b 2)
 if exist "%SCRIPT_DIR%bat_config.bat" call "%SCRIPT_DIR%bat_config.bat"
 
 rem Normalize malformed escaped quotes from runner/env overrides (e.g. \"python\")
+set "PYTHON_EXE=%PYTHON_EXE:\"=%"
 set "PYTHON_EXE=%PYTHON_EXE:\\"=%"
+if defined PYTHON_EXE if "%PYTHON_EXE:~0,2%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~2%"
+if defined PYTHON_EXE if "%PYTHON_EXE:~-2%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~0,-2%"
 if defined PYTHON_EXE if "%PYTHON_EXE:~0,1%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~1%"
 if defined PYTHON_EXE if "%PYTHON_EXE:~-1%"=="\"" set "PYTHON_EXE=%PYTHON_EXE:~0,-1%"
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
@@ -73,7 +76,7 @@ if errorlevel 1 goto :failed
 
 :skip_git_sync
 
-call :run "%PYTHON_EXE%" tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
+call :run "%PYTHON_EXE%" tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
 set "PIPELINE_FLAGS="
@@ -83,7 +86,7 @@ if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-fedformer"
 
-call :run "%PYTHON_EXE%" tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
+call :run "%PYTHON_EXE%" tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed
 
 > "%OUTPUT_DIR%\DONE.txt" (
@@ -193,8 +196,9 @@ exit /b 0
 set "LAST_CMD=%*"
 echo.>> "%LOG_FILE%"
 echo [CMD] %*>> "%LOG_FILE%"
-%* >> "%LOG_FILE%" 2>&1
-set "LAST_EXIT=%ERRORLEVEL%"
+call %* >> "%LOG_FILE%" 2>&1
+set "LAST_EXIT=!ERRORLEVEL!"
+if not defined LAST_EXIT set "LAST_EXIT=-1"
 echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
 if %LAST_EXIT% GEQ 1 exit /b %LAST_EXIT%
 exit /b 0
