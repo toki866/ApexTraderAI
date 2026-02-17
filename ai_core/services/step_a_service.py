@@ -65,6 +65,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from ai_core.utils.paths import get_repo_root
+
 
 @dataclass
 class _Cfg:
@@ -98,9 +100,13 @@ class StepAService:
         cfg = app_config
         if isinstance(app_config, dict) and "app_config" in app_config:
             cfg = app_config.get("app_config")
+        cfg_data_root = _get_attr(cfg, "data_root", None)
+        if cfg_data_root is None:
+            cfg_data = _get_attr(cfg, "data", None)
+            cfg_data_root = _get_attr(cfg_data, "data_root", None)
         self.cfg = _Cfg(
             output_root=str(_get_attr(cfg, "output_root", kwargs.get("output_root", "output"))),
-            data_root=str(_get_attr(cfg, "data_root", kwargs.get("data_root", "data"))),
+            data_root=str(cfg_data_root if cfg_data_root is not None else kwargs.get("data_root", "data")),
         )
 
     # -------------------------
@@ -117,7 +123,8 @@ class StepAService:
         # Purge legacy combined files to prevent accidental training
         self._purge_combined_files(out_dir_mode, symbol)
 
-        src_csv = Path(self.cfg.data_root) / f"prices_{symbol}.csv"
+        src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
+        print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
         if not src_csv.exists():
             raise FileNotFoundError(f"StepA: missing source price CSV: {src_csv}")
 
@@ -338,6 +345,40 @@ class StepAService:
 
         # Should never reach
         raise RuntimeError(f"StepA: unreachable mode={mode}")
+
+    def _resolve_src_csv(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> Path:
+        """Resolve source CSV using explicit data_dir/data_root first, then fallback to repo/data."""
+        candidate_roots: List[Path] = []
+
+        for key in ("data_dir", "data_root"):
+            v = kwargs.get(key)
+            if v:
+                candidate_roots.append(Path(v))
+
+        for key in ("data_dir", "data_root"):
+            v = _get_attr(date_range, key, None)
+            if v:
+                candidate_roots.append(Path(v))
+
+        cfg_data_root = _get_attr(self.cfg, "data_root", None)
+        if cfg_data_root:
+            candidate_roots.append(Path(cfg_data_root))
+
+        fallback_repo_data = get_repo_root() / "data"
+        candidate_roots.append(fallback_repo_data)
+
+        seen: set[str] = set()
+        for root in candidate_roots:
+            normalized = root.resolve()
+            if str(normalized) in seen:
+                continue
+            seen.add(str(normalized))
+            src_csv = normalized / f"prices_{symbol}.csv"
+            if src_csv.exists():
+                return src_csv
+
+        preferred_root = candidate_roots[0].resolve() if candidate_roots else fallback_repo_data
+        return preferred_root / f"prices_{symbol}.csv"
 
     # -------------------------
     # Internals: purge combined files

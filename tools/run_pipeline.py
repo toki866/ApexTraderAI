@@ -706,12 +706,22 @@ def _get_app_config(repo_root: Path):
 
 def _run_stepA(app_config, symbol: str, date_range):
     from ai_core.services.step_a_service import StepAService
+
+    cfg_data_root = getattr(app_config, "data_root", None)
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
+
     ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
     svc = _instantiate_service(StepAService, ctx)
     fn = getattr(svc, "run", None)
     if fn is None:
         raise RuntimeError("StepAService has no run()")
-    return _call_with_best_effort(fn, ctx)
+
+    # StepA must honor --data-dir on self-hosted runners where repo/data may not exist.
+    if cfg_data_root is not None:
+        return fn(symbol=symbol, date_range=date_range, data_dir=str(cfg_data_root), data_root=str(cfg_data_root))
+    return fn(symbol=symbol, date_range=date_range)
 
 
 
@@ -988,12 +998,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception:
             app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
 
-    resolved_data_root = Path(args.data_dir) if args.data_dir else Path(getattr(app_config, "data_root", repo_root / "data"))
+    cfg_data_root = getattr(app_config, "data_root", None)
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
+    resolved_data_root = Path(args.data_dir) if args.data_dir else Path(cfg_data_root or (repo_root / "data"))
     if isinstance(app_config, dict):
         app_config["data_root"] = str(resolved_data_root)
     else:
         try:
             setattr(app_config, "data_root", str(resolved_data_root))
+            cfg_data = getattr(app_config, "data", None)
+            if cfg_data is not None:
+                setattr(cfg_data, "data_root", resolved_data_root)
         except Exception:
             app_config = _ConfigShim(app_config, data_root=str(resolved_data_root))
 
