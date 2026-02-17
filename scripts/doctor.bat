@@ -22,11 +22,19 @@ git rev-parse --short HEAD >> "%LOG_FILE%" 2>&1
 
 echo [doctor] python version:
 echo [doctor] python version:>> "%LOG_FILE%"
-%PYTHON_EXE% --version >> "%LOG_FILE%" 2>&1
+if defined PYTHON_EXE (
+  "%PYTHON_EXE%" --version >> "%LOG_FILE%" 2>&1
+) else (
+  python --version >> "%LOG_FILE%" 2>&1
+)
 
 echo [doctor] torch/cuda:
 echo [doctor] torch/cuda:>> "%LOG_FILE%"
-%PYTHON_EXE% -c "import torch;print('torch',torch.__version__);print('cuda_available',torch.cuda.is_available());print('cuda_device_count',torch.cuda.device_count())" >> "%LOG_FILE%" 2>&1
+if defined PYTHON_EXE (
+  "%PYTHON_EXE%" -c "import torch;print('torch',torch.__version__);print('cuda_available',torch.cuda.is_available());print('cuda_device_count',torch.cuda.device_count())" >> "%LOG_FILE%" 2>&1
+) else (
+  python -c "import torch;print('torch',torch.__version__);print('cuda_available',torch.cuda.is_available());print('cuda_device_count',torch.cuda.device_count())" >> "%LOG_FILE%" 2>&1
+)
 
 echo [doctor] expected data files:
 echo [doctor] expected data files:>> "%LOG_FILE%"

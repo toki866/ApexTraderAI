@@ -128,10 +128,44 @@ jobs:
           }
 
           $null = New-Item -Path $consoleLog -ItemType File -Force
-          & $bat 2>&1 | Tee-Object -FilePath $consoleLog
+
+          Write-Host '=== Python diagnostics (before BAT) ==='
+          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append
+          & python --version 2>&1 | Tee-Object -FilePath $consoleLog -Append
+          Write-Host '=== PATH (before BAT) ==='
+          Write-Host $env:PATH
+          Add-Content -Path $consoleLog -Value ('[PATH] ' + $env:PATH)
+
+          & $bat 2>&1 | Tee-Object -FilePath $consoleLog -Append
           $rc = $LASTEXITCODE
           Write-Host "[RC]=$rc"
-          exit $rc
+          Add-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)
+
+          if ($rc -ne 0) {
+            Write-Warning "Run desktop BAT failed with rc=$rc"
+            $workRoot = 'C:\work\apex_work\runs'
+            $runDir = $null
+            if (Test-Path $workRoot) {
+              $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            }
+
+            if ($runDir) {
+              $runLog = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
+              Write-Host ("Latest run_dir={0}" -f $runDir.FullName)
+              Write-Host ("Expected run_log={0}" -f $runLog)
+              if (Test-Path $runLog) {
+                Write-Host '=== tail run_*.log (260 lines) ==='
+                Get-Content -Path $runLog -Tail 260
+              } else {
+                Write-Warning ("run log not found: {0}" -f $runLog)
+              }
+            } else {
+              Write-Warning ("No run directories found under {0}" -f $workRoot)
+            }
+            exit $rc
+          }
+
+          exit 0
 
       - name: Stage console log in workspace
         if: always()
@@ -211,8 +245,21 @@ jobs:
           }
 
           $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ((-not $runLog) -or (-not (Test-Path $runLog))) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if ($runDir -and (Test-Path $runDir)) {
+              $latestRunLog = Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestRunLog) {
+                $runLog = $latestRunLog.FullName
+              }
+            }
+          }
+
           if ($runLog -and (Test-Path $runLog)) {
             Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot (Split-Path -Path $runLog -Leaf)) -Force
+            Write-Host "Staged run log: $runLog"
+          } else {
+            Write-Warning 'Run log was not found for artifact staging.'
           }
 
           $zipPath = '${{ steps.resolve_artifacts.outputs.zip_path }}'
