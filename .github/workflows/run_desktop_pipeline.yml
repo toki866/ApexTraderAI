@@ -109,8 +109,23 @@ jobs:
           TEST_MONTHS: ${{ inputs.test_months }}
           PYTHON_EXE: python
         run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          $bat = Join-Path $env:GITHUB_WORKSPACE 'scripts\run_all_local_then_copy.bat'
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-          cmd /c scripts\run_all_local_then_copy.bat 2>&1 | Tee-Object -FilePath $consoleLog
+
+          Write-Host '=== Run desktop BAT preflight ==='
+          Write-Host 'pwd:'
+          pwd
+          Write-Host 'dir scripts:'
+          cmd.exe /d /c dir scripts
+          Write-Host 'where python:'
+          & where.exe python 2>&1 | ForEach-Object { Write-Host $_ }
+          Write-Host 'python --version:'
+          python --version
+          Write-Host ("bat path: {0}" -f $bat)
+
+          $null = New-Item -Path $consoleLog -ItemType File -Force
+          & $bat 2>&1 | Tee-Object -FilePath $consoleLog
           $exitCode = $LASTEXITCODE
 
           if ($exitCode -ne 0) {
