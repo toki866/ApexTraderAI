@@ -198,6 +198,12 @@ jobs:
             Write-Warning "Console log not found at: $consoleLog"
           }
 
+      - name: Package diagnostics to OneDrive (always)
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1
+
       - name: Tail latest run log on failure
         if: failure()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -314,3 +320,11 @@ jobs:
           name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          if-no-files-found: warn
+          path: _diagnostics/**/*
