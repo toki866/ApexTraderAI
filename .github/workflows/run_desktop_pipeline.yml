@@ -109,28 +109,29 @@ jobs:
           TEST_MONTHS: ${{ inputs.test_months }}
           PYTHON_EXE: python
         run: |
+          $ErrorActionPreference = 'Stop'
           Set-Location $env:GITHUB_WORKSPACE
-          $bat = Join-Path $env:GITHUB_WORKSPACE 'scripts\run_all_local_then_copy.bat'
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $bat = Join-Path $env:GITHUB_WORKSPACE 'scripts\run_all_local_then_copy.bat'
 
           Write-Host '=== Run desktop BAT preflight ==='
-          Write-Host 'pwd:'
-          pwd
-          Write-Host 'dir scripts:'
-          cmd.exe /d /c dir scripts
-          Write-Host 'where python:'
-          & where.exe python 2>&1 | ForEach-Object { Write-Host $_ }
-          Write-Host 'python --version:'
-          python --version
-          Write-Host ("bat path: {0}" -f $bat)
+          Write-Host "PWD=$PWD"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'scripts') | Select-Object Name
+          & where.exe python 2>$null
+          Write-Host ("BAT path: {0}" -f $bat)
+
+          if (!(Test-Path $bat)) {
+            Write-Error "BAT not found: $bat"
+            exit 1
+          }
 
           $null = New-Item -Path $consoleLog -ItemType File -Force
           & $bat 2>&1 | Tee-Object -FilePath $consoleLog
-          $exitCode = $LASTEXITCODE
-
-          if ($exitCode -ne 0) {
-            exit $exitCode
-          }
+          $rc = $LASTEXITCODE
+          Write-Host "[RC]=$rc"
+          exit $rc
 
       - name: Stage console log in workspace
         if: always()
