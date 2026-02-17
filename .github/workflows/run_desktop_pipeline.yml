@@ -88,6 +88,22 @@ jobs:
           echo RUNNER_TEMP=%RUNNER_TEMP%
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
 
+      - name: Runner connectivity and host status
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          Write-Host '=== Runner connectivity / host status ==='
+          whoami
+          hostname
+          Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "GITHUB_WORKFLOW=$env:GITHUB_WORKFLOW"
+          Write-Host "GITHUB_RUN_ID=$env:GITHUB_RUN_ID"
+          Get-Process | Where-Object { $_.Name -like '*Runner*' } |
+            Select-Object Name, Id, StartTime |
+            Format-Table -AutoSize
+
       - name: Run desktop BAT
         id: run_bat
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -182,6 +198,23 @@ jobs:
             Write-Warning "Console log not found at: $consoleLog"
           }
 
+      - name: Tail latest run log on failure
+        if: failure()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $workRoot = 'C:\work\apex_work\runs'
+          $latestRunLog = Get-ChildItem -Path (Join-Path $workRoot '*\logs\run_*.log') -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if ($latestRunLog) {
+            Write-Host ("=== latest run log: {0} ===" -f $latestRunLog.FullName)
+            Write-Host '=== tail run_*.log (200 lines) ==='
+            Get-Content -Path $latestRunLog.FullName -Tail 200
+          } else {
+            Write-Warning ("No run_*.log found under {0}" -f $workRoot)
+          }
+
       - name: Resolve latest run artifacts
         if: always()
         id: resolve_artifacts
@@ -238,6 +271,8 @@ jobs:
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
           $null = New-Item -Path $artifactRoot -ItemType Directory -Force
+          $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
+          $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
 
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
           if (Test-Path $consoleLog) {
@@ -256,7 +291,9 @@ jobs:
           }
 
           if ($runLog -and (Test-Path $runLog)) {
-            Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot (Split-Path -Path $runLog -Leaf)) -Force
+            $runLogName = Split-Path -Path $runLog -Leaf
+            Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot $runLogName) -Force
+            Copy-Item -Path $runLog -Destination (Join-Path $workspaceLogRoot $runLogName) -Force
             Write-Host "Staged run log: $runLog"
           } else {
             Write-Warning 'Run log was not found for artifact staging.'
