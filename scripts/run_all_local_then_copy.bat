@@ -9,9 +9,6 @@ pushd "%REPO_ROOT%" >nul || (echo [ERROR] failed to enter repo root & exit /b 2)
 if exist "%SCRIPT_DIR%bat_config.bat" call "%SCRIPT_DIR%bat_config.bat"
 
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
-set "PYTHON_EXE=%PYTHON_EXE:\"=%"
-set "PYTHON_EXE=%PYTHON_EXE:\\"=%"
-if not defined PYTHON_EXE set "PYTHON_EXE=python"
 
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_ID=%%i"
 if not defined RUN_ID (
@@ -54,9 +51,7 @@ if errorlevel 1 goto :failed
 rem --- diagnostics (non-fatal): python resolution/version for runner troubleshooting ---
 call :run where python
 call :run python --version
-call :resolve_python
-if errorlevel 1 goto :failed
-call :run %PYTHON_CMD% %PYTHON_ARGS% --version
+call :run_python --version
 if errorlevel 1 goto :failed
 
 if /i "%GITHUB_ACTIONS%"=="true" goto :skip_git_sync
@@ -75,7 +70,7 @@ if errorlevel 1 goto :failed
 
 :skip_git_sync
 
-call :run %PYTHON_CMD% %PYTHON_ARGS% tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
+call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
 set "PIPELINE_FLAGS="
@@ -85,7 +80,7 @@ if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-fedformer"
 
-call :run %PYTHON_CMD% %PYTHON_ARGS% tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
+call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps %STEPS% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed
 
 > "%OUTPUT_DIR%\DONE.txt" (
@@ -206,40 +201,13 @@ echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
 if %LAST_EXIT% GEQ 1 exit /b %LAST_EXIT%
 exit /b 0
 
-:resolve_python
-set "PYTHON_CMD="
-set "PYTHON_ARGS="
-set "_PYTHON_CANDIDATE=%PYTHON_EXE%"
-if not defined _PYTHON_CANDIDATE set "_PYTHON_CANDIDATE=python"
-
-if exist "%_PYTHON_CANDIDATE%" (
-  set "PYTHON_CMD=""%_PYTHON_CANDIDATE%"""
-  exit /b 0
+:run_python
+if defined PYTHON_EXE (
+  call :run "%PYTHON_EXE%" %*
+) else (
+  call :run python %*
 )
-
-where "%_PYTHON_CANDIDATE%" >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-  set "PYTHON_CMD=%_PYTHON_CANDIDATE%"
-  exit /b 0
-)
-
-where python >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-  set "PYTHON_CMD=python"
-  exit /b 0
-)
-
-where py >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-  set "PYTHON_CMD=py"
-  set "PYTHON_ARGS=-3"
-  exit /b 0
-)
-
-echo [ERROR] python executable not found. tried "%_PYTHON_CANDIDATE%", "python", and "py -3".>> "%LOG_FILE%"
-set "LAST_CMD=resolve python executable"
-set "LAST_EXIT=127"
-exit /b 127
+exit /b %ERRORLEVEL%
 
 :failed
 set "_LAST_EXIT_NUM=%LAST_EXIT%"
