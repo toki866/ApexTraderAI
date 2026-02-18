@@ -284,7 +284,11 @@ class StepBService:
         cand_dirs.extend([step_a_root / "sim", step_a_root / "live", step_a_root / "ops", step_a_root, out_root])
 
         # Final fallback: allow raw prices under config.data_dir/data_root.
-        data_root = getattr(getattr(self.app_config, "data", None), "data_dir", None)
+        data_root = getattr(self.app_config, "data_dir", None)
+        if data_root is None:
+            data_root = getattr(self.app_config, "data_root", None)
+        if data_root is None:
+            data_root = getattr(getattr(self.app_config, "data", None), "data_dir", None)
         if data_root is None:
             data_root = getattr(getattr(self.app_config, "data", None), "data_root", None)
         if data_root:

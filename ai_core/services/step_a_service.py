@@ -135,15 +135,23 @@ class StepAService:
         print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
         if not src_csv.exists():
             data_dir_abs = self._configured_data_root(kwargs=kwargs).resolve()
+            configured_data_dir = (
+                kwargs.get("data_dir", None)
+                or kwargs.get("data_root", None)
+                or _get_attr(self.cfg, "data_dir", None)
+                or _get_attr(self.cfg, "data_root", None)
+            )
             searched = self._list_price_csv_candidates(symbol=symbol, date_range=date_range, kwargs=kwargs)
             searched_text = "\n".join(f"  - {p.resolve()}" for p in searched)
             raise FileNotFoundError(
                 "StepA: missing source price CSV.\n"
                 f"expected_abs_path={src_csv.resolve()}\n"
+                f"config_data_dir={configured_data_dir}\n"
                 f"data_dir_abs={data_dir_abs}\n"
                 "searched_abs_paths:\n"
                 f"{searched_text}\n"
-                "resolution: run tools/prepare_data.py with the SAME --data-dir passed to tools/run_pipeline.py"
+                "resolution: run tools/prepare_data.py with the SAME --data-dir passed to tools/run_pipeline.py, "
+                "or review --data-dir/AppConfig.data_dir so StepA reads the correct location"
             )
 
         df = pd.read_csv(src_csv)
