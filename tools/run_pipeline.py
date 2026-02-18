@@ -302,9 +302,11 @@ def _prepare_missing_data_if_needed(
         print(f"[headless] data ready: {','.join(required_symbols)}")
         return
     if not auto_prepare_data:
+        searched = ", ".join(str(data_root / f"prices_{s}.csv") for s in missing)
         raise FileNotFoundError(
-            "Missing price CSV files and --auto-prepare-data=0 was set: "
-            + ", ".join(str(data_root / f"prices_{s}.csv") for s in missing)
+            "Missing price CSV files and --auto-prepare-data=0 was set. "
+            f"searched={searched}. "
+            "hint: run tools/prepare_data.py with the SAME --data-dir passed to tools/run_pipeline.py"
         )
 
     from tools.prepare_data import ensure_price_csvs
@@ -707,7 +709,12 @@ def _get_app_config(repo_root: Path):
 def _run_stepA(app_config, symbol: str, date_range):
     from ai_core.services.step_a_service import StepAService
 
-    cfg_data_root = getattr(app_config, "data_root", None)
+    cfg_data_root = getattr(app_config, "data_dir", None)
+    if cfg_data_root is None:
+        cfg_data_root = getattr(app_config, "data_root", None)
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
     if cfg_data_root is None:
         cfg_data = getattr(app_config, "data", None)
         cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
@@ -720,7 +727,8 @@ def _run_stepA(app_config, symbol: str, date_range):
 
     # StepA must honor --data-dir on self-hosted runners where repo/data may not exist.
     if cfg_data_root is not None:
-        return fn(symbol=symbol, date_range=date_range, data_dir=str(cfg_data_root), data_root=str(cfg_data_root))
+        resolved_data_dir = str(Path(cfg_data_root))
+        return fn(symbol=symbol, date_range=date_range, data_dir=resolved_data_dir, data_root=resolved_data_dir)
     return fn(symbol=symbol, date_range=date_range)
 
 
@@ -998,21 +1006,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception:
             app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
 
-    cfg_data_root = getattr(app_config, "data_root", None)
+    cfg_data_root = getattr(app_config, "data_dir", None)
+    if cfg_data_root is None:
+        cfg_data_root = getattr(app_config, "data_root", None)
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
     if cfg_data_root is None:
         cfg_data = getattr(app_config, "data", None)
         cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
     resolved_data_root = Path(args.data_dir) if args.data_dir else Path(cfg_data_root or (repo_root / "data"))
     if isinstance(app_config, dict):
+        app_config["data_dir"] = str(resolved_data_root)
         app_config["data_root"] = str(resolved_data_root)
     else:
         try:
+            setattr(app_config, "data_dir", str(resolved_data_root))
             setattr(app_config, "data_root", str(resolved_data_root))
             cfg_data = getattr(app_config, "data", None)
             if cfg_data is not None:
+                setattr(cfg_data, "data_dir", resolved_data_root)
                 setattr(cfg_data, "data_root", resolved_data_root)
         except Exception:
-            app_config = _ConfigShim(app_config, data_root=str(resolved_data_root))
+            app_config = _ConfigShim(app_config, data_dir=str(resolved_data_root), data_root=str(resolved_data_root))
 
     data_root = resolved_data_root
     env_horizon_list = _parse_int_list(args.env_horizons or args.env_horizon_days)
