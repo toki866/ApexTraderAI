@@ -71,6 +71,7 @@ from ai_core.utils.paths import get_repo_root
 @dataclass
 class _Cfg:
     output_root: str = "output"
+    data_dir: str = "data"
     data_root: str = "data"
 
 
@@ -100,13 +101,20 @@ class StepAService:
         cfg = app_config
         if isinstance(app_config, dict) and "app_config" in app_config:
             cfg = app_config.get("app_config")
-        cfg_data_root = _get_attr(cfg, "data_root", None)
-        if cfg_data_root is None:
+        cfg_data_dir = _get_attr(cfg, "data_dir", None)
+        if cfg_data_dir is None:
+            cfg_data_dir = _get_attr(cfg, "data_root", None)
+        if cfg_data_dir is None:
             cfg_data = _get_attr(cfg, "data", None)
-            cfg_data_root = _get_attr(cfg_data, "data_root", None)
+            cfg_data_dir = _get_attr(cfg_data, "data_dir", None)
+        if cfg_data_dir is None:
+            cfg_data = _get_attr(cfg, "data", None)
+            cfg_data_dir = _get_attr(cfg_data, "data_root", None)
+        resolved_data_dir = str(cfg_data_dir if cfg_data_dir is not None else kwargs.get("data_dir", kwargs.get("data_root", "data")))
         self.cfg = _Cfg(
             output_root=str(_get_attr(cfg, "output_root", kwargs.get("output_root", "output"))),
-            data_root=str(cfg_data_root if cfg_data_root is not None else kwargs.get("data_root", "data")),
+            data_dir=resolved_data_dir,
+            data_root=resolved_data_dir,
         )
 
     # -------------------------
@@ -126,7 +134,15 @@ class StepAService:
         src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
         print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
         if not src_csv.exists():
-            raise FileNotFoundError(f"StepA: missing source price CSV: {src_csv}")
+            searched = self._list_price_csv_candidates(symbol=symbol, date_range=date_range, kwargs=kwargs)
+            searched_text = "\n".join(f"  - {p}" for p in searched)
+            raise FileNotFoundError(
+                "StepA: missing source price CSV.\n"
+                f"expected={src_csv}\n"
+                "searched_paths:\n"
+                f"{searched_text}\n"
+                "hint: run tools/prepare_data.py with the SAME --data-dir passed to tools/run_pipeline.py"
+            )
 
         df = pd.read_csv(src_csv)
         df = self._normalize_prices(df)
@@ -347,7 +363,21 @@ class StepAService:
         raise RuntimeError(f"StepA: unreachable mode={mode}")
 
     def _resolve_src_csv(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> Path:
-        """Resolve source CSV using explicit data_dir/data_root first, then fallback to repo/data."""
+        """Resolve source CSV from config.data_dir/data_root and explicit overrides."""
+        candidate_roots = self._candidate_data_roots(date_range=date_range, kwargs=kwargs)
+
+        for root in candidate_roots:
+            src_csv = root / f"prices_{symbol}.csv"
+            if src_csv.exists():
+                return src_csv
+
+        preferred_root = candidate_roots[0] if candidate_roots else (get_repo_root() / "data").resolve()
+        return preferred_root / f"prices_{symbol}.csv"
+
+    def _list_price_csv_candidates(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
+        return [root / f"prices_{symbol}.csv" for root in self._candidate_data_roots(date_range=date_range, kwargs=kwargs)]
+
+    def _candidate_data_roots(self, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
         candidate_roots: List[Path] = []
 
         for key in ("data_dir", "data_root"):
@@ -360,25 +390,22 @@ class StepAService:
             if v:
                 candidate_roots.append(Path(v))
 
-        cfg_data_root = _get_attr(self.cfg, "data_root", None)
-        if cfg_data_root:
-            candidate_roots.append(Path(cfg_data_root))
+        cfg_data_dir = _get_attr(self.cfg, "data_dir", None) or _get_attr(self.cfg, "data_root", None)
+        if cfg_data_dir:
+            candidate_roots.append(Path(cfg_data_dir))
 
-        fallback_repo_data = get_repo_root() / "data"
-        candidate_roots.append(fallback_repo_data)
+        if not candidate_roots:
+            candidate_roots.append(get_repo_root() / "data")
 
         seen: set[str] = set()
+        deduped: List[Path] = []
         for root in candidate_roots:
             normalized = root.resolve()
             if str(normalized) in seen:
                 continue
             seen.add(str(normalized))
-            src_csv = normalized / f"prices_{symbol}.csv"
-            if src_csv.exists():
-                return src_csv
-
-        preferred_root = candidate_roots[0].resolve() if candidate_roots else fallback_repo_data
-        return preferred_root / f"prices_{symbol}.csv"
+            deduped.append(normalized)
+        return deduped
 
     # -------------------------
     # Internals: purge combined files

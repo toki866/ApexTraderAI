@@ -15,6 +15,15 @@ class DataConfig:
     output_root: Path
     symbols: List[str]
 
+    @property
+    def data_dir(self) -> Path:
+        """Alias for data_root used by CLI options such as --data-dir."""
+        return self.data_root
+
+    @data_dir.setter
+    def data_dir(self, value: str | Path) -> None:
+        self.data_root = resolve_repo_path(Path(value).expanduser())
+
 @dataclass
 class AppConfig:
     """Root class for application-wide settings."""
