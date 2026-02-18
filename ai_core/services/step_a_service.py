@@ -98,9 +98,9 @@ def _norm_date(ts: pd.Timestamp) -> pd.Timestamp:
 
 class StepAService:
     def __init__(self, app_config: Any = None, /, **kwargs: Any):
-        cfg = app_config
-        if isinstance(app_config, dict) and "app_config" in app_config:
-            cfg = app_config.get("app_config")
+        cfg = kwargs.get("app_config", app_config)
+        if isinstance(cfg, dict) and "app_config" in cfg:
+            cfg = cfg.get("app_config")
         cfg_data_dir = _get_attr(cfg, "data_dir", None)
         if cfg_data_dir is None:
             cfg_data_dir = _get_attr(cfg, "data_root", None)
@@ -135,11 +135,11 @@ class StepAService:
         print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
         if not src_csv.exists():
             searched = self._list_price_csv_candidates(symbol=symbol, date_range=date_range, kwargs=kwargs)
-            searched_text = "\n".join(f"  - {p}" for p in searched)
+            searched_text = "\n".join(f"  - {p.resolve()}" for p in searched)
             raise FileNotFoundError(
                 "StepA: missing source price CSV.\n"
-                f"expected={src_csv}\n"
-                "searched_paths:\n"
+                f"expected_abs_path={src_csv.resolve()}\n"
+                "searched_abs_paths:\n"
                 f"{searched_text}\n"
                 "hint: run tools/prepare_data.py with the SAME --data-dir passed to tools/run_pipeline.py"
             )
@@ -363,49 +363,18 @@ class StepAService:
         raise RuntimeError(f"StepA: unreachable mode={mode}")
 
     def _resolve_src_csv(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> Path:
-        """Resolve source CSV from config.data_dir/data_root and explicit overrides."""
-        candidate_roots = self._candidate_data_roots(date_range=date_range, kwargs=kwargs)
-
-        for root in candidate_roots:
-            src_csv = root / f"prices_{symbol}.csv"
-            if src_csv.exists():
-                return src_csv
-
-        preferred_root = candidate_roots[0] if candidate_roots else (get_repo_root() / "data").resolve()
-        return preferred_root / f"prices_{symbol}.csv"
+        """Resolve source CSV strictly from config.data_dir/data_root."""
+        data_root = self._configured_data_root()
+        return data_root / f"prices_{symbol}.csv"
 
     def _list_price_csv_candidates(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
-        return [root / f"prices_{symbol}.csv" for root in self._candidate_data_roots(date_range=date_range, kwargs=kwargs)]
+        return [self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)]
 
-    def _candidate_data_roots(self, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
-        candidate_roots: List[Path] = []
-
-        for key in ("data_dir", "data_root"):
-            v = kwargs.get(key)
-            if v:
-                candidate_roots.append(Path(v))
-
-        for key in ("data_dir", "data_root"):
-            v = _get_attr(date_range, key, None)
-            if v:
-                candidate_roots.append(Path(v))
-
+    def _configured_data_root(self) -> Path:
         cfg_data_dir = _get_attr(self.cfg, "data_dir", None) or _get_attr(self.cfg, "data_root", None)
         if cfg_data_dir:
-            candidate_roots.append(Path(cfg_data_dir))
-
-        if not candidate_roots:
-            candidate_roots.append(get_repo_root() / "data")
-
-        seen: set[str] = set()
-        deduped: List[Path] = []
-        for root in candidate_roots:
-            normalized = root.resolve()
-            if str(normalized) in seen:
-                continue
-            seen.add(str(normalized))
-            deduped.append(normalized)
-        return deduped
+            return Path(cfg_data_dir).expanduser().resolve()
+        return (get_repo_root() / "data").resolve()
 
     # -------------------------
     # Internals: purge combined files

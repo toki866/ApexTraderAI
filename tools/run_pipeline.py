@@ -709,15 +709,7 @@ def _get_app_config(repo_root: Path):
 def _run_stepA(app_config, symbol: str, date_range):
     from ai_core.services.step_a_service import StepAService
 
-    cfg_data_root = getattr(app_config, "data_dir", None)
-    if cfg_data_root is None:
-        cfg_data_root = getattr(app_config, "data_root", None)
-    if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
-    if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
+    cfg_data_root = _read_config_data_dir(app_config)
 
     ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
     svc = _instantiate_service(StepAService, ctx)
@@ -727,9 +719,52 @@ def _run_stepA(app_config, symbol: str, date_range):
 
     # StepA must honor --data-dir on self-hosted runners where repo/data may not exist.
     if cfg_data_root is not None:
-        resolved_data_dir = str(Path(cfg_data_root))
+        resolved_data_dir = str(cfg_data_root)
         return fn(symbol=symbol, date_range=date_range, data_dir=resolved_data_dir, data_root=resolved_data_dir)
     return fn(symbol=symbol, date_range=date_range)
+
+
+def _read_config_data_dir(app_config: Any) -> Optional[Path]:
+    """Best-effort read of AppConfig data root (data_dir/data_root)."""
+    cfg_data_root = getattr(app_config, "data_dir", None)
+    if cfg_data_root is None:
+        cfg_data_root = getattr(app_config, "data_root", None)
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
+    if cfg_data_root is None:
+        cfg_data = getattr(app_config, "data", None)
+        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
+    return Path(cfg_data_root).expanduser().resolve() if cfg_data_root is not None else None
+
+
+def _resolve_cli_data_dir(repo_root: Path, cli_data_dir: Optional[str]) -> Path:
+    """Resolve --data-dir with backward-compatible default (repo_root/data)."""
+    if cli_data_dir:
+        data_dir = Path(cli_data_dir).expanduser()
+        if not data_dir.is_absolute():
+            data_dir = repo_root / data_dir
+        return data_dir.resolve()
+    return (repo_root / "data").resolve()
+
+
+def _apply_config_data_dir(app_config: Any, data_root: Path) -> Any:
+    """Write data_dir/data_root onto AppConfig and nested data config (best-effort)."""
+    if isinstance(app_config, dict):
+        app_config["data_dir"] = str(data_root)
+        app_config["data_root"] = str(data_root)
+        return app_config
+
+    try:
+        setattr(app_config, "data_dir", str(data_root))
+        setattr(app_config, "data_root", str(data_root))
+        cfg_data = getattr(app_config, "data", None)
+        if cfg_data is not None:
+            setattr(cfg_data, "data_dir", data_root)
+            setattr(cfg_data, "data_root", data_root)
+        return app_config
+    except Exception:
+        return _ConfigShim(app_config, data_dir=str(data_root), data_root=str(data_root))
 
 
 
@@ -1006,29 +1041,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception:
             app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
 
-    cfg_data_root = getattr(app_config, "data_dir", None)
-    if cfg_data_root is None:
-        cfg_data_root = getattr(app_config, "data_root", None)
-    if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
-    if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
-    resolved_data_root = Path(args.data_dir) if args.data_dir else Path(cfg_data_root or (repo_root / "data"))
-    if isinstance(app_config, dict):
-        app_config["data_dir"] = str(resolved_data_root)
-        app_config["data_root"] = str(resolved_data_root)
-    else:
-        try:
-            setattr(app_config, "data_dir", str(resolved_data_root))
-            setattr(app_config, "data_root", str(resolved_data_root))
-            cfg_data = getattr(app_config, "data", None)
-            if cfg_data is not None:
-                setattr(cfg_data, "data_dir", resolved_data_root)
-                setattr(cfg_data, "data_root", resolved_data_root)
-        except Exception:
-            app_config = _ConfigShim(app_config, data_dir=str(resolved_data_root), data_root=str(resolved_data_root))
+    resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
+    app_config = _apply_config_data_dir(app_config, resolved_data_root)
 
     data_root = resolved_data_root
     env_horizon_list = _parse_int_list(args.env_horizons or args.env_horizon_days)
