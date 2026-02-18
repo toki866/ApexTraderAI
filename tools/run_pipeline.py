@@ -711,7 +711,13 @@ def _run_stepA(app_config, symbol: str, date_range):
 
     cfg_data_root = _read_config_data_dir(app_config)
 
-    ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
+    ctx = {
+        "app_config": app_config,
+        "symbol": symbol,
+        "sym": symbol,
+        "date_range": date_range,
+        **({"data_dir": str(cfg_data_root), "data_root": str(cfg_data_root)} if cfg_data_root is not None else {}),
+    }
     svc = _instantiate_service(StepAService, ctx)
     fn = getattr(svc, "run", None)
     if fn is None:
@@ -726,15 +732,23 @@ def _run_stepA(app_config, symbol: str, date_range):
 
 def _read_config_data_dir(app_config: Any) -> Optional[Path]:
     """Best-effort read of AppConfig data root (data_dir/data_root)."""
-    cfg_data_root = getattr(app_config, "data_dir", None)
+
+    def _cfg_get(obj: Any, name: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    cfg_data_root = _cfg_get(app_config, "data_dir", None)
     if cfg_data_root is None:
-        cfg_data_root = getattr(app_config, "data_root", None)
+        cfg_data_root = _cfg_get(app_config, "data_root", None)
     if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_dir", None) if cfg_data is not None else None
+        cfg_data = _cfg_get(app_config, "data", None)
+        cfg_data_root = _cfg_get(cfg_data, "data_dir", None) if cfg_data is not None else None
     if cfg_data_root is None:
-        cfg_data = getattr(app_config, "data", None)
-        cfg_data_root = getattr(cfg_data, "data_root", None) if cfg_data is not None else None
+        cfg_data = _cfg_get(app_config, "data", None)
+        cfg_data_root = _cfg_get(cfg_data, "data_root", None) if cfg_data is not None else None
     return Path(cfg_data_root).expanduser().resolve() if cfg_data_root is not None else None
 
 
