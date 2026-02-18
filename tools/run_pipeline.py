@@ -767,6 +767,10 @@ def _apply_config_data_dir(app_config: Any, data_root: Path) -> Any:
     if isinstance(app_config, dict):
         app_config["data_dir"] = str(data_root)
         app_config["data_root"] = str(data_root)
+        data_cfg = app_config.get("data")
+        if isinstance(data_cfg, dict):
+            data_cfg["data_dir"] = str(data_root)
+            data_cfg["data_root"] = str(data_root)
         return app_config
 
     try:

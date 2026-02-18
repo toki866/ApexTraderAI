@@ -134,7 +134,7 @@ class StepAService:
         src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
         print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
         if not src_csv.exists():
-            data_dir_abs = self._configured_data_root().resolve()
+            data_dir_abs = self._configured_data_root(kwargs=kwargs).resolve()
             searched = self._list_price_csv_candidates(symbol=symbol, date_range=date_range, kwargs=kwargs)
             searched_text = "\n".join(f"  - {p.resolve()}" for p in searched)
             raise FileNotFoundError(
@@ -365,15 +365,18 @@ class StepAService:
         raise RuntimeError(f"StepA: unreachable mode={mode}")
 
     def _resolve_src_csv(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> Path:
-        """Resolve source CSV strictly from config.data_dir/data_root."""
-        data_root = self._configured_data_root()
+        """Resolve source CSV from runtime kwargs first, then config.data_dir/data_root."""
+        data_root = self._configured_data_root(kwargs=kwargs)
         return data_root / f"prices_{symbol}.csv"
 
     def _list_price_csv_candidates(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
         return [self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)]
 
-    def _configured_data_root(self) -> Path:
-        cfg_data_dir = _get_attr(self.cfg, "data_dir", None) or _get_attr(self.cfg, "data_root", None)
+    def _configured_data_root(self, kwargs: Optional[Dict[str, Any]] = None) -> Path:
+        runtime_data_dir = None
+        if kwargs:
+            runtime_data_dir = kwargs.get("data_dir", None) or kwargs.get("data_root", None)
+        cfg_data_dir = runtime_data_dir or _get_attr(self.cfg, "data_dir", None) or _get_attr(self.cfg, "data_root", None)
         if cfg_data_dir:
             return Path(cfg_data_dir).expanduser().resolve()
         return (get_repo_root() / "data").resolve()
