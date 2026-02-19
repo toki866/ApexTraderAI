@@ -49,8 +49,12 @@ on:
         type: boolean
 
 concurrency:
-  group: desktop-pipeline
-  cancel-in-progress: true
+  group: diag-logs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
 
 jobs:
   run:
@@ -427,6 +431,206 @@ jobs:
           name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+
+      - name: Collect diagnostics
+        if: always()
+        id: collect_diag
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          FAILING_STEP: ${{ steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Mask-Secrets {
+            param([string]$Text)
+
+            if ([string]::IsNullOrEmpty($Text)) { return $Text }
+
+            $masked = $Text
+            $masked = [regex]::Replace($masked, 'github_pat_[A-Za-z0-9_]{20,}', 'github_pat_***MASKED***')
+            $masked = [regex]::Replace($masked, 'gh[pousr]_[A-Za-z0-9_]{20,}', 'gh***_***MASKED***')
+            $masked = [regex]::Replace($masked, '(?im)\b(token|password|secret)\b\s*[:=]\s*\S+', '$1=***MASKED***')
+            return $masked
+          }
+
+          function Get-MaskedTail {
+            param(
+              [string]$Path,
+              [int]$Tail = 200
+            )
+
+            if (-not (Test-Path $Path)) { return "(not found) $Path" }
+            $raw = (Get-Content -Path $Path -Tail $Tail -ErrorAction SilentlyContinue) -join "`r`n"
+            return (Mask-Secrets -Text $raw)
+          }
+
+          $diagOut = Join-Path $env:RUNNER_TEMP 'diag_out'
+          $null = New-Item -Path $diagOut -ItemType Directory -Force
+
+          $ws = $env:GITHUB_WORKSPACE
+          $runnerRoot = (Resolve-Path (Join-Path $ws '..\..\..')).Path
+          $runnerDiag = Join-Path $runnerRoot '_diag'
+          $runId = '${{ github.run_id }}'
+          $runAttempt = '${{ github.run_attempt }}'
+          $sha = '${{ github.sha }}'
+          $branch = '${{ github.ref_name }}'
+          $repo = '${{ github.repository }}'
+          $artifactName = "diag_full_${runId}_${runAttempt}"
+
+          $latestRunnerLog = $null
+          $latestWorkerLog = $null
+          if (Test-Path $runnerDiag) {
+            $latestRunnerLog = Get-ChildItem -Path $runnerDiag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            $latestWorkerLog = Get-ChildItem -Path $runnerDiag -Filter 'Worker_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
+
+          $workflowLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $runLogPath = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          $stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'
+
+          if ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }
+          if ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }
+          if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
+          if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
+          Get-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force
+          }
+
+          foreach ($subDir in @('pages', 'blocks')) {
+            $src = Join-Path $runnerDiag $subDir
+            if (Test-Path $src) {
+              Copy-Item -Path $src -Destination (Join-Path $diagOut $subDir) -Recurse -Force
+            }
+          }
+
+          $runnerTailText = if ($latestRunnerLog) { Get-MaskedTail -Path $latestRunnerLog.FullName -Tail 200 } else { '(runner diag not found)' }
+          $workflowTailText = if (Test-Path $workflowLog) { Get-MaskedTail -Path $workflowLog -Tail 200 } else { '(workflow log not found)' }
+
+          $summaryPath = Join-Path $diagOut 'summary.md'
+          $summary = @(
+            '# Diagnostics Summary',
+            '',
+            "- repo: $repo",
+            "- branch: $branch",
+            "- sha: $sha",
+            "- run_id: $runId",
+            "- attempt: $runAttempt",
+            "- failing_step: $env:FAILING_STEP",
+            "- artifact_name: $artifactName",
+            '',
+            '## runner_diag_tail (last 200 lines)',
+            '```text',
+            $runnerTailText,
+            '```',
+            '',
+            '## workflow_tail (last 200 lines)',
+            '```text',
+            $workflowTailText,
+            '```'
+          ) -join "`r`n"
+          $summary = Mask-Secrets -Text $summary
+          Set-Content -Path $summaryPath -Value $summary -Encoding UTF8
+
+          $runnerTailPath = Join-Path $diagOut 'runner_diag_tail.txt'
+          Set-Content -Path $runnerTailPath -Value $runnerTailText -Encoding UTF8
+          $workflowTailPath = Join-Path $diagOut 'workflow_tail.txt'
+          Set-Content -Path $workflowTailPath -Value $workflowTailText -Encoding UTF8
+
+          $fullZip = Join-Path $env:RUNNER_TEMP ("{0}.zip" -f $artifactName)
+          if (Test-Path $fullZip) { Remove-Item $fullZip -Force }
+          Compress-Archive -Path (Join-Path $diagOut '*') -DestinationPath $fullZip -Force
+
+          "diag_out=$diagOut" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_summary=$summaryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_runner_tail=$runnerTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_workflow_tail=$workflowTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_zip=$fullZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload full diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect_diag.outputs.diag_artifact_name }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: ${{ steps.collect_diag.outputs.diag_zip }}
+
+      - name: Publish lightweight diagnostics to diag-logs branch
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          KEEP_LATEST: '30'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
+          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
+          $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          Set-Location $diagRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          git fetch origin diag-logs --depth 1 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            git checkout -B diag-logs origin/diag-logs
+          } else {
+            git checkout --orphan diag-logs
+            if (Test-Path '.gitignore') { Remove-Item '.gitignore' -Force }
+          }
+
+          $runsDir = Join-Path $diagRepo 'runs'
+          $null = New-Item -Path $runsDir -ItemType Directory -Force
+
+          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $shortSha = ('${{ github.sha }}').Substring(0, 7)
+          $runFolderName = "${timestamp}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
+          $runFolder = Join-Path $runsDir $runFolderName
+          $null = New-Item -Path $runFolder -ItemType Directory -Force
+
+          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_summary }}' -Destination (Join-Path $runFolder 'summary.md') -Force
+          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_runner_tail }}' -Destination (Join-Path $runFolder 'runner_diag_tail.txt') -Force
+          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_workflow_tail }}' -Destination (Join-Path $runFolder 'workflow_tail.txt') -Force
+
+          $latestMdPath = Join-Path $runsDir 'LATEST.md'
+          @(
+            '# Latest diagnostics run',
+            '',
+            "- folder: $runFolderName",
+            "- summary: ./runs/$runFolderName/summary.md",
+            "- runner_diag_tail: ./runs/$runFolderName/runner_diag_tail.txt",
+            "- workflow_tail: ./runs/$runFolderName/workflow_tail.txt"
+          ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
+
+          $keepLatest = [int]$env:KEEP_LATEST
+          $runDirs = Get-ChildItem -Path $runsDir -Directory | Sort-Object Name -Descending
+          if ($runDirs.Count -gt $keepLatest) {
+            $toDelete = $runDirs | Select-Object -Skip $keepLatest
+            foreach ($dir in $toDelete) {
+              Remove-Item -Path $dir.FullName -Recurse -Force
+            }
+          }
+
+          $currentRuns = Get-ChildItem -Path $runsDir -Directory | Sort-Object Name -Descending | ForEach-Object {
+            [PSCustomObject]@{
+              folder = $_.Name
+              updated_utc = $_.LastWriteTimeUtc.ToString('o')
+            }
+          }
+          $indexPath = Join-Path $runsDir 'index.json'
+          $currentRuns | ConvertTo-Json -Depth 3 | Set-Content -Path $indexPath -Encoding UTF8
+
+          git add runs
+          if (git diff --cached --quiet) {
+            Write-Host 'No diagnostics changes to commit.'
+            exit 0
+          }
+
+          git commit -m "diag: add run $runFolderName"
+          git push origin diag-logs
 
       - name: Upload diagnostics artifact
         if: always()
