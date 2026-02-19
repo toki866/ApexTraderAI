@@ -1,4 +1,8 @@
-$ErrorActionPreference = 'Continue'
+param(
+  [string]$DiagDir
+)
+
+$ErrorActionPreference = 'Stop'
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $runId = if ($Env:GITHUB_RUN_ID) { $Env:GITHUB_RUN_ID } else { 'local' }
@@ -45,7 +49,11 @@ if (-not $resolvedRunLog) {
 }
 
 $oneDriveRoot = if ($Env:OneDrive) { $Env:OneDrive } else { Join-Path $Env:USERPROFILE 'OneDrive' }
-$diagnosticsRoot = Join-Path (Join-Path $oneDriveRoot 'ApexTraderAI') 'diagnostics'
+$diagnosticsRoot = if ([string]::IsNullOrWhiteSpace($DiagDir)) {
+  Join-Path (Join-Path $oneDriveRoot 'ApexTraderAI') 'diagnostics'
+} else {
+  $DiagDir
+}
 
 Write-Host "OneDrive root candidate: $oneDriveRoot"
 Write-Host "Diagnostics destination root: $diagnosticsRoot"
@@ -54,104 +62,99 @@ if (-not (Test-Path $oneDriveRoot)) {
   Write-Warning "OneDrive root does not exist yet: $oneDriveRoot"
 }
 
-try {
-  $null = New-Item -Path $diagnosticsRoot -ItemType Directory -Force
-  Write-Host "Ensured diagnostics directory exists: $diagnosticsRoot"
-}
-catch {
-  Write-Warning ("Failed to create diagnostics directory '{0}': {1}" -f $diagnosticsRoot, $_.Exception.Message)
-}
-
 $zipName = "diag_${runId}_${attempt}_${timestamp}.zip"
 $summaryName = "diag_${runId}_${attempt}_${timestamp}_summary.txt"
 $zipPath = Join-Path $diagnosticsRoot $zipName
 $summaryPath = Join-Path $diagnosticsRoot $summaryName
 
-$summaryLines = @()
-$summaryLines += "timestamp=$timestamp"
-$summaryLines += "run_id=$($Env:GITHUB_RUN_ID)"
-$summaryLines += "run_attempt=$($Env:GITHUB_RUN_ATTEMPT)"
-$summaryLines += "sha=$($Env:GITHUB_SHA)"
-$summaryLines += "workspace=$workspace"
-$summaryLines += "runner_temp=$runnerTemp"
-$summaryLines += "console_log=$consoleLog"
-$summaryLines += "resolved_run_log=$resolvedRunLog"
-$summaryLines += ''
+try {
+  $null = New-Item -Path $diagnosticsRoot -ItemType Directory -Force
+  Write-Host "Ensured diagnostics directory exists: $diagnosticsRoot"
 
-$summaryLines += '=== tail run log (300 lines) ==='
-if ($resolvedRunLog -and (Test-Path $resolvedRunLog)) {
-  $summaryLines += Get-Content -Path $resolvedRunLog -Tail 300
-} else {
-  $summaryLines += '<run log not found>'
-}
-$summaryLines += ''
+  $summaryLines = @()
+  $summaryLines += "timestamp=$timestamp"
+  $summaryLines += "run_id=$($Env:GITHUB_RUN_ID)"
+  $summaryLines += "run_attempt=$($Env:GITHUB_RUN_ATTEMPT)"
+  $summaryLines += "sha=$($Env:GITHUB_SHA)"
+  $summaryLines += "workspace=$workspace"
+  $summaryLines += "runner_temp=$runnerTemp"
+  $summaryLines += "console_log=$consoleLog"
+  $summaryLines += "resolved_run_log=$resolvedRunLog"
+  $summaryLines += ''
 
-$summaryLines += '=== tail console log (200 lines) ==='
-if (Test-Path $consoleLog) {
-  $summaryLines += Get-Content -Path $consoleLog -Tail 200
-} else {
-  $summaryLines += '<console log not found>'
-}
-
-$summaryLines | Set-Content -Path $summaryPath -Encoding UTF8
-
-$zipInputs = @()
-if ($resolvedRunLog -and (Test-Path $resolvedRunLog)) {
-  $zipInputs += $resolvedRunLog
-
-  $runLogsDir = Split-Path -Path $resolvedRunLog -Parent
-  if ($runLogsDir -and (Test-Path $runLogsDir)) {
-    $zipInputs += $runLogsDir
+  $summaryLines += '=== tail run log (300 lines) ==='
+  if ($resolvedRunLog -and (Test-Path $resolvedRunLog)) {
+    $summaryLines += Get-Content -Path $resolvedRunLog -Tail 300
+  } else {
+    $summaryLines += '<run log not found>'
   }
-}
-if (Test-Path $consoleLog) {
-  $zipInputs += $consoleLog
-}
-if (Test-Path $summaryPath) {
-  $zipInputs += $summaryPath
-}
+  $summaryLines += ''
 
-if ($zipInputs.Count -gt 0) {
+  $summaryLines += '=== tail console log (200 lines) ==='
+  if (Test-Path $consoleLog) {
+    $summaryLines += Get-Content -Path $consoleLog -Tail 200
+  } else {
+    $summaryLines += '<console log not found>'
+  }
+
+  $summaryLines | Set-Content -Path $summaryPath -Encoding UTF8
+
+  $zipInputs = @()
+  if ($resolvedRunLog -and (Test-Path $resolvedRunLog)) {
+    $zipInputs += $resolvedRunLog
+
+    $runLogsDir = Split-Path -Path $resolvedRunLog -Parent
+    if ($runLogsDir -and (Test-Path $runLogsDir)) {
+      $zipInputs += $runLogsDir
+    }
+  }
+  if (Test-Path $consoleLog) {
+    $zipInputs += $consoleLog
+  }
+  if (Test-Path $summaryPath) {
+    $zipInputs += $summaryPath
+  }
+
+  if ($zipInputs.Count -le 0) {
+    throw 'No diagnostic files were found to zip.'
+  }
+
   Write-Host ("ZIP input count: {0}" -f $zipInputs.Count)
   foreach ($input in $zipInputs) {
     Write-Host ("ZIP input: {0}" -f $input)
   }
 
-  try {
-    Compress-Archive -Path $zipInputs -DestinationPath $zipPath -Force
-    Write-Host "Created diagnostics ZIP: $zipPath"
-  }
-  catch {
-    Write-Warning ("Failed to create diagnostics ZIP '{0}': {1}" -f $zipPath, $_.Exception.Message)
-  }
-} else {
-  Write-Warning 'No diagnostic files were found to zip.'
-}
+  Compress-Archive -Path $zipInputs -DestinationPath $zipPath -Force
+  Write-Host "Created diagnostics ZIP: $zipPath"
 
-$workspaceDiagRoot = Join-Path $workspace '_diagnostics'
-$null = New-Item -Path $workspaceDiagRoot -ItemType Directory -Force
+  if (-not (Test-Path $zipPath)) {
+    throw ("Diagnostics ZIP was not created at expected path: {0}" -f $zipPath)
+  }
 
-if (Test-Path $zipPath) {
-  try {
-    $workspaceZip = Join-Path $workspaceDiagRoot (Split-Path -Path $zipPath -Leaf)
-    Copy-Item -Path $zipPath -Destination $workspaceZip -Force
-    Write-Host "Copied diagnostics ZIP to workspace: $workspaceZip"
-  }
-  catch {
-    Write-Warning ("Failed to copy diagnostics ZIP to workspace: {0}" -f $_.Exception.Message)
-  }
-}
-if (Test-Path $summaryPath) {
-  try {
+  $workspaceDiagRoot = Join-Path $workspace '_diagnostics'
+  $null = New-Item -Path $workspaceDiagRoot -ItemType Directory -Force
+
+  $workspaceZip = Join-Path $workspaceDiagRoot (Split-Path -Path $zipPath -Leaf)
+  Copy-Item -Path $zipPath -Destination $workspaceZip -Force
+  Write-Host "Copied diagnostics ZIP to workspace: $workspaceZip"
+
+  if (Test-Path $summaryPath) {
     $workspaceSummary = Join-Path $workspaceDiagRoot (Split-Path -Path $summaryPath -Leaf)
     Copy-Item -Path $summaryPath -Destination $workspaceSummary -Force
     Write-Host "Copied diagnostics summary to workspace: $workspaceSummary"
   }
-  catch {
-    Write-Warning ("Failed to copy diagnostics summary to workspace: {0}" -f $_.Exception.Message)
+
+  Write-Host "Diagnostics summary path: $summaryPath"
+  Write-Host "Diagnostics ZIP path: $zipPath"
+  Write-Host "Workspace diagnostics root: $workspaceDiagRoot"
+}
+finally {
+  Write-Host "diagDir=$diagnosticsRoot"
+  if (Test-Path $diagnosticsRoot) {
+    Get-ChildItem -Path $diagnosticsRoot |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 10
+  } else {
+    Write-Warning "Diagnostics directory does not exist: $diagnosticsRoot"
   }
 }
-
-Write-Host "Diagnostics summary path: $summaryPath"
-Write-Host "Diagnostics ZIP path: $zipPath"
-Write-Host "Workspace diagnostics root: $workspaceDiagRoot"

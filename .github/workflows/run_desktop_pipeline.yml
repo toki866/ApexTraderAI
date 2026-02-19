@@ -261,17 +261,31 @@ jobs:
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $ErrorActionPreference = 'Continue'
-          $diagScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics.ps1'
+          $ErrorActionPreference = 'Stop'
+          $diagScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics_to_onedrive.ps1'
+          $diagDir = 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'
           Write-Host "Diagnostics script path: $diagScript"
+          Write-Host "Diagnostics fixed output dir: $diagDir"
 
           if (Test-Path $diagScript) {
-            powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1 -DiagDir "C:\Users\becky\OneDrive\ApexTraderAI\diagnostics"
             if ($LASTEXITCODE -ne 0) {
-              Write-Warning "Diagnostics script exited with code $LASTEXITCODE"
+              Write-Error "Diagnostics script exited with code $LASTEXITCODE"
+              exit $LASTEXITCODE
             }
           } else {
             Write-Error "Diagnostics script not found: $diagScript"
+            exit 1
+          }
+
+          Write-Host '=== diagnostics dir listing (latest 10) ==='
+          if (Test-Path $diagDir) {
+            Get-ChildItem -Path $diagDir -Filter 'diag_*.zip' -File |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 10
+          } else {
+            Write-Error "Diagnostics directory not found: $diagDir"
+            exit 1
           }
 
       - name: Tail latest run log on failure
