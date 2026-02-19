@@ -273,15 +273,17 @@ jobs:
       - name: Package diagnostics to OneDrive (always)
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          DIAG_DIR: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
         run: |
           $ErrorActionPreference = 'Stop'
           $diagScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics_to_onedrive.ps1'
-          $diagDir = 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'
+          $diagDir = $env:DIAG_DIR
           Write-Host "Diagnostics script path: $diagScript"
           Write-Host "Diagnostics fixed output dir: $diagDir"
 
           if (Test-Path $diagScript) {
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1 -DiagDir "C:\Users\becky\OneDrive\ApexTraderAI\diagnostics"
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1 -DiagDir "$diagDir"
             if ($LASTEXITCODE -ne 0) {
               Write-Error "Diagnostics script exited with code $LASTEXITCODE"
               exit $LASTEXITCODE
@@ -294,9 +296,11 @@ jobs:
       - name: Verify diagnostics directory content
         if: always()
         shell: cmd
+        env:
+          DIAG_DIR: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
         run: |
           echo === diagnostics dir listing ===
-          dir "C:\Users\becky\OneDrive\ApexTraderAI\diagnostics"
+          dir "%DIAG_DIR%"
 
       - name: Tail latest run log on failure
         if: failure()
