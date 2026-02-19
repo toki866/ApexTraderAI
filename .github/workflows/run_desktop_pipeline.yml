@@ -58,6 +58,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+
+      - name: Force checkout sha (self-hosted)
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --global core.longpaths true
+          git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
+          git fetch --force --prune
+          git checkout -f $env:GITHUB_SHA
+          git reset --hard $env:GITHUB_SHA
+          if (Test-Path (Join-Path $env:GITHUB_WORKSPACE '.gitmodules')) {
+            git submodule update --init --recursive
+          }
+          git rev-parse HEAD
 
       - name: Debug shells
         continue-on-error: true
