@@ -1,3 +1,7 @@
+param(
+  [string]$DiagDir
+)
+
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -11,7 +15,12 @@ if (-not (Test-Path $target)) {
   exit 1
 }
 
-& powershell -NoProfile -ExecutionPolicy Bypass -File $target
+$args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $target)
+if (-not [string]::IsNullOrWhiteSpace($DiagDir)) {
+  $args += @('-DiagDir', $DiagDir)
+}
+
+& powershell @args
 $rc = $LASTEXITCODE
 
 if ($rc -ne 0) {
