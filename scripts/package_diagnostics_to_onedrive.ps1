@@ -1,5 +1,7 @@
 param(
-  [string]$DiagDir
+  [string]$DiagDir,
+  [int]$KeepLatest = 10,
+  [int]$DeleteAfterDays = 7
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,7 +44,10 @@ if ([string]::IsNullOrWhiteSpace($DiagDir)) {
 
 $DiagDir = [System.IO.Path]::GetFullPath($DiagDir)
 $null = New-Item -Path $DiagDir -ItemType Directory -Force
+$deleteQueueDir = Join-Path $DiagDir '_to_delete'
+$null = New-Item -Path $deleteQueueDir -ItemType Directory -Force
 Write-Host "diagDir=$DiagDir"
+Write-Host "deleteQueueDir=$deleteQueueDir"
 
 $zipName = "diag_${runId}_${attempt}_${timestamp}.zip"
 $zipPath = Join-Path $DiagDir $zipName
@@ -76,6 +81,29 @@ $null = New-Item -Path $workspaceDiagRoot -ItemType Directory -Force
 Copy-Item -Path $zipPath -Destination (Join-Path $workspaceDiagRoot (Split-Path -Path $zipPath -Leaf)) -Force
 
 Write-Host "zipPath=$zipPath"
+
+$zipFiles = Get-ChildItem -Path $DiagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending
+
+if ($zipFiles -and $KeepLatest -ge 0) {
+  $overflowFiles = $zipFiles | Select-Object -Skip $KeepLatest
+  foreach ($file in $overflowFiles) {
+    $destination = Join-Path $deleteQueueDir $file.Name
+    Move-Item -Path $file.FullName -Destination $destination -Force
+    Write-Host "queued_for_delete=$destination"
+  }
+}
+
+if ($DeleteAfterDays -ge 0) {
+  $cutoff = (Get-Date).AddDays(-1 * $DeleteAfterDays)
+  Get-ChildItem -Path $deleteQueueDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt $cutoff } |
+    ForEach-Object {
+      Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+      Write-Host "deleted_from_queue=$($_.FullName)"
+    }
+}
+
 Get-ChildItem -Path $DiagDir |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 10 |
