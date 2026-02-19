@@ -118,6 +118,35 @@ jobs:
           echo RUNNER_TEMP=%RUNNER_TEMP%
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
 
+      - name: Verify required scripts
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:GITHUB_WORKSPACE
+
+          Write-Host '=== Verify scripts directory ==='
+          $scriptsDir = Join-Path $env:GITHUB_WORKSPACE 'scripts'
+          Write-Host "scripts_dir=$scriptsDir"
+          if (Test-Path $scriptsDir) {
+            Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+          } else {
+            Write-Error "scripts directory not found: $scriptsDir"
+          }
+
+          $expected = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts\run_all_local_then_copy.bat'),
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics.ps1'),
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics_to_onedrive.ps1')
+          )
+
+          foreach ($path in $expected) {
+            if (Test-Path $path) {
+              Write-Host "[FOUND] $path"
+            } else {
+              Write-Warning "[MISSING] $path"
+            }
+          }
+
       - name: Runner connectivity and host status
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
@@ -232,7 +261,18 @@ jobs:
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1
+          $ErrorActionPreference = 'Continue'
+          $diagScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics.ps1'
+          Write-Host "Diagnostics script path: $diagScript"
+
+          if (Test-Path $diagScript) {
+            powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Diagnostics script exited with code $LASTEXITCODE"
+            }
+          } else {
+            Write-Error "Diagnostics script not found: $diagScript"
+          }
 
       - name: Tail latest run log on failure
         if: failure()

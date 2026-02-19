@@ -46,7 +46,21 @@ if (-not $resolvedRunLog) {
 
 $oneDriveRoot = if ($Env:OneDrive) { $Env:OneDrive } else { Join-Path $Env:USERPROFILE 'OneDrive' }
 $diagnosticsRoot = Join-Path (Join-Path $oneDriveRoot 'ApexTraderAI') 'diagnostics'
-$null = New-Item -Path $diagnosticsRoot -ItemType Directory -Force
+
+Write-Host "OneDrive root candidate: $oneDriveRoot"
+Write-Host "Diagnostics destination root: $diagnosticsRoot"
+
+if (-not (Test-Path $oneDriveRoot)) {
+  Write-Warning "OneDrive root does not exist yet: $oneDriveRoot"
+}
+
+try {
+  $null = New-Item -Path $diagnosticsRoot -ItemType Directory -Force
+  Write-Host "Ensured diagnostics directory exists: $diagnosticsRoot"
+}
+catch {
+  Write-Warning ("Failed to create diagnostics directory '{0}': {1}" -f $diagnosticsRoot, $_.Exception.Message)
+}
 
 $zipName = "diag_${runId}_${attempt}_${timestamp}.zip"
 $summaryName = "diag_${runId}_${attempt}_${timestamp}_summary.txt"
@@ -98,8 +112,18 @@ if (Test-Path $summaryPath) {
 }
 
 if ($zipInputs.Count -gt 0) {
-  Compress-Archive -Path $zipInputs -DestinationPath $zipPath -Force
-  Write-Host "Created diagnostics ZIP: $zipPath"
+  Write-Host ("ZIP input count: {0}" -f $zipInputs.Count)
+  foreach ($input in $zipInputs) {
+    Write-Host ("ZIP input: {0}" -f $input)
+  }
+
+  try {
+    Compress-Archive -Path $zipInputs -DestinationPath $zipPath -Force
+    Write-Host "Created diagnostics ZIP: $zipPath"
+  }
+  catch {
+    Write-Warning ("Failed to create diagnostics ZIP '{0}': {1}" -f $zipPath, $_.Exception.Message)
+  }
 } else {
   Write-Warning 'No diagnostic files were found to zip.'
 }
@@ -108,10 +132,24 @@ $workspaceDiagRoot = Join-Path $workspace '_diagnostics'
 $null = New-Item -Path $workspaceDiagRoot -ItemType Directory -Force
 
 if (Test-Path $zipPath) {
-  Copy-Item -Path $zipPath -Destination (Join-Path $workspaceDiagRoot (Split-Path -Path $zipPath -Leaf)) -Force
+  try {
+    $workspaceZip = Join-Path $workspaceDiagRoot (Split-Path -Path $zipPath -Leaf)
+    Copy-Item -Path $zipPath -Destination $workspaceZip -Force
+    Write-Host "Copied diagnostics ZIP to workspace: $workspaceZip"
+  }
+  catch {
+    Write-Warning ("Failed to copy diagnostics ZIP to workspace: {0}" -f $_.Exception.Message)
+  }
 }
 if (Test-Path $summaryPath) {
-  Copy-Item -Path $summaryPath -Destination (Join-Path $workspaceDiagRoot (Split-Path -Path $summaryPath -Leaf)) -Force
+  try {
+    $workspaceSummary = Join-Path $workspaceDiagRoot (Split-Path -Path $summaryPath -Leaf)
+    Copy-Item -Path $summaryPath -Destination $workspaceSummary -Force
+    Write-Host "Copied diagnostics summary to workspace: $workspaceSummary"
+  }
+  catch {
+    Write-Warning ("Failed to copy diagnostics summary to workspace: {0}" -f $_.Exception.Message)
+  }
 }
 
 Write-Host "Diagnostics summary path: $summaryPath"
