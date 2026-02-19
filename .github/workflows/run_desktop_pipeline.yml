@@ -50,27 +50,40 @@ on:
 
 concurrency:
   group: desktop-pipeline
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: [self-hosted, windows]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          clean: false
-
-      - name: Force checkout sha (self-hosted)
+      - name: Sync repo to github.sha (no delete)
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           $ErrorActionPreference = 'Stop'
+          $repo = "$env:GITHUB_WORKSPACE"
+          Set-Location $repo
+
           git config --global core.longpaths true
-          git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
-          git fetch --force --prune
+          git config --global --add safe.directory "$repo"
+
+          if (!(Test-Path (Join-Path $repo '.git'))) {
+            git init
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          } else {
+            git remote get-url origin *> $null
+            if ($LASTEXITCODE -ne 0) {
+              git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+            } else {
+              git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" | Out-Null
+            }
+          }
+
+          git fetch --force --prune origin
           git checkout -f $env:GITHUB_SHA
           git reset --hard $env:GITHUB_SHA
+          git clean -ffdx
           if (Test-Path (Join-Path $env:GITHUB_WORKSPACE '.gitmodules')) {
             git submodule update --init --recursive
           }
