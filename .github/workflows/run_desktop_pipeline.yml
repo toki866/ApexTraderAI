@@ -273,17 +273,15 @@ jobs:
       - name: Package diagnostics to OneDrive (always)
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        env:
-          DIAG_DIR: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
         run: |
           $ErrorActionPreference = 'Stop'
           $diagScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\package_diagnostics_to_onedrive.ps1'
-          $diagDir = $env:DIAG_DIR
+          $diagDir = 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'
           Write-Host "Diagnostics script path: $diagScript"
           Write-Host "Diagnostics fixed output dir: $diagDir"
 
           if (Test-Path $diagScript) {
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1 -DiagDir "$diagDir"
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package_diagnostics_to_onedrive.ps1 -DiagDir 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'
             if ($LASTEXITCODE -ne 0) {
               Write-Error "Diagnostics script exited with code $LASTEXITCODE"
               exit $LASTEXITCODE
@@ -295,12 +293,23 @@ jobs:
 
       - name: Verify diagnostics directory content
         if: always()
-        shell: cmd
-        env:
-          DIAG_DIR: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          echo === diagnostics dir listing ===
-          dir "%DIAG_DIR%"
+          $ErrorActionPreference = 'Stop'
+          $diagDir = 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'
+          Write-Host '=== diagnostics dir listing ==='
+          dir "C:\Users\becky\OneDrive\ApexTraderAI\diagnostics"
+
+          $latestZip = Get-ChildItem -Path $diagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $latestZip) {
+            Write-Error "diag zip missing in $diagDir"
+            exit 1
+          }
+
+          Write-Host "latestDiagZip=$($latestZip.FullName)"
 
       - name: Tail latest run log on failure
         if: failure()
