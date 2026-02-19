@@ -132,9 +132,10 @@ class StepAService:
         self._purge_combined_files(out_dir_mode, symbol)
 
         src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
-        print(f"[StepA] src_csv resolved to: {src_csv.resolve()}")
+        resolved_data_dir = self._configured_data_root(kwargs=kwargs).resolve()
+        print(f"[StepA] data_dir={resolved_data_dir} src_csv={src_csv.resolve()}")
         if not src_csv.exists():
-            data_dir_abs = self._configured_data_root(kwargs=kwargs).resolve()
+            data_dir_abs = resolved_data_dir
             configured_data_dir = (
                 kwargs.get("data_dir", None)
                 or kwargs.get("data_root", None)
@@ -373,20 +374,55 @@ class StepAService:
         raise RuntimeError(f"StepA: unreachable mode={mode}")
 
     def _resolve_src_csv(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> Path:
-        """Resolve source CSV from runtime kwargs first, then config.data_dir/data_root."""
-        data_root = self._configured_data_root(kwargs=kwargs)
-        return data_root / f"prices_{symbol}.csv"
+        """Resolve source CSV from configured data_dir first, then fallback to repo_root/data."""
+        candidates = self._list_price_csv_candidates(symbol=symbol, date_range=date_range, kwargs=kwargs)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
 
     def _list_price_csv_candidates(self, symbol: str, date_range: Any, kwargs: Dict[str, Any]) -> List[Path]:
-        return [self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)]
+        filename = f"prices_{symbol}.csv"
+        repo_root = get_repo_root().resolve()
+        candidates: List[Path] = []
 
-    def _configured_data_root(self, kwargs: Optional[Dict[str, Any]] = None) -> Path:
+        cfg_data_dir = self._configured_data_dir_raw(kwargs=kwargs)
+        if cfg_data_dir:
+            data_dir_path = Path(cfg_data_dir).expanduser()
+            if data_dir_path.is_absolute():
+                candidates.append((data_dir_path / filename).resolve())
+            else:
+                candidates.append((repo_root / data_dir_path / filename).resolve())
+                candidates.append((Path.cwd() / data_dir_path / filename).resolve())
+
+        candidates.append((repo_root / "data" / filename).resolve())
+
+        unique: List[Path] = []
+        seen: set[Path] = set()
+        for p in candidates:
+            if p in seen:
+                continue
+            seen.add(p)
+            unique.append(p)
+        return unique
+
+    def _configured_data_dir_raw(self, kwargs: Optional[Dict[str, Any]] = None) -> Optional[str]:
         runtime_data_dir = None
         if kwargs:
             runtime_data_dir = kwargs.get("data_dir", None) or kwargs.get("data_root", None)
         cfg_data_dir = runtime_data_dir or _get_attr(self.cfg, "data_dir", None) or _get_attr(self.cfg, "data_root", None)
+        if cfg_data_dir is None:
+            return None
+        cfg_data_dir_str = str(cfg_data_dir).strip()
+        return cfg_data_dir_str or None
+
+    def _configured_data_root(self, kwargs: Optional[Dict[str, Any]] = None) -> Path:
+        cfg_data_dir = self._configured_data_dir_raw(kwargs=kwargs)
         if cfg_data_dir:
-            return Path(cfg_data_dir).expanduser().resolve()
+            data_dir_path = Path(cfg_data_dir).expanduser()
+            if data_dir_path.is_absolute():
+                return data_dir_path.resolve()
+            return (get_repo_root() / data_dir_path).resolve()
         return (get_repo_root() / "data").resolve()
 
     # -------------------------
