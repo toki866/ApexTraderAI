@@ -4,12 +4,12 @@ chcp 65001 >nul
 
 set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%SCRIPT_DIR%.."
+if not defined WORK_ROOT set "WORK_ROOT=C:\work\apex_work\runs"
 pushd "%REPO_ROOT%" >nul || (echo [ERROR] failed to enter repo root & exit /b 2)
 
 if exist "%SCRIPT_DIR%bat_config.bat" call "%SCRIPT_DIR%bat_config.bat"
 
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
-if not defined WORK_ROOT set "WORK_ROOT=C:\work\apex_work\runs"
 if not defined RUN_MODE set "RUN_MODE=sim"
 if not defined SYMBOLS set "SYMBOLS=SOXL,SOXS"
 if not defined SYMBOL for /f "tokens=1 delims=," %%s in ("%SYMBOLS%") do set "SYMBOL=%%s"
@@ -34,6 +34,32 @@ set "LOG_DIR=%RUN_DIR%\logs"
 set "LOG_FILE=%LOG_DIR%\run_%RUN_ID%.log"
 set "ZIP_FILE=%RUN_DIR%\run_%RUN_ID%.zip"
 
+mkdir "%LOG_DIR%" >nul 2>&1
+if not exist "%LOG_DIR%" (
+  set "LOG_DIR=%REPO_ROOT%\logs\local_runs"
+  mkdir "%LOG_DIR%" >nul 2>&1
+  if not exist "%LOG_DIR%" (
+    echo [ERROR] failed to create any log directory. preferred=%RUN_DIR%\logs fallback=%LOG_DIR%
+    popd
+    exit /b 2
+  )
+  set "LOG_FILE=%LOG_DIR%\run_%RUN_ID%.log"
+  echo [WARN] WORK_ROOT log directory unavailable. fallback_log_dir=%LOG_DIR%
+)
+
+(
+  echo ==================================================
+  echo [RUN] ApexTraderAI local run started
+  echo [RUN] requirement=Never finish a workflow run without leaving a readable log artifact
+  echo [RUN] run_id=%RUN_ID%
+  echo [RUN] repo=%CD%
+  echo [RUN] work_root=%WORK_ROOT%
+  echo [RUN] run_dir=%RUN_DIR%
+  echo [RUN] log=%LOG_FILE%
+  echo [RUN] timestamp=%DATE% %TIME%
+  echo ==================================================
+) > "%LOG_FILE%" 2>&1
+
 mkdir "%DATA_DIR%" "%OUTPUT_DIR%" "%LOG_DIR%" >nul 2>&1
 
 set "LAST_CMD=(not started)"
@@ -42,16 +68,9 @@ set "COMMIT_SHA=unknown"
 for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT_SHA=%%h"
 
 (
-  echo ==================================================
-  echo [RUN] ApexTraderAI local run started
-  echo [RUN] run_id=%RUN_ID%
-  echo [RUN] repo=%CD%
   echo [RUN] commit=%COMMIT_SHA%
   echo [RUN] data_dir=%DATA_DIR%
   echo [RUN] output_dir=%OUTPUT_DIR%
-  echo [RUN] log=%LOG_FILE%
-  echo [RUN] timestamp=%DATE% %TIME%
-  echo ==================================================
 ) >> "%LOG_FILE%" 2>&1
 
 call :run git rev-parse --short HEAD
@@ -232,6 +251,10 @@ echo [FAILED] command=%LAST_CMD%>> "%LOG_FILE%"
 echo [FAILED] exit_code=%LAST_EXIT%>> "%LOG_FILE%"
 echo [FAILED] run_id=%RUN_ID%>> "%LOG_FILE%"
 echo [FAILED] log=%LOG_FILE%>> "%LOG_FILE%"
+echo [FAILED] command=%LAST_CMD%
+echo [FAILED] exit_code=%LAST_EXIT%
+echo [FAILED] run_id=%RUN_ID%
+echo [FAILED] log=%LOG_FILE%
 echo [NG] failed. log=%LOG_FILE%
 popd >nul
 exit /b %LAST_EXIT%
