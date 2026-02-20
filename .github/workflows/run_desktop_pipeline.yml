@@ -43,10 +43,15 @@ on:
         default: "3"
         type: string
       copy_to_onedrive:
-        description: "Reserved for future BAT integration"
+        description: "Copy run outputs to OneDrive (1=true, 0=false)"
         required: true
         default: true
         type: boolean
+      steps:
+        description: "Pipeline steps (comma-separated)"
+        required: true
+        default: "A,B"
+        type: string
 
 concurrency:
   group: diag-logs
@@ -185,13 +190,18 @@ jobs:
           INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
+          INPUT_STEPS: ${{ inputs.steps }}
           RUN_MODE: ${{ inputs.mode }}
           SYMBOLS: ${{ inputs.symbols }}
+          SYMBOL: SOXL
+          STEPS: ${{ inputs.steps }}
           DATA_START: ${{ inputs.start }}
           DATA_END: ${{ inputs.end }}
           TEST_START: ${{ inputs.test_start }}
           TRAIN_YEARS: ${{ inputs.train_years }}
           TEST_MONTHS: ${{ inputs.test_months }}
+          WORK_ROOT: C:\work\apex_work\runs
+          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           PYTHON_EXE: python
         run: |
           $ErrorActionPreference = 'Stop'
@@ -558,6 +568,7 @@ jobs:
 
       - name: Publish lightweight diagnostics to diag-logs branch
         if: always()
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           KEEP_LATEST: '30'
@@ -631,6 +642,10 @@ jobs:
 
           git commit -m "diag: add run $runFolderName"
           git push origin diag-logs
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'If this fails, check repository Settings > Actions > Workflow permissions (Read and write permissions) and allow GitHub Actions to create/push branches.'
+            exit $LASTEXITCODE
+          }
 
       - name: Upload diagnostics artifact
         if: always()
