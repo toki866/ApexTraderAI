@@ -9,6 +9,16 @@ pushd "%REPO_ROOT%" >nul || (echo [ERROR] failed to enter repo root & exit /b 2)
 if exist "%SCRIPT_DIR%bat_config.bat" call "%SCRIPT_DIR%bat_config.bat"
 
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
+if not defined WORK_ROOT set "WORK_ROOT=C:\work\apex_work\runs"
+if not defined RUN_MODE set "RUN_MODE=sim"
+if not defined SYMBOLS set "SYMBOLS=SOXL,SOXS"
+if not defined SYMBOL for /f "tokens=1 delims=," %%s in ("%SYMBOLS%") do set "SYMBOL=%%s"
+if not defined STEPS set "STEPS=A,B"
+if not defined COPY_TO_ONEDRIVE set "COPY_TO_ONEDRIVE=1"
+if /i "%COPY_TO_ONEDRIVE%"=="true" set "COPY_TO_ONEDRIVE=1"
+if /i "%COPY_TO_ONEDRIVE%"=="false" set "COPY_TO_ONEDRIVE=0"
+if not defined AUTO_PREPARE_DATA set "AUTO_PREPARE_DATA=1"
+if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
 
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_ID=%%i"
 if not defined RUN_ID (
@@ -28,17 +38,19 @@ mkdir "%DATA_DIR%" "%OUTPUT_DIR%" "%LOG_DIR%" >nul 2>&1
 
 set "LAST_CMD=(not started)"
 set "LAST_EXIT=0"
+set "COMMIT_SHA=unknown"
+for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT_SHA=%%h"
 
 (
   echo ==================================================
   echo [RUN] ApexTraderAI local run started
   echo [RUN] run_id=%RUN_ID%
   echo [RUN] repo=%CD%
+  echo [RUN] commit=%COMMIT_SHA%
   echo [RUN] data_dir=%DATA_DIR%
   echo [RUN] output_dir=%OUTPUT_DIR%
   echo [RUN] log=%LOG_FILE%
   echo [RUN] timestamp=%DATE% %TIME%
-  for /f %%h in ('git rev-parse --short HEAD 2^>nul') do echo [RUN] commit=%%h
   echo ==================================================
 ) >> "%LOG_FILE%" 2>&1
 
@@ -94,6 +106,11 @@ if "%ZIP_ON_SUCCESS%"=="1" (
   if errorlevel 1 goto :failed
 )
 
+if not "%COPY_TO_ONEDRIVE%"=="1" (
+  echo [WARN] COPY_TO_ONEDRIVE=0 -^> skip OneDrive copy and repo snapshot.>> "%LOG_FILE%"
+  goto :success
+)
+
 set "ONE_DEST="
 if defined ONE_DRIVE_RUNS_ROOT (
   set "ONE_DEST=%ONE_DRIVE_RUNS_ROOT%\%RUN_ID%"
@@ -101,10 +118,8 @@ if defined ONE_DRIVE_RUNS_ROOT (
   if defined OneDrive (
     set "ONE_DEST=%OneDrive%\ApexTraderAI\runs\%RUN_ID%"
   ) else (
-    echo [ERROR] OneDrive path is not set. Define OneDrive or ONE_DRIVE_RUNS_ROOT.>> "%LOG_FILE%"
-    set "LAST_CMD=resolve OneDrive destination"
-    set "LAST_EXIT=3"
-    goto :failed
+    echo [WARN] OneDrive path not found; skip copy. missing ONE_DRIVE_RUNS_ROOT and OneDrive.>> "%LOG_FILE%"
+    goto :success
   )
 )
 
@@ -147,10 +162,8 @@ if defined ONE_DRIVE_SNAPSHOTS_ROOT (
   if defined OneDrive (
     set "SNAPSHOT_ROOT=%OneDrive%\ApexTraderAI\repo_snapshots"
   ) else (
-    echo [ERROR] OneDrive snapshot path is not set. Define OneDrive or ONE_DRIVE_SNAPSHOTS_ROOT.>> "%LOG_FILE%"
-    set "LAST_CMD=resolve OneDrive snapshot destination"
-    set "LAST_EXIT=3"
-    goto :failed
+    echo [WARN] OneDrive snapshot path not found; skip repo snapshot. missing ONE_DRIVE_SNAPSHOTS_ROOT and OneDrive.>> "%LOG_FILE%"
+    goto :success
   )
 )
 
@@ -176,11 +189,12 @@ if errorlevel 1 (
 
 if exist "%SNAPSHOT_ZIP%" attrib +R "%SNAPSHOT_ZIP%" >nul 2>&1
 
+:success
 (
   echo [SUCCESS] Completed run_id=%RUN_ID%
   echo [SUCCESS] local_run_dir=%RUN_DIR%
-  echo [SUCCESS] onedrive_dest=%ONE_DEST%
-  echo [SUCCESS] repo_snapshot=%SNAPSHOT_ZIP%
+  if defined ONE_DEST echo [SUCCESS] onedrive_dest=%ONE_DEST%
+  if defined SNAPSHOT_ZIP echo [SUCCESS] repo_snapshot=%SNAPSHOT_ZIP%
   echo [SUCCESS] reproducible_command=%~nx0
 ) >> "%LOG_FILE%" 2>&1
 
