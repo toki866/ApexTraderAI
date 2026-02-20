@@ -158,7 +158,6 @@ jobs:
             Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
           } else {
             Write-Warning "scripts directory not found: $scriptsDir"
-            Add-Content -Path $reportPath -Value ('[MISSING] scripts directory not found: {0}' -f $scriptsDir)
           }
 
           $expected = @(
@@ -180,12 +179,46 @@ jobs:
           Add-Content -Path $reportPath -Value @(
             '## REQUIRED_SCRIPT_CHECK',
             ('scripts_dir_exists={0}' -f (Test-Path $scriptsDir)),
+            ('scripts_dir={0}' -f $scriptsDir),
+            '',
+            '### scripts_dir_listing',
+            $(
+              if (Test-Path $scriptsDir) {
+                $listing = Get-ChildItem -Path $scriptsDir | Sort-Object Name | ForEach-Object {
+                  '- {0} | len={1} | mtime={2}' -f $_.Name, $_.Length, $_.LastWriteTime
+                }
+                if ($listing) { $listing } else { '- (empty)' }
+              } else {
+                '- (scripts directory missing)'
+              }
+            ),
             '',
             '### FOUND',
             ($expected | Where-Object { Test-Path $_ } | ForEach-Object { "- $_" }),
             '',
             '### MISSING',
             ($(if ($missing.Count -gt 0) { $missing | ForEach-Object { "- $_" } } else { '- (none)' })),
+            '',
+            '### recursive_search_run_all_local_then_copy.bat',
+            $(
+              $hits = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'run_all_local_then_copy.bat' -ErrorAction SilentlyContinue |
+                Select-Object -First 10 -ExpandProperty FullName
+              if ($hits) { $hits | ForEach-Object { "- $_" } } else { '- (no matches)' }
+            ),
+            '',
+            '### recursive_search_package_diagnostics.ps1',
+            $(
+              $hits = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'package_diagnostics.ps1' -ErrorAction SilentlyContinue |
+                Select-Object -First 10 -ExpandProperty FullName
+              if ($hits) { $hits | ForEach-Object { "- $_" } } else { '- (no matches)' }
+            ),
+            '',
+            '### recursive_search_package_diagnostics_to_onedrive.ps1',
+            $(
+              $hits = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'package_diagnostics_to_onedrive.ps1' -ErrorAction SilentlyContinue |
+                Select-Object -First 10 -ExpandProperty FullName
+              if ($hits) { $hits | ForEach-Object { "- $_" } } else { '- (no matches)' }
+            ),
             '',
             '## NEXT_ACTION',
             '- Open Artifact desktop-run-* and copy ONE_TAP_ERROR_REPORT.txt'
@@ -533,6 +566,75 @@ jobs:
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
+      - name: Publish ONE_TAP report to diag-logs branch
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
+          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
+          $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          Set-Location $diagRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          git fetch origin diag-logs --depth 1 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            git checkout -B diag-logs origin/diag-logs
+          } else {
+            git checkout --orphan diag-logs
+          }
+
+          $runsDir = Join-Path $diagRepo 'runs'
+          $null = New-Item -Path $runsDir -ItemType Directory -Force
+
+          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $shortSha = ('${{ github.sha }}').Substring(0, 7)
+          $runFolderName = "${timestamp}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
+          $runFolder = Join-Path $runsDir $runFolderName
+          $null = New-Item -Path $runFolder -ItemType Directory -Force
+
+          $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $oneTapSource) {
+            Copy-Item -Path $oneTapSource -Destination $oneTapDest -Force
+          } else {
+            @(
+              '[WARN] ONE_TAP_ERROR_REPORT.txt was not found in workspace temp.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+              ('repo=${{ github.repository }}'),
+              ('run_id=${{ github.run_id }}'),
+              ('run_attempt=${{ github.run_attempt }}')
+            ) | Set-Content -Path $oneTapDest -Encoding UTF8
+          }
+
+          $latestMdPath = Join-Path $runsDir 'LATEST.md'
+          @(
+            '# Latest ONE_TAP report',
+            '',
+            "- folder: $runFolderName",
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+          ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
+
+          git add runs
+          if (git diff --cached --quiet) {
+            Write-Host 'No diagnostics changes to commit.'
+            exit 0
+          }
+
+          git commit -m "diag: add one_tap report $runFolderName"
+          git push origin diag-logs
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Failed to push ONE_TAP report to diag-logs branch.'
+            Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
+            exit $LASTEXITCODE
+          }
+
       - name: Collect diagnostics
         if: always()
         id: collect_diag
@@ -660,103 +762,6 @@ jobs:
           retention-days: 7
           path: ${{ steps.collect_diag.outputs.diag_zip }}
 
-      - name: Publish lightweight diagnostics to diag-logs branch
-        if: always()
-        continue-on-error: true
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        env:
-          KEEP_LATEST: '30'
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
-          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
-          $null = New-Item -Path $diagRepo -ItemType Directory -Force
-          Set-Location $diagRepo
-
-          git init
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-
-          git fetch origin diag-logs --depth 1 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            git checkout -B diag-logs origin/diag-logs
-          } else {
-            git checkout --orphan diag-logs
-            if (Test-Path '.gitignore') { Remove-Item '.gitignore' -Force }
-          }
-
-          $runsDir = Join-Path $diagRepo 'runs'
-          $null = New-Item -Path $runsDir -ItemType Directory -Force
-
-          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-          $shortSha = ('${{ github.sha }}').Substring(0, 7)
-          $runFolderName = "${timestamp}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
-          $runFolder = Join-Path $runsDir $runFolderName
-          $null = New-Item -Path $runFolder -ItemType Directory -Force
-
-          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_summary }}' -Destination (Join-Path $runFolder 'summary.md') -Force
-          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_runner_tail }}' -Destination (Join-Path $runFolder 'runner_diag_tail.txt') -Force
-          Copy-Item -Path '${{ steps.collect_diag.outputs.diag_workflow_tail }}' -Destination (Join-Path $runFolder 'workflow_tail.txt') -Force
-
-          $oneTapCandidates = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'),
-            (Join-Path '${{ steps.collect_diag.outputs.diag_out }}' 'ONE_TAP_ERROR_REPORT.txt')
-          )
-          $oneTap = $oneTapCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-          if ($oneTap) {
-            Copy-Item -Path $oneTap -Destination (Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt') -Force
-          } else {
-            @(
-              '[WARN] ONE_TAP_ERROR_REPORT.txt not found for diag-logs publishing.',
-              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
-            ) | Set-Content -Path (Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt') -Encoding UTF8
-          }
-
-          $latestMdPath = Join-Path $runsDir 'LATEST.md'
-          @(
-            '# Latest diagnostics run',
-            '',
-            "- folder: $runFolderName",
-            "- summary: ./runs/$runFolderName/summary.md",
-            "- one_tap_report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt",
-            "- runner_diag_tail: ./runs/$runFolderName/runner_diag_tail.txt",
-            "- workflow_tail: ./runs/$runFolderName/workflow_tail.txt"
-          ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
-
-          $keepLatest = [int]$env:KEEP_LATEST
-          $runDirs = Get-ChildItem -Path $runsDir -Directory | Sort-Object Name -Descending
-          if ($runDirs.Count -gt $keepLatest) {
-            $toDelete = $runDirs | Select-Object -Skip $keepLatest
-            foreach ($dir in $toDelete) {
-              Remove-Item -Path $dir.FullName -Recurse -Force
-            }
-          }
-
-          $currentRuns = Get-ChildItem -Path $runsDir -Directory | Sort-Object Name -Descending | ForEach-Object {
-            [PSCustomObject]@{
-              folder = $_.Name
-              updated_utc = $_.LastWriteTimeUtc.ToString('o')
-            }
-          }
-          $indexPath = Join-Path $runsDir 'index.json'
-          $currentRuns | ConvertTo-Json -Depth 3 | Set-Content -Path $indexPath -Encoding UTF8
-
-          git add runs
-          if (git diff --cached --quiet) {
-            Write-Host 'No diagnostics changes to commit.'
-            exit 0
-          }
-
-          git commit -m "diag: add run $runFolderName"
-          git push origin diag-logs
-          $pushRc = $LASTEXITCODE
-          if ($pushRc -ne 0) {
-            Write-Warning 'Diagnostics push to diag-logs failed. Workflow continues because publishing is non-blocking.'
-            Write-Warning 'Hint: Repo Settings > Actions > Workflow permissions: set Read and write permissions; allow Actions to push branches.'
-            exit $pushRc
-          }
 
       - name: Upload diagnostics artifact
         if: always()
