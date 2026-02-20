@@ -133,13 +133,32 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Set-Location $env:GITHUB_WORKSPACE
 
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+          $reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'
+
+          @(
+            '=== ONE TAP ERROR REPORT ===',
+            ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+            ('repo=${{ github.repository }}'),
+            ('ref=${{ github.ref }}'),
+            ('sha=${{ github.sha }}'),
+            ('run_id=${{ github.run_id }}'),
+            ('run_attempt=${{ github.run_attempt }}'),
+            ('failing_step=Verify required scripts'),
+            ('GITHUB_WORKSPACE={0}' -f $env:GITHUB_WORKSPACE),
+            ('PWD={0}' -f $PWD),
+            ''
+          ) | Set-Content -Path $reportPath -Encoding UTF8
+
           Write-Host '=== Verify scripts directory ==='
           $scriptsDir = Join-Path $env:GITHUB_WORKSPACE 'scripts'
           Write-Host "scripts_dir=$scriptsDir"
           if (Test-Path $scriptsDir) {
             Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
           } else {
-            Write-Error "scripts directory not found: $scriptsDir"
+            Write-Warning "scripts directory not found: $scriptsDir"
+            Add-Content -Path $reportPath -Value ('[MISSING] scripts directory not found: {0}' -f $scriptsDir)
           }
 
           $expected = @(
@@ -153,10 +172,24 @@ jobs:
             if (Test-Path $path) {
               Write-Host "[FOUND] $path"
             } else {
-              Write-Error "[MISSING] $path"
+              Write-Warning "[MISSING] $path"
               $missing += $path
             }
           }
+
+          Add-Content -Path $reportPath -Value @(
+            '## REQUIRED_SCRIPT_CHECK',
+            ('scripts_dir_exists={0}' -f (Test-Path $scriptsDir)),
+            '',
+            '### FOUND',
+            ($expected | Where-Object { Test-Path $_ } | ForEach-Object { "- $_" }),
+            '',
+            '### MISSING',
+            ($(if ($missing.Count -gt 0) { $missing | ForEach-Object { "- $_" } } else { '- (none)' })),
+            '',
+            '## NEXT_ACTION',
+            '- Open Artifact desktop-run-* and copy ONE_TAP_ERROR_REPORT.txt'
+          )
 
           if ($missing.Count -gt 0) {
             throw ("Required scripts missing: {0}" -f ($missing -join ', '))
@@ -443,6 +476,17 @@ jobs:
           $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
           $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
 
+          $reportSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $reportDest = Join-Path $artifactRoot 'ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $reportSource) {
+            Copy-Item -Path $reportSource -Destination $reportDest -Force
+          } else {
+            @(
+              '[WARN] ONE_TAP_ERROR_REPORT.txt was missing at stage time.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path $reportDest -Encoding UTF8
+          }
+
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
           if (Test-Path $consoleLog) {
             Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
@@ -544,11 +588,13 @@ jobs:
           $workflowLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
           $runLogPath = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
           $stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'
+          $oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
           if ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }
           if ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }
           if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
           if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
+          if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
           Get-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force
           }
@@ -574,6 +620,7 @@ jobs:
             "- attempt: $runAttempt",
             "- failing_step: $env:FAILING_STEP",
             "- artifact_name: $artifactName",
+            '- one_tap_report: See ONE_TAP_ERROR_REPORT.txt',
             '',
             '## runner_diag_tail (last 200 lines)',
             '```text',
@@ -653,12 +700,27 @@ jobs:
           Copy-Item -Path '${{ steps.collect_diag.outputs.diag_runner_tail }}' -Destination (Join-Path $runFolder 'runner_diag_tail.txt') -Force
           Copy-Item -Path '${{ steps.collect_diag.outputs.diag_workflow_tail }}' -Destination (Join-Path $runFolder 'workflow_tail.txt') -Force
 
+          $oneTapCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'),
+            (Join-Path '${{ steps.collect_diag.outputs.diag_out }}' 'ONE_TAP_ERROR_REPORT.txt')
+          )
+          $oneTap = $oneTapCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if ($oneTap) {
+            Copy-Item -Path $oneTap -Destination (Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt') -Force
+          } else {
+            @(
+              '[WARN] ONE_TAP_ERROR_REPORT.txt not found for diag-logs publishing.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path (Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt') -Encoding UTF8
+          }
+
           $latestMdPath = Join-Path $runsDir 'LATEST.md'
           @(
             '# Latest diagnostics run',
             '',
             "- folder: $runFolderName",
             "- summary: ./runs/$runFolderName/summary.md",
+            "- one_tap_report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt",
             "- runner_diag_tail: ./runs/$runFolderName/runner_diag_tail.txt",
             "- workflow_tail: ./runs/$runFolderName/workflow_tail.txt"
           ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
@@ -689,10 +751,11 @@ jobs:
 
           git commit -m "diag: add run $runFolderName"
           git push origin diag-logs
-          if ($LASTEXITCODE -ne 0) {
+          $pushRc = $LASTEXITCODE
+          if ($pushRc -ne 0) {
             Write-Warning 'Diagnostics push to diag-logs failed. Workflow continues because publishing is non-blocking.'
-            Write-Warning 'Hint: check repository Settings > Actions > Workflow permissions (Read and write permissions) and allow GitHub Actions to create/push branches.'
-            exit $LASTEXITCODE
+            Write-Warning 'Hint: Repo Settings > Actions > Workflow permissions: set Read and write permissions; allow Actions to push branches.'
+            exit $pushRc
           }
 
       - name: Upload diagnostics artifact
