@@ -800,7 +800,7 @@ jobs:
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
-      - name: Evaluate outputs (StepA/B/E) and write report
+      - name: Evaluate outputs (StepA/StepB) and write report
         if: always()
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
