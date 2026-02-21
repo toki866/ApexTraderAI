@@ -800,6 +800,38 @@ jobs:
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
+      - name: Evaluate outputs (StepA/B/E) and write report
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+
+          $workRoot='C:\work\apex_work\runs'
+          $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+          if (-not $latest) { Write-Host "[WARN] no run_dir"; exit 0 }
+
+          $outputRoot=Join-Path $latest.FullName 'output'
+          if (-not (Test-Path $outputRoot)) { Write-Host "[WARN] no output_root"; exit 0 }
+
+          $repDir=Join-Path $env:GITHUB_WORKSPACE 'temp\eval'
+          New-Item $repDir -ItemType Directory -Force | Out-Null
+          $md=Join-Path $repDir 'EVAL_REPORT.md'
+          $js=Join-Path $repDir 'EVAL_REPORT.json'
+
+          $symbols = '${{ inputs.symbols }}'
+          $symbol = 'SOXL'
+          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
+            $symbol = ($symbols -split ',')[0].Trim()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+          }
+          $mode = '${{ inputs.mode }}'
+          if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
+
+          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js"
+          exit 0
+
 
       - name: Publish ONE_TAP report to diag-logs branch
         id: publish_diag_logs
@@ -850,6 +882,15 @@ jobs:
               ('run_id=${{ github.run_id }}'),
               ('run_attempt=${{ github.run_attempt }}')
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
+          }
+
+          $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
+          if (Test-Path $evalMdSource) {
+            Copy-Item -Path $evalMdSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.md') -Force
+          }
+          $evalJsonSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'
+          if (Test-Path $evalJsonSource) {
+            Copy-Item -Path $evalJsonSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.json') -Force
           }
 
           $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
@@ -935,6 +976,11 @@ jobs:
                 }
               }
             }
+          }
+
+          if (Test-Path (Join-Path $csvOutDir 'EVAL_REPORT.md')) {
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('- eval_report: ./csv/EVAL_REPORT.md')
           }
 
           $csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8
