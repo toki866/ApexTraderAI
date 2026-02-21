@@ -786,24 +786,87 @@ def _apply_config_data_dir(app_config: Any, data_root: Path) -> Any:
 def _apply_config_output_root(app_config: Any, output_root: Path) -> Any:
     """Write output_root onto AppConfig top-level and nested data config (best-effort)."""
     output_root_str = str(output_root)
+
+    def _safe_set_attr(obj: Any, name: str, value: Any) -> bool:
+        try:
+            setattr(obj, name, value)
+            return True
+        except Exception:
+            return False
+
+    def _replace_dc_attr(obj: Any, **kwargs: Any) -> Tuple[Any, bool]:
+        if not dataclasses.is_dataclass(obj):
+            return obj, False
+        dc_fields = getattr(obj, "__dataclass_fields__", {})
+        filtered = {k: v for k, v in kwargs.items() if k in dc_fields}
+        if not filtered:
+            return obj, False
+        try:
+            return dataclasses.replace(obj, **filtered), True
+        except Exception:
+            return obj, False
+
+    def _ensure_data_cfg(obj: Any) -> Tuple[Any, Any]:
+        cfg_data = getattr(obj, "data", None)
+        if cfg_data is not None:
+            return obj, cfg_data
+
+        shim_data = _ConfigShim(object(), output_root=output_root_str, output_dir=output_root_str)
+        if _safe_set_attr(obj, "data", shim_data):
+            return obj, shim_data
+
+        replaced_obj, ok = _replace_dc_attr(obj, data=shim_data)
+        if ok:
+            return replaced_obj, getattr(replaced_obj, "data", shim_data)
+
+        wrapped = _ConfigShim(obj, data=shim_data)
+        return wrapped, shim_data
+
     if isinstance(app_config, dict):
         app_config["output_root"] = output_root_str
+        app_config["output_dir"] = output_root_str
         data_cfg = app_config.get("data")
         if isinstance(data_cfg, dict):
             data_cfg["output_root"] = output_root_str
+            data_cfg["output_dir"] = output_root_str
+        elif data_cfg is None:
+            app_config["data"] = {"output_root": output_root_str, "output_dir": output_root_str}
         return app_config
 
-    try:
-        setattr(app_config, "output_root", output_root_str)
-    except Exception:
-        app_config = _ConfigShim(app_config, output_root=output_root_str)
+    # top-level output_root and output_dir alias
+    top_ok_root = _safe_set_attr(app_config, "output_root", output_root_str)
+    top_ok_dir = _safe_set_attr(app_config, "output_dir", output_root_str)
+    if not (top_ok_root and top_ok_dir):
+        replaced_app, ok = _replace_dc_attr(app_config, output_root=output_root_str, output_dir=output_root_str)
+        if ok:
+            app_config = replaced_app
+        else:
+            app_config = _ConfigShim(app_config, output_root=output_root_str, output_dir=output_root_str)
 
-    cfg_data = getattr(app_config, "data", None)
-    if cfg_data is not None:
-        try:
-            setattr(cfg_data, "output_root", output_root_str)
-        except Exception:
-            pass
+    app_config, cfg_data = _ensure_data_cfg(app_config)
+
+    data_ok_root = _safe_set_attr(cfg_data, "output_root", output_root_str)
+    data_ok_dir = _safe_set_attr(cfg_data, "output_dir", output_root_str)
+    if not (data_ok_root and data_ok_dir):
+        replaced_data, ok = _replace_dc_attr(cfg_data, output_root=output_root_str, output_dir=output_root_str)
+        if ok:
+            if not _safe_set_attr(app_config, "data", replaced_data):
+                replaced_app, ok_app = _replace_dc_attr(app_config, data=replaced_data)
+                if ok_app:
+                    app_config = replaced_app
+                else:
+                    app_config = _ConfigShim(app_config, data=_ConfigShim(replaced_data, output_root=output_root_str, output_dir=output_root_str))
+            else:
+                _safe_set_attr(app_config.data, "output_root", output_root_str)
+                _safe_set_attr(app_config.data, "output_dir", output_root_str)
+        else:
+            data_shim = _ConfigShim(cfg_data, output_root=output_root_str, output_dir=output_root_str)
+            if not _safe_set_attr(app_config, "data", data_shim):
+                replaced_app, ok_app = _replace_dc_attr(app_config, data=data_shim)
+                if ok_app:
+                    app_config = replaced_app
+                else:
+                    app_config = _ConfigShim(app_config, data=data_shim)
     return app_config
 
 
@@ -1075,6 +1138,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
+    print(
+        f"[headless] output_root_resolved={resolved_output_root} "
+        f"cfg_output_root={getattr(app_config, 'output_root', None)} "
+        f"cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}"
+    )
 
     resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
     app_config = _apply_config_data_dir(app_config, resolved_data_root)
