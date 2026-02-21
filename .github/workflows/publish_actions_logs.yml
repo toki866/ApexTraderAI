@@ -82,11 +82,20 @@ jobs:
           cp actions_logs.zip "$OUTDIR/actions_logs.zip"
 
       - name: Publish to diag-logs branch
+        continue-on-error: true
         shell: bash
         env:
           FOLDER: ${{ steps.build.outputs.folder }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          diagRepo="$RUNNER_TEMP/diag_repo"
+          rm -rf "$diagRepo"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$diagRepo"
+          cd "$diagRepo"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -95,11 +104,12 @@ jobs:
             git checkout -B diag-logs origin/diag-logs
           else
             git checkout --orphan diag-logs
-            rm -rf ./* || true
+            git rm -rf . >/dev/null 2>&1 || true
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           fi
 
           mkdir -p runs
-          cp -r "out/$FOLDER" "runs/$FOLDER"
+          cp -r "$GITHUB_WORKSPACE/out/$FOLDER" "runs/$FOLDER"
 
           cat > runs/LATEST.md <<EOF
           # Latest Actions Logs
