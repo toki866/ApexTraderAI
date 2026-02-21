@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Best-effort evaluator for StepA/StepB CSV outputs.
+"""Best-effort evaluator for StepA/StepE CSV outputs.
 
 The script NEVER raises a hard failure for workflow usage:
 - Missing files/columns are reported as SKIP.
@@ -119,6 +119,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "stepA": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "stepE": {"status": "SKIP", "summary": "not evaluated", "rows": []},
     }
 
     # StepA
@@ -292,6 +293,41 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "split_summary_path": split_b_path,
         "rows": stepb_rows,
     }
+
+    # StepE
+    step_e_daily_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
+    if not step_e_daily_logs:
+        report["stepE"] = {
+            "status": "SKIP",
+            "summary": "no stepE daily logs found",
+            "rows": [],
+        }
+    else:
+        rows: list[dict[str, Any]] = []
+        for fpath in step_e_daily_logs:
+            try:
+                df = _read_csv(fpath)
+                rows.append({
+                    "file": os.path.basename(fpath),
+                    "rows": int(len(df)),
+                    "columns": list(df.columns),
+                    "status": "OK" if len(df) > 0 else "WARN",
+                })
+            except Exception as exc:
+                rows.append({
+                    "file": os.path.basename(fpath),
+                    "rows": 0,
+                    "columns": [],
+                    "status": "SKIP",
+                    "reason": str(exc),
+                })
+
+        report["stepE"] = {
+            "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
+            "summary": "stepE daily logs evaluated",
+            "rows": rows,
+        }
+
     return report
 
 
@@ -336,6 +372,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         )
         if row.get("reason"):
             lines.append(f"- note ({row.get('file')}): {row.get('reason')}")
+
+    lines.append("")
+    step_e = report.get("stepE", {})
+    lines.append("## StepE daily logs")
+    lines.append(f"- status: **{step_e.get('status')}**")
+    lines.append(f"- summary: {step_e.get('summary')}")
+    for row in step_e.get("rows", []):
+        lines.append(f"- {row.get('file')}: rows={row.get('rows')} status={row.get('status')}")
 
     lines.append("")
     lines.append("Status rule: OK if non_null_ratio>=0.90 and coverage_ratio>=0.90; WARN otherwise; BAD if non_null_ratio<0.50 or pred cols missing.")

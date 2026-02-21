@@ -266,15 +266,36 @@ def _repo_root() -> Path:
 
 
 def _parse_steps(s: str) -> Tuple[str, ...]:
+    default_steps: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
+    canonical_order: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "D", "E", "F")
+
+    step_aliases = {
+        "A": "A",
+        "B": "B",
+        "C": "C",
+        "D": "D",
+        "E": "E",
+        "F": "F",
+        "DPRIME": "DPRIME",
+        "DPR": "DPRIME",
+        "D_PRIME": "DPRIME",
+        "D-PRIME": "DPRIME",
+        "D'": "DPRIME",
+    }
+
     s = (s or "").strip()
     if not s:
-        return ("A", "B", "C", "D", "E", "F")
-    parts = [p.strip().upper() for p in s.replace(" ", "").split(",") if p.strip()]
+        return default_steps
+
+    parts = [p.strip().upper() for p in s.split(",") if p.strip()]
     if any(p in ("ALL", "*") for p in parts):
-        return ("A", "B", "C", "D", "E", "F")
-    valid = {"A", "B", "C", "D", "E", "F"}
-    out = tuple([p for p in parts if p in valid])
-    return out if out else ("A", "B", "C", "D", "E", "F")
+        return canonical_order
+
+    requested = {step_aliases[p] for p in parts if p in step_aliases}
+    if not requested:
+        return default_steps
+
+    return tuple(step for step in canonical_order if step in requested)
 
 
 
@@ -1026,12 +1047,21 @@ def _run_stepB(app_config, symbol: str, date_range, enable_xsr: bool, enable_mam
 def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, prev_results: Dict[str, Any]):
     mod_map = {
         "C": ("ai_core.services.step_c_service", "StepCService"),
+        "DPRIME": ("ai_core.services.step_dprime_service", "StepDPrimeService"),
         "D": ("ai_core.services.step_d_service", "StepDService"),
         "E": ("ai_core.services.step_e_service", "StepEService"),
         "F": ("ai_core.services.step_f_service", "StepFService"),
     }
     module_name, cls_name = mod_map[step_letter]
-    module = __import__(module_name, fromlist=[cls_name])
+    try:
+        module = __import__(module_name, fromlist=[cls_name])
+    except Exception as exc:
+        if step_letter == "DPRIME":
+            raise RuntimeError(
+                "Requested step DPRIME but StepD-prime module is unavailable: "
+                f"missing {module_name}.{cls_name} ({type(exc).__name__}: {exc})"
+            ) from exc
+        raise
     cls = getattr(module, cls_name)
 
     # ctx is shared for ctor/run best-effort calls
@@ -1063,7 +1093,7 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
-    ap.add_argument("--steps", default=None, help="Comma-separated steps to run. Example: A,B,C (default ALL)")
+    ap.add_argument("--steps", default="A,B,C,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,DPRIME,E,F")
     ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
     ap.add_argument("--train-years", type=int, default=8)
     ap.add_argument("--test-months", type=int, default=3)
@@ -1250,33 +1280,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if env_horizon_list:
         print(f"[headless] env_horizons={','.join(str(x) for x in env_horizon_list)}")
 
-    if "A" in steps:
-        print("[StepA] start")
-        results["stepA_result"] = _run_stepA(app_config, symbol, date_range)
-        print("[StepA] done")
+    try:
+        if "A" in steps:
+            print("[StepA] start")
+            results["stepA_result"] = _run_stepA(app_config, symbol, date_range)
+            print("[StepA] done")
 
-    if "B" in steps:
-        print("[StepB] start")
-        mamba_horizons_list = _parse_int_list(args.mamba_horizons)
-        results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_xsr, enable_mamba, args.enable_mamba_periodic, enable_fedformer, args.mamba_lookback, mamba_horizons_list)
-        print(f"[StepB] agents: xsr={enable_xsr}, mamba={enable_mamba}, fedformer={enable_fedformer}")
-        print("[StepB] done")
-        # Ensure contract artifact exists
-        try:
-            p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=resolved_mamba_mode)
-            print(f"[StepB] ensured: {p}")
-        except Exception as e:
-            print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+        if "B" in steps:
+            print("[StepB] start")
+            mamba_horizons_list = _parse_int_list(args.mamba_horizons)
+            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_xsr, enable_mamba, args.enable_mamba_periodic, enable_fedformer, args.mamba_lookback, mamba_horizons_list)
+            print(f"[StepB] agents: xsr={enable_xsr}, mamba={enable_mamba}, fedformer={enable_fedformer}")
+            print("[StepB] done")
+            # Ensure contract artifact exists
+            try:
+                p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=resolved_mamba_mode)
+                print(f"[StepB] ensured: {p}")
+            except Exception as e:
+                print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
 
-    for step in ("C", "D", "E", "F"):
-        if step not in steps:
-            continue
-        print(f"[Step{step}] start")
-        results[f"step{step}_result"] = _run_step_generic(step, app_config, symbol, date_range, results)
-        print(f"[Step{step}] done")
+        for step in ("C", "DPRIME", "D", "E", "F"):
+            if step not in steps:
+                continue
+            step_name = "StepDPrime" if step == "DPRIME" else f"Step{step}"
+            print(f"[{step_name}] start")
+            results[f"step{step}_result"] = _run_step_generic(step, app_config, symbol, date_range, results)
+            print(f"[{step_name}] done")
 
-    print("[headless] ALL DONE")
-    return 0
+        print("[headless] ALL DONE")
+        print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
+        return 0
+    except Exception:
+        print(f"[PIPELINE] status=failed steps={','.join(steps)} output_root={resolved_output_root}")
+        raise
 
 
 if __name__ == "__main__":
