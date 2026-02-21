@@ -783,6 +783,30 @@ def _apply_config_data_dir(app_config: Any, data_root: Path) -> Any:
         return _ConfigShim(app_config, data_dir=str(data_root), data_root=str(data_root))
 
 
+def _apply_config_output_root(app_config: Any, output_root: Path) -> Any:
+    """Write output_root onto AppConfig top-level and nested data config (best-effort)."""
+    output_root_str = str(output_root)
+    if isinstance(app_config, dict):
+        app_config["output_root"] = output_root_str
+        data_cfg = app_config.get("data")
+        if isinstance(data_cfg, dict):
+            data_cfg["output_root"] = output_root_str
+        return app_config
+
+    try:
+        setattr(app_config, "output_root", output_root_str)
+    except Exception:
+        app_config = _ConfigShim(app_config, output_root=output_root_str)
+
+    cfg_data = getattr(app_config, "data", None)
+    if cfg_data is not None:
+        try:
+            setattr(cfg_data, "output_root", output_root_str)
+        except Exception:
+            pass
+    return app_config
+
+
 
 def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedformer: bool) -> None:
     """Best-effort enabling of StepB agents across differing config schemas.
@@ -1049,13 +1073,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     resolved_mamba_mode = (args.mode or args.mamba_mode or "sim").strip().lower()
     resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
 
-    if isinstance(app_config, dict):
-        app_config["output_root"] = str(resolved_output_root)
-    else:
-        try:
-            setattr(app_config, "output_root", str(resolved_output_root))
-        except Exception:
-            app_config = _ConfigShim(app_config, output_root=str(resolved_output_root))
+    resolved_output_root.mkdir(parents=True, exist_ok=True)
+    app_config = _apply_config_output_root(app_config, resolved_output_root)
 
     resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
     app_config = _apply_config_data_dir(app_config, resolved_data_root)
