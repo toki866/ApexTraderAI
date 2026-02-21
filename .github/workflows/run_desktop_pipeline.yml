@@ -66,12 +66,27 @@ jobs:
   run:
     runs-on: [self-hosted, windows]
     steps:
+      - name: Pre-clean workspace (best effort)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Continue'
+          Get-Process python, git, robocopy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          cmd /c "attrib -R -S -H `"$env:GITHUB_WORKSPACE\*`" /S /D" 2>$null
+          $repoDir = Join-Path $env:GITHUB_WORKSPACE 'repo'
+          if (Test-Path $repoDir) {
+            Remove-Item -Path $repoDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Checkout repo
+        id: checkout_repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true
+          clean: false
           submodules: recursive
+          path: repo
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -104,13 +119,14 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference='Stop'
-          Set-Location $env:GITHUB_WORKSPACE
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$env:GITHUB_WORKSPACE"
+          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'repo'
+          Set-Location $repoRoot
+          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
           Write-Host "PWD=$PWD"
           Write-Host "HEAD=$(git rev-parse --short HEAD)"
           Write-Host "=== workspace listing ==="
-          Get-ChildItem -Path $env:GITHUB_WORKSPACE | Select-Object Name, FullName | Format-Table -AutoSize
-          $scriptsDir = Join-Path $env:GITHUB_WORKSPACE 'scripts'
+          Get-ChildItem -Path $repoRoot | Select-Object Name, FullName | Format-Table -AutoSize
+          $scriptsDir = Join-Path $repoRoot 'scripts'
           Write-Host "scripts_dir=$scriptsDir"
           if (!(Test-Path $scriptsDir)) { throw "scripts directory not found: $scriptsDir" }
           Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
@@ -148,11 +164,11 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Stop'
-          $repoRoot = $env:GITHUB_WORKSPACE
+          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'repo'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
           Add-Content -Path $reportPath -Value '[STEP] resolve_repo_root'
-          $bat = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
+          $bat = Get-ChildItem -Path $repoRoot -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if ($bat) {
@@ -160,8 +176,8 @@ jobs:
             $repoRoot = Split-Path $scriptsDir -Parent
             Write-Host "Resolved run_all_local_then_copy.bat at: $($bat.FullName)"
           } else {
-            Write-Warning "Could not find scripts\\run_all_local_then_copy.bat under GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-            Write-Host "Falling back REPO_ROOT to GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+            Write-Warning "Could not find scripts\\run_all_local_then_copy.bat under checkout root=$repoRoot"
+            Write-Host "Falling back REPO_ROOT to checkout root=$repoRoot"
           }
 
           Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
@@ -653,12 +669,20 @@ jobs:
 
       - name: Trim ONE_TAP report size
         if: always()
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          if (Test-Path $reportPath -and (Get-Item $reportPath).Length -gt 60000) {
+          $maxBytes = 60000
+          if (Test-Path $reportPath) {
+            $len = (Get-Item $reportPath).Length
+          } else {
+            $len = 0
+          }
+
+          if ((Test-Path $reportPath) -and ($len -gt $maxBytes)) {
             $tail = Get-Content -Path $reportPath -Raw
-            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - $maxBytes))
             Set-Content -Path $reportPath -Value $tail -Encoding UTF8
           }
 
@@ -751,7 +775,8 @@ jobs:
 
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const title = 'ApexTraderAI Diagnostics (latest)';
-            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${context.runAttempt}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
+            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
 
             const { data: issues } = await github.rest.issues.listForRepo({
               owner,
