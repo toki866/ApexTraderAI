@@ -65,92 +65,27 @@ jobs:
   run:
     runs-on: [self-hosted, windows]
     steps:
-      - name: Resolve repo root
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          submodules: recursive
+
+      - name: Verify scripts directory (post-checkout)
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $ErrorActionPreference = 'Stop'
-          $repoRoot = $null
-          $workspaceBat = Join-Path $env:GITHUB_WORKSPACE 'scripts\run_all_local_then_copy.bat'
-
-          if (Test-Path $workspaceBat) {
-            $repoRoot = $env:GITHUB_WORKSPACE
-          } else {
-            $bat = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
-              Select-Object -First 1
-            if ($bat) {
-              $scriptsDir = Split-Path $bat.FullName -Parent
-              $repoRoot = Split-Path $scriptsDir -Parent
-            }
-          }
-
-          if (-not $repoRoot) {
-            Write-Host "Could not resolve REPO_ROOT under GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-            Write-Host '=== Top-level listing of GITHUB_WORKSPACE ==='
-            Get-ChildItem -Path $env:GITHUB_WORKSPACE -Force | Select-Object FullName, Name, Mode, LastWriteTime | Format-Table -AutoSize
-            throw "Unable to locate scripts\\run_all_local_then_copy.bat under GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          }
-
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
-          Write-Host "REPO_ROOT=$repoRoot"
-
-      - name: Sync repo to github.sha (no delete)
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        env:
-          GIT_TERMINAL_PROMPT: "0"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          function Assert-Ok($msg) { if ($LASTEXITCODE -ne 0) { throw "$msg (exit=$LASTEXITCODE)" } }
-
-          $repo = "$env:REPO_ROOT"
-          Set-Location $repo
-
-          git config --global core.longpaths true
-          Assert-Ok 'git config core.longpaths failed'
-          git config --global --add safe.directory "$repo"
-          Assert-Ok 'git config safe.directory failed'
-
-          if (!(Test-Path (Join-Path $repo '.git'))) {
-            git init
-            Assert-Ok 'git init failed'
-            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-            Assert-Ok 'git remote add origin failed'
-          } else {
-            git remote get-url origin *> $null
-            if ($LASTEXITCODE -ne 0) {
-              git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-              Assert-Ok 'git remote add origin failed'
-            } else {
-              git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-              Assert-Ok 'git remote set-url failed'
-            }
-          }
-
-          git fetch --force --prune origin
-          Assert-Ok 'git fetch failed'
-          git fetch --force origin $env:GITHUB_SHA
-          Assert-Ok 'git fetch SHA failed'
-
-          $shaScripts = git ls-tree -r --name-only $env:GITHUB_SHA -- scripts
-          Assert-Ok 'git ls-tree failed'
-          if ($shaScripts) {
-            Write-Host 'git ls-tree scripts (for GITHUB_SHA):'
-            $shaScripts | ForEach-Object { Write-Host "  $_" }
-          } else {
-            Write-Warning 'Current SHA has no scripts folder; run is on an old commit or scripts not committed.'
-          }
-
-          git checkout -f $env:GITHUB_SHA
-          Assert-Ok 'git checkout failed'
-          git reset --hard $env:GITHUB_SHA
-          Assert-Ok 'git reset failed'
-          git clean -ffdx
-          Assert-Ok 'git clean failed'
-          if (Test-Path (Join-Path $repo '.gitmodules')) {
-            git submodule update --init --recursive
-            Assert-Ok 'git submodule update failed'
-          }
-          git rev-parse HEAD
-          Assert-Ok 'git rev-parse failed'
+          $ErrorActionPreference='Stop'
+          Set-Location $env:GITHUB_WORKSPACE
+          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$env:GITHUB_WORKSPACE"
+          Write-Host "PWD=$PWD"
+          Write-Host "HEAD=$(git rev-parse --short HEAD)"
+          Write-Host "=== workspace listing ==="
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE | Select-Object Name, FullName | Format-Table -AutoSize
+          $scriptsDir = Join-Path $env:GITHUB_WORKSPACE 'scripts'
+          Write-Host "scripts_dir=$scriptsDir"
+          if (!(Test-Path $scriptsDir)) { throw "scripts directory not found: $scriptsDir" }
+          Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
 
       - name: Debug shells
         continue-on-error: true
