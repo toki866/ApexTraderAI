@@ -66,27 +66,46 @@ jobs:
   run:
     runs-on: [self-hosted, windows]
     steps:
-      - name: Pre-clean workspace (best effort)
-        if: always()
-        continue-on-error: true
+      - name: Prepare repo in C:\work (no OneDrive cleanup)
+        id: prep_repo
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          GIT_TERMINAL_PROMPT: "0"
         run: |
-          $ErrorActionPreference='Continue'
-          Get-Process python, git, robocopy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          cmd /c "attrib -R -S -H `"$env:GITHUB_WORKSPACE\*`" /S /D" 2>$null
-          $repoDir = Join-Path $env:GITHUB_WORKSPACE 'repo'
-          if (Test-Path $repoDir) {
-            Remove-Item -Path $repoDir -Recurse -Force -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          git config --global core.longpaths true
+
+          $repoUrl = "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          $cacheRoot = "C:\work\apex_repo_cache"
+          $repoDir = Join-Path $cacheRoot "ApexTraderAI"
+
+          New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
+
+          if (!(Test-Path (Join-Path $repoDir ".git"))) {
+            Write-Host "[repo] cloning to $repoDir"
+            if (Test-Path $repoDir) { Remove-Item -Path $repoDir -Recurse -Force -ErrorAction SilentlyContinue }
+            git clone $repoUrl $repoDir
+            if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit=$LASTEXITCODE)" }
+          } else {
+            Write-Host "[repo] fetch/reset in $repoDir"
+            git -C $repoDir remote set-url origin $repoUrl | Out-Null
+            git -C $repoDir fetch --force --prune origin
+            if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit=$LASTEXITCODE)" }
           }
 
-      - name: Checkout repo
-        id: checkout_repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          clean: false
-          submodules: recursive
-          path: repo
+          git -C $repoDir checkout -f $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "git checkout SHA failed (exit=$LASTEXITCODE)" }
+          git -C $repoDir reset --hard $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "git reset SHA failed (exit=$LASTEXITCODE)" }
+          git -C $repoDir clean -ffdx
+          if ($LASTEXITCODE -ne 0) { throw "git clean failed (exit=$LASTEXITCODE)" }
+
+          git config --global --add safe.directory $repoDir
+
+          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"
+          Write-Host "REPO_ROOT=$repoDir"
+          $headShort = git -C $repoDir rev-parse --short HEAD
+          Write-Host "HEAD=$headShort"
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -112,16 +131,17 @@ jobs:
             '[STEP] initialize_one_tap_report',
             '[OK] report initialized',
             ('[PATH] {0}' -f $reportPath),
+            ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ('[INFO] HEAD={0}' -f (git -C $env:REPO_ROOT rev-parse --short HEAD)),
             ''
           )
 
-      - name: Verify scripts directory (post-checkout)
+      - name: Verify scripts directory (post-prepare)
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference='Stop'
-          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'repo'
+          $repoRoot = $env:REPO_ROOT
           Set-Location $repoRoot
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
           Write-Host "PWD=$PWD"
           Write-Host "HEAD=$(git rev-parse --short HEAD)"
           Write-Host "=== workspace listing ==="
@@ -159,34 +179,6 @@ jobs:
           python --version
           echo RUNNER_TEMP=%RUNNER_TEMP%
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
-
-      - name: Resolve REPO_ROOT
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'repo'
-          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-
-          Add-Content -Path $reportPath -Value '[STEP] resolve_repo_root'
-          $bat = Get-ChildItem -Path $repoRoot -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if ($bat) {
-            $scriptsDir = Split-Path $bat.FullName -Parent
-            $repoRoot = Split-Path $scriptsDir -Parent
-            Write-Host "Resolved run_all_local_then_copy.bat at: $($bat.FullName)"
-          } else {
-            Write-Warning "Could not find scripts\\run_all_local_then_copy.bat under checkout root=$repoRoot"
-            Write-Host "Falling back REPO_ROOT to checkout root=$repoRoot"
-          }
-
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
-          Write-Host "REPO_ROOT=$repoRoot"
-          Add-Content -Path $reportPath -Value @(
-            '[OK] resolve_repo_root',
-            ('[OK] REPO_ROOT={0}' -f $repoRoot),
-            ''
-          )
 
       - name: Verify required scripts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -242,7 +234,7 @@ jobs:
 
           $searchResults = [ordered]@{}
           foreach ($fileName in @('run_all_local_then_copy.bat', 'package_diagnostics.ps1', 'package_diagnostics_to_onedrive.ps1')) {
-            $hits = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter $fileName -File -ErrorAction SilentlyContinue |
+            $hits = Get-ChildItem -Path $env:REPO_ROOT -Recurse -Filter $fileName -File -ErrorAction SilentlyContinue |
               Select-Object -First 5 -ExpandProperty FullName
             $searchResults[$fileName] = if ($hits) { $hits } else { @('(no matches)') }
           }
@@ -674,13 +666,7 @@ jobs:
         run: |
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $maxBytes = 60000
-          if (Test-Path $reportPath) {
-            $len = (Get-Item $reportPath).Length
-          } else {
-            $len = 0
-          }
-
-          if ((Test-Path $reportPath) -and ($len -gt $maxBytes)) {
+          if ((Test-Path $reportPath) -and ((Get-Item $reportPath).Length -gt $maxBytes)) {
             $tail = Get-Content -Path $reportPath -Raw
             $tail = $tail.Substring([Math]::Max(0, $tail.Length - $maxBytes))
             Set-Content -Path $reportPath -Value $tail -Encoding UTF8
