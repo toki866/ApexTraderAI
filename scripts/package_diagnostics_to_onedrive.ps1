@@ -38,10 +38,11 @@ if (Test-Path $oneTapReport) {
   $zipSources += $oneTapReport
 }
 
-$consoleLogCandidates = @(
-  (Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'),
-  $(if ($env:RUNNER_TEMP) { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' } else { $null })
-) | Where-Object { $_ -and (Test-Path $_) }
+$consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
+if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+  $consoleLogCandidates += (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
+}
+$consoleLogCandidates = $consoleLogCandidates | Where-Object { $_ -and (Test-Path $_) }
 $zipSources += $consoleLogCandidates
 
 if ($zipSources.Count -eq 0) {
@@ -54,7 +55,35 @@ if ($zipSources.Count -eq 0) {
   $zipSources += $placeholder
 }
 
-Compress-Archive -Path $zipSources -DestinationPath $zipPath -Force
+try {
+  Compress-Archive -Path $zipSources -DestinationPath $zipPath -Force -ErrorAction Stop
+} catch {
+  Write-Warning "Primary diagnostics archive failed: $($_.Exception.Message)"
+  $placeholder = Join-Path $workspaceTemp 'diag_zip_fallback_notice.txt'
+  @(
+    '[WARN] Primary diagnostics archive failed; created fallback package only.',
+    ('error={0}' -f $_.Exception.Message),
+    ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+  ) | Set-Content -Path $placeholder -Encoding UTF8
+
+  $fallbackSources = @($placeholder)
+  if (Test-Path $oneTapReport) {
+    $fallbackSources += $oneTapReport
+  }
+  $fallbackSources += $consoleLogCandidates
+  $fallbackSources = $fallbackSources | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+  if ($fallbackSources.Count -eq 0) {
+    throw 'Fallback diagnostics archive has no valid sources.'
+  }
+
+  try {
+    Compress-Archive -Path $fallbackSources -DestinationPath $zipPath -Force -ErrorAction Stop
+  } catch {
+    throw "Fallback diagnostics archive failed: $($_.Exception.Message)"
+  }
+}
+
 if (!(Test-Path $zipPath)) {
   throw "zip not created: $zipPath"
 }
