@@ -1,0 +1,172 @@
+name: Publish Actions Logs
+
+on:
+  workflow_run:
+    workflows: ["Run Desktop Pipeline"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download run logs zip
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "RUN_ID=$RUN_ID"
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs" \
+            -o actions_logs.zip
+          ls -lh actions_logs.zip
+
+      - name: Unzip logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p actions_logs
+          unzip -q actions_logs.zip -d actions_logs
+          echo "=== log files ==="
+          find actions_logs -maxdepth 3 -type f | sed 's|^| - |'
+
+      - name: Build compact tail report
+        id: build
+        shell: bash
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TS=$(date -u +"%Y%m%d_%H%M%S")
+          SHORTSHA=${SHA:0:7}
+          FOLDER="${TS}_run${RUN_ID}_att${ATTEMPT}_${CONCLUSION}_${SHORTSHA}"
+          echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+
+          OUTDIR="out/$FOLDER"
+          mkdir -p "$OUTDIR"
+
+          REPORT="$OUTDIR/ACTIONS_JOB_LOG_TAIL.txt"
+          {
+            echo "Run: https://github.com/$REPO/actions/runs/$RUN_ID"
+            echo "SHA: $SHA"
+            echo "Attempt: $ATTEMPT"
+            echo "Conclusion: $CONCLUSION"
+            echo ""
+            echo "==== TAILS (each file last 200 lines) ===="
+            echo ""
+          } > "$REPORT"
+
+          shopt -s globstar nullglob
+          for f in actions_logs/**/*.txt; do
+            echo "----- FILE: $f -----" >> "$REPORT"
+            tail -n 200 "$f" >> "$REPORT" || true
+            echo "" >> "$REPORT"
+          done
+
+          cp actions_logs.zip "$OUTDIR/actions_logs.zip"
+
+      - name: Publish to diag-logs branch (repo files)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FOLDER: ${{ steps.build.outputs.folder }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin diag-logs || true
+          if git show-ref --verify --quiet refs/remotes/origin/diag-logs; then
+            git checkout -B diag-logs origin/diag-logs
+          else
+            git checkout --orphan diag-logs
+            rm -rf ./* || true
+          fi
+
+          mkdir -p runs
+          cp -r "out/$FOLDER" "runs/$FOLDER"
+
+          cat > runs/LATEST.md <<EOF
+          # Latest Actions Logs
+          - folder: $FOLDER
+          - tail: ./runs/$FOLDER/ACTIONS_JOB_LOG_TAIL.txt
+          - zip:  ./runs/$FOLDER/actions_logs.zip
+          EOF
+
+          KEEP=30
+          ls -1 runs | grep '^20' | sort -r | tail -n +$((KEEP+1)) | while read -r old; do
+            rm -rf "runs/$old" || true
+          done
+
+          git add runs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "logs: add actions run $FOLDER"
+            git push origin diag-logs
+          fi
+
+      - name: Update Issue "ApexTraderAI Diagnostics (latest)"
+        uses: actions/github-script@v7
+        env:
+          FOLDER: ${{ steps.build.outputs.folder }}
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runId = context.payload.workflow_run.id;
+            const sha = context.payload.workflow_run.head_sha;
+            const attempt = context.payload.workflow_run.run_attempt;
+            const conclusion = context.payload.workflow_run.conclusion;
+            const folder = process.env.FOLDER;
+
+            const title = 'ApexTraderAI Diagnostics (latest)';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+            const diagUrl = `https://github.com/${owner}/${repo}/tree/diag-logs/runs/${folder}`;
+
+            const tailPath = `out/${folder}/ACTIONS_JOB_LOG_TAIL.txt`;
+            let tail = fs.existsSync(tailPath) ? fs.readFileSync(tailPath, 'utf8') : '(tail file missing)';
+            if (tail.length > 60000) tail = tail.slice(-60000);
+
+            const body = [
+              `Run: ${runUrl}`,
+              `SHA: ${sha}`,
+              `Attempt: ${attempt}`,
+              `Conclusion: ${conclusion}`,
+              '',
+              `diag-logs: ${diagUrl}`,
+              '',
+              '```text',
+              tail,
+              '```',
+              ''
+            ].join('\n');
+
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', per_page: 100 });
+            const existing = issues.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
