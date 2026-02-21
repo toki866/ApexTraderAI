@@ -27,7 +27,6 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          echo "RUN_ID=$RUN_ID"
           curl -L \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -41,8 +40,7 @@ jobs:
           set -euo pipefail
           mkdir -p actions_logs
           unzip -q actions_logs.zip -d actions_logs
-          echo "=== log files ==="
-          find actions_logs -maxdepth 3 -type f | sed 's|^| - |'
+          find actions_logs -type f | sed 's|^| - |'
 
       - name: Build compact tail report
         id: build
@@ -83,11 +81,9 @@ jobs:
 
           cp actions_logs.zip "$OUTDIR/actions_logs.zip"
 
-      - name: Publish to diag-logs branch (repo files)
+      - name: Publish to diag-logs branch
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           FOLDER: ${{ steps.build.outputs.folder }}
         run: |
           set -euo pipefail
@@ -113,7 +109,7 @@ jobs:
           EOF
 
           KEEP=30
-          ls -1 runs | grep '^20' | sort -r | tail -n +$((KEEP+1)) | while read -r old; do
+          ls -1 runs | grep '^20' | sort -r | tail -n +$((KEEP+1)) | while read old; do
             rm -rf "runs/$old" || true
           done
 
@@ -148,19 +144,18 @@ jobs:
             let tail = fs.existsSync(tailPath) ? fs.readFileSync(tailPath, 'utf8') : '(tail file missing)';
             if (tail.length > 60000) tail = tail.slice(-60000);
 
-            const body = [
-              `Run: ${runUrl}`,
-              `SHA: ${sha}`,
-              `Attempt: ${attempt}`,
-              `Conclusion: ${conclusion}`,
-              '',
-              `diag-logs: ${diagUrl}`,
-              '',
-              '```text',
-              tail,
-              '```',
-              ''
-            ].join('\n');
+            const body =
+            `Run: ${runUrl}
+            SHA: ${sha}
+            Attempt: ${attempt}
+            Conclusion: ${conclusion}
+
+            diag-logs: ${diagUrl}
+
+            \`\`\`text
+            ${tail}
+            \`\`\`
+            `;
 
             const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', per_page: 100 });
             const existing = issues.find(i => i.title === title);
