@@ -48,9 +48,9 @@ on:
         default: true
         type: boolean
       steps:
-        description: "Pipeline steps (comma-separated)"
+        description: "Pipeline steps to run (comma-separated). Default runs full A-F with D-prime."
         required: true
-        default: "A,B"
+        default: "A,B,C,DPRIME,E,F"
         type: string
       diag_keep_latest:
         description: "How many latest diag-logs runs to keep (older runs deleted from diag-logs branch)"
@@ -800,7 +800,7 @@ jobs:
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
-      - name: Evaluate outputs (StepA/StepB) and write report
+      - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: always()
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -916,7 +916,11 @@ jobs:
               (Join-Path $outputRoot 'stepA\*\stepA_split_summary_*.csv'),
               (Join-Path $outputRoot 'stepA\*\stepA_prices_test_*.csv'),
               (Join-Path $outputRoot 'stepB\*\stepB_split_summary_*.csv'),
-              (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv')
+              (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv'),
+              (Join-Path $outputRoot 'stepC\*\*summary*.csv'),
+              (Join-Path $outputRoot 'stepD_prime\*\*summary*.csv'),
+              (Join-Path $outputRoot 'stepE\*\stepE_daily_log_*.csv'),
+              (Join-Path $outputRoot 'stepF\*\*summary*.csv')
             )
 
             $sourceCsvFiles = @()
