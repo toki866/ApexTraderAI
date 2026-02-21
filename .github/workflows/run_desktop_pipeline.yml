@@ -99,32 +99,58 @@ jobs:
           GIT_TERMINAL_PROMPT: "0"
         run: |
           $ErrorActionPreference = 'Stop'
+          function Assert-Ok($msg) { if ($LASTEXITCODE -ne 0) { throw "$msg (exit=$LASTEXITCODE)" } }
+
           $repo = "$env:REPO_ROOT"
           Set-Location $repo
 
           git config --global core.longpaths true
+          Assert-Ok 'git config core.longpaths failed'
           git config --global --add safe.directory "$repo"
+          Assert-Ok 'git config safe.directory failed'
 
           if (!(Test-Path (Join-Path $repo '.git'))) {
             git init
+            Assert-Ok 'git init failed'
             git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+            Assert-Ok 'git remote add origin failed'
           } else {
             git remote get-url origin *> $null
             if ($LASTEXITCODE -ne 0) {
               git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+              Assert-Ok 'git remote add origin failed'
             } else {
-              git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" | Out-Null
+              git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+              Assert-Ok 'git remote set-url failed'
             }
           }
 
           git fetch --force --prune origin
+          Assert-Ok 'git fetch failed'
+          git fetch --force origin $env:GITHUB_SHA
+          Assert-Ok 'git fetch SHA failed'
+
+          $shaScripts = git ls-tree -r --name-only $env:GITHUB_SHA -- scripts
+          Assert-Ok 'git ls-tree failed'
+          if ($shaScripts) {
+            Write-Host 'git ls-tree scripts (for GITHUB_SHA):'
+            $shaScripts | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Warning 'Current SHA has no scripts folder; run is on an old commit or scripts not committed.'
+          }
+
           git checkout -f $env:GITHUB_SHA
+          Assert-Ok 'git checkout failed'
           git reset --hard $env:GITHUB_SHA
+          Assert-Ok 'git reset failed'
           git clean -ffdx
+          Assert-Ok 'git clean failed'
           if (Test-Path (Join-Path $repo '.gitmodules')) {
             git submodule update --init --recursive
+            Assert-Ok 'git submodule update failed'
           }
           git rev-parse HEAD
+          Assert-Ok 'git rev-parse failed'
 
       - name: Debug shells
         continue-on-error: true
@@ -155,6 +181,26 @@ jobs:
           echo RUNNER_TEMP=%RUNNER_TEMP%
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
 
+      - name: Resolve REPO_ROOT
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repoRoot = $env:GITHUB_WORKSPACE
+          $bat = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($bat) {
+            $scriptsDir = Split-Path $bat.FullName -Parent
+            $repoRoot = Split-Path $scriptsDir -Parent
+            Write-Host "Resolved run_all_local_then_copy.bat at: $($bat.FullName)"
+          } else {
+            Write-Warning "Could not find scripts\\run_all_local_then_copy.bat under GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+            Write-Host "Falling back REPO_ROOT to GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
+          Write-Host "REPO_ROOT=$repoRoot"
+
       - name: Verify required scripts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
@@ -182,6 +228,14 @@ jobs:
 
           Write-Host '=== Verify scripts directory ==='
           Write-Host "REPO_ROOT=$env:REPO_ROOT"
+          $headShort = git rev-parse --short HEAD 2>$null
+          if ($LASTEXITCODE -eq 0 -and $headShort) {
+            Write-Host ("HEAD={0}" -f $headShort.Trim())
+          } else {
+            Write-Warning 'Unable to resolve HEAD via git rev-parse --short HEAD'
+          }
+          Write-Host 'git ls-files scripts (best effort):'
+          git ls-files scripts 2>$null
           $scriptsDir = Join-Path $env:REPO_ROOT 'scripts'
           Write-Host "scripts_dir=$scriptsDir"
           if (Test-Path $scriptsDir) {
