@@ -95,8 +95,11 @@ class _SeqDataset(Dataset):
         return self.X[idx], self.M[idx], self.y[idx], self.dates[idx]
 
 
-def _set_seed(seed: int) -> None:
+def _set_seed(seed: Optional[int]) -> None:
     import random
+    if seed is None:
+        seed = 42
+    print(f"[StepDPrime] seed={seed}")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
