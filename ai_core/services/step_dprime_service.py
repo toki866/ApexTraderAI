@@ -56,7 +56,7 @@ class StepDPrimeConfig:
 
     # model/training
     seed: int = 42
-    device: str = "auto"  # auto/cpu/cuda
+    device: Optional[str] = "auto"  # auto/cpu/cuda
     embedding_dim: int = 32
     d_model: int = 64
     nhead: int = 4
@@ -106,10 +106,11 @@ def _set_seed(seed: Optional[int]) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def _pick_device(device: str) -> torch.device:
-    if device == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(device)
+def _pick_device(device: Optional[str]) -> torch.device:
+    dev = "" if device is None else str(device).strip()
+    if not dev or dev.lower() in {"auto", "none"}:
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+    return torch.device(dev)
 
 
 def _read_prices(stepA_dir: Path, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -454,6 +455,7 @@ class StepDPrimeService:
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
         _set_seed(cfg.seed)
         device = _pick_device(cfg.device)
+        print(f"[StepDPrime] device={device}")
 
         out_root = Path(cfg.output_root)
         stepA_dir = Path(cfg.stepA_root) if cfg.stepA_root else (out_root / "stepA" / cfg.mode)
