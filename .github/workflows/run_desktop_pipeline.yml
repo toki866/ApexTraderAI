@@ -60,6 +60,7 @@ concurrency:
 permissions:
   contents: write
   actions: read
+  issues: write
 
 jobs:
   run:
@@ -71,6 +72,33 @@ jobs:
           fetch-depth: 0
           clean: true
           submodules: recursive
+
+      - name: Initialize ONE_TAP error report
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+          $reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'
+
+          @(
+            '=== ONE TAP ERROR REPORT ===',
+            ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+            ('repo=${{ github.repository }}'),
+            ('ref=${{ github.ref }}'),
+            ('sha=${{ github.sha }}'),
+            ('run_id=${{ github.run_id }}'),
+            ('run_attempt=${{ github.run_attempt }}'),
+            ''
+          ) | Set-Content -Path $reportPath -Encoding UTF8
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] initialize_one_tap_report',
+            '[OK] report initialized',
+            ('[PATH] {0}' -f $reportPath),
+            ''
+          )
 
       - name: Verify scripts directory (post-checkout)
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -121,6 +149,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $repoRoot = $env:GITHUB_WORKSPACE
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value '[STEP] resolve_repo_root'
           $bat = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter 'run_all_local_then_copy.bat' -File -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
@@ -135,6 +166,11 @@ jobs:
 
           Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoRoot"
           Write-Host "REPO_ROOT=$repoRoot"
+          Add-Content -Path $reportPath -Value @(
+            '[OK] resolve_repo_root',
+            ('[OK] REPO_ROOT={0}' -f $repoRoot),
+            ''
+          )
 
       - name: Verify required scripts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -146,20 +182,13 @@ jobs:
           $null = New-Item -Path $reportDir -ItemType Directory -Force
           $reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'
 
-          @(
-            '=== ONE TAP ERROR REPORT ===',
-            ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
-            ('repo=${{ github.repository }}'),
-            ('ref=${{ github.ref }}'),
-            ('sha=${{ github.sha }}'),
-            ('run_id=${{ github.run_id }}'),
-            ('run_attempt=${{ github.run_attempt }}'),
-            ('failing_step=Verify required scripts'),
-            ('REPO_ROOT={0}' -f $env:REPO_ROOT),
-            ('GITHUB_WORKSPACE={0}' -f $env:GITHUB_WORKSPACE),
-            ('PWD={0}' -f $PWD),
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] verify_required_scripts',
+            ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ('[INFO] GITHUB_WORKSPACE={0}' -f $env:GITHUB_WORKSPACE),
+            ('[INFO] PWD={0}' -f $PWD),
             ''
-          ) | Set-Content -Path $reportPath -Encoding UTF8
+          )
 
           Write-Host '=== Verify scripts directory ==='
           Write-Host "REPO_ROOT=$env:REPO_ROOT"
@@ -240,6 +269,19 @@ jobs:
           )
 
           if ($missing.Count -gt 0) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] verify_required_scripts',
+              ('[NG] missing_count={0}' -f $missing.Count),
+              ''
+            )
+          } else {
+            Add-Content -Path $reportPath -Value @(
+              '[OK] verify_required_scripts',
+              ''
+            )
+          }
+
+          if ($missing.Count -gt 0) {
             Write-Host '=== Required scripts debug summary ==='
             Write-Host "REPO_ROOT=$env:REPO_ROOT"
             Write-Host "scriptsDir=$scriptsDir"
@@ -300,6 +342,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Set-Location $env:REPO_ROOT
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] run_desktop_bat',
+            ('[INFO] console_log={0}' -f $consoleLog)
+          )
           $batCandidates = @(
             (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat')
           )
@@ -315,6 +363,11 @@ jobs:
           Write-Host ("BAT candidate paths: {0}" -f ($batCandidates -join '; '))
 
           if (-not $bat) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] run_desktop_bat',
+              '[NG] BAT not found',
+              ''
+            )
             Write-Error "BAT not found. candidates=$($batCandidates -join '; ')"
             exit 1
           }
@@ -338,6 +391,11 @@ jobs:
           Add-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)
 
           if ($rc -ne 0) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] run_desktop_bat',
+              ('[NG] exit_code={0}' -f $rc),
+              ''
+            )
             Write-Warning "Run desktop BAT failed with rc=$rc"
             $workRoot = 'C:\work\apex_work\runs'
             $runDir = $null
@@ -359,6 +417,18 @@ jobs:
               Write-Warning ("No run directories found under {0}" -f $workRoot)
             }
             exit $rc
+          }
+
+          Add-Content -Path $reportPath -Value @(
+            '[OK] run_desktop_bat',
+            '[OK] exit_code=0',
+            ''
+          )
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
           }
 
           exit 0
@@ -392,6 +462,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $diagScript = Join-Path $env:REPO_ROOT 'scripts\package_diagnostics_to_onedrive.ps1'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] package_diagnostics_to_onedrive',
+            ('[INFO] diag_script={0}' -f $diagScript)
+          )
           Write-Host "Diagnostics script path: $diagScript"
 
           $diagDirCandidates = @()
@@ -415,6 +491,11 @@ jobs:
           }
 
           if (-not $selectedDiagDir) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] package_diagnostics_to_onedrive',
+              '[NG] selected diagnostics dir unavailable',
+              ''
+            )
             throw 'Unable to resolve diagnostics output directory from OneDrive/USERPROFILE/RUNNER_TEMP candidates.'
           }
 
@@ -424,12 +505,33 @@ jobs:
           if (Test-Path $diagScript) {
             powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript -DiagDir "$selectedDiagDir"
             if ($LASTEXITCODE -ne 0) {
+              Add-Content -Path $reportPath -Value @(
+                '[NG] package_diagnostics_to_onedrive',
+                ('[NG] exit_code={0}' -f $LASTEXITCODE),
+                ''
+              )
               Write-Error "Diagnostics script exited with code $LASTEXITCODE"
               exit $LASTEXITCODE
             }
+            Add-Content -Path $reportPath -Value @(
+              '[OK] package_diagnostics_to_onedrive',
+              ('[OK] diag_dir={0}' -f $selectedDiagDir),
+              ''
+            )
           } else {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] package_diagnostics_to_onedrive',
+              '[NG] diagnostics script not found',
+              ''
+            )
             Write-Error "Diagnostics script not found: $diagScript"
             exit 1
+          }
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
           }
 
       - name: Verify diagnostics directory content
@@ -485,6 +587,12 @@ jobs:
         run: |
           $workRoot = 'C:\work\apex_work\runs'
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] resolve_latest_run_artifacts',
+            ('[INFO] work_root={0}' -f $workRoot)
+          )
 
           $runId = ''
           if (Test-Path $consoleLog) {
@@ -513,6 +621,7 @@ jobs:
             "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host "Resolved run_id=$runId"
           } else {
+            Add-Content -Path $reportPath -Value '[NG] resolve_latest_run_artifacts run_id unresolved'
             Write-Warning 'Failed to resolve run_id from console log and latest run folder.'
           }
 
@@ -525,6 +634,32 @@ jobs:
             "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "run_dir=$($runDir.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host "Resolved run directory: $($runDir.FullName)"
+          }
+
+          if ($runDir) {
+            Add-Content -Path $reportPath -Value @(
+              '[OK] resolve_latest_run_artifacts',
+              ('[OK] run_dir={0}' -f $runDir.FullName),
+              ('[OK] run_id={0}' -f $runId),
+              ''
+            )
+          }
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+          }
+
+      - name: Trim ONE_TAP report size
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $reportPath -and (Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
           }
 
       - name: Stage run artifacts
@@ -593,6 +728,44 @@ jobs:
           name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+
+
+      - name: Publish diagnostics to Issue (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'ONE_TAP_ERROR_REPORT.txt');
+            let report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8')
+              : '(missing ONE_TAP_ERROR_REPORT.txt)';
+
+            if (report.length > 60000) report = report.slice(-60000);
+
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = 'ApexTraderAI Diagnostics (latest)';
+            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${context.runAttempt}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+            const existing = issues.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
 
       - name: Publish ONE_TAP report to diag-logs branch
         if: always()
