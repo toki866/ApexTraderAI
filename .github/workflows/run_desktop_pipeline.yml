@@ -464,6 +464,7 @@ jobs:
 
       - name: Append error tails to ONE_TAP (always)
         if: always()
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Continue'
@@ -480,9 +481,9 @@ jobs:
 
           # python env snapshot (to compare with local)
           Add-Content $report "---- python_env ----"
-          (cmd /c "where python" 2>&1) | Add-Content $report
-          (cmd /c "python --version" 2>&1) | Add-Content $report
-          (cmd /c "python -c \"\"import sys; print(sys.executable)\"\"" 2>&1) | Add-Content $report
+          try { (& where.exe python 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& python --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& python -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
 
           # console log tail
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
@@ -513,6 +514,9 @@ jobs:
           } else {
             Add-Content $report "[WARN] no run_dir found under work_root"
           }
+
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Package diagnostics to OneDrive (always)
         if: always()
