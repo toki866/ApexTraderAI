@@ -462,6 +462,66 @@ jobs:
             Write-Host "Created fallback console log: $workspaceConsoleLog"
           }
 
+      - name: Append BAT failure logs to ONE_TAP
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $report = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (!(Test-Path $report)) {
+            New-Item -Path (Split-Path $report -Parent) -ItemType Directory -Force | Out-Null
+            '[WARN] ONE_TAP report was missing; created.' | Set-Content -Path $report -Encoding UTF8
+          }
+
+          Add-Content -Path $report -Value ""
+          Add-Content -Path $report -Value "[STEP] append_bat_logs_to_one_tap"
+          Add-Content -Path $report -Value ("timestamp={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+
+          # 1) console log tail
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          Add-Content -Path $report -Value ("[INFO] console_log={0}" -f $consoleLog)
+          if (Test-Path $consoleLog) {
+            Add-Content -Path $report -Value "---- console_log_tail (last 260 lines) ----"
+            (Get-Content -Path $consoleLog -Tail 260 -ErrorAction SilentlyContinue) | Add-Content -Path $report
+          } else {
+            Add-Content -Path $report -Value "[WARN] console log not found"
+          }
+
+          # 2) run_*.log tail (best effort)
+          $workRoot = 'C:\work\apex_work\runs'
+          $runId = ''
+          if (Test-Path $consoleLog) {
+            $m = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' -ErrorAction SilentlyContinue | Select-Object -Last 1
+            if ($m) { $runId = ($m.Line -replace '^\[OK\] run_id=', '').Trim() }
+          }
+
+          $runDir = if ($runId) { Join-Path $workRoot $runId } else { $null }
+          if (-not $runDir -or -not (Test-Path $runDir)) {
+            $runDirObj = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($runDirObj) {
+              $runDir = $runDirObj.FullName
+              $runId = $runDirObj.Name
+            }
+          }
+
+          Add-Content -Path $report -Value ("[INFO] inferred_run_id={0}" -f $runId)
+          Add-Content -Path $report -Value ("[INFO] inferred_run_dir={0}" -f $runDir)
+
+          if ($runDir -and (Test-Path $runDir)) {
+            $logDir = Join-Path $runDir 'logs'
+            $latestRunLog = Get-ChildItem -Path $logDir -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latestRunLog) {
+              Add-Content -Path $report -Value ("[INFO] run_log={0}" -f $latestRunLog.FullName)
+              Add-Content -Path $report -Value "---- run_log_tail (last 260 lines) ----"
+              (Get-Content -Path $latestRunLog.FullName -Tail 260 -ErrorAction SilentlyContinue) | Add-Content -Path $report
+            } else {
+              Add-Content -Path $report -Value "[WARN] run_*.log not found under run_dir\logs"
+            }
+          } else {
+            Add-Content -Path $report -Value "[WARN] run_dir not found; cannot tail run log"
+          }
+
       - name: Package diagnostics to OneDrive (always)
         if: always()
         id: package_diag
