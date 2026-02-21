@@ -40,7 +40,7 @@ if (Test-Path $oneTapReport) {
 
 $consoleLogCandidates = @(
   (Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'),
-  (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
+  $(if ($env:RUNNER_TEMP) { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' } else { $null })
 ) | Where-Object { $_ -and (Test-Path $_) }
 $zipSources += $consoleLogCandidates
 
