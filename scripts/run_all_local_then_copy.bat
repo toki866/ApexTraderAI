@@ -174,20 +174,33 @@ if "%ZIP_ON_SUCCESS%"=="1" if exist "%ZIP_FILE%" (
   )
 )
 
-set "SNAPSHOT_ROOT="
+set "SNAP_ROOT="
 if defined ONE_DRIVE_SNAPSHOTS_ROOT (
-  set "SNAPSHOT_ROOT=%ONE_DRIVE_SNAPSHOTS_ROOT%"
+  set "SNAP_ROOT=%ONE_DRIVE_SNAPSHOTS_ROOT%"
 ) else (
   if defined OneDrive (
-    set "SNAPSHOT_ROOT=%OneDrive%\ApexTraderAI\repo_snapshots"
+    set "SNAP_ROOT=%OneDrive%\ApexTraderAI\repo_snapshots"
   ) else (
     echo [WARN] OneDrive snapshot path not found; skip repo snapshot. missing ONE_DRIVE_SNAPSHOTS_ROOT and OneDrive.>> "%LOG_FILE%"
     goto :success
   )
 )
 
-call :run mkdir "%SNAPSHOT_ROOT%"
-if errorlevel 1 goto :failed
+if not exist "%SNAP_ROOT%" (
+  mkdir "%SNAP_ROOT%"
+  if errorlevel 1 (
+    set "MKDIR_RC=%ERRORLEVEL%"
+    echo [FAILED] command=mkdir "%SNAP_ROOT%" >> "%LOG_FILE%"
+    echo [FAILED] exit_code=%MKDIR_RC%>> "%LOG_FILE%"
+    echo [FAILED] command=mkdir "%SNAP_ROOT%"
+    echo [FAILED] exit_code=%MKDIR_RC%
+    popd >nul
+    exit /b %MKDIR_RC%
+  )
+) else (
+  echo [OK] repo_snapshots already exists: "%SNAP_ROOT%">> "%LOG_FILE%"
+  echo [OK] repo_snapshots already exists: "%SNAP_ROOT%"
+)
 
 for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "SNAPSHOT_SHA=%%h"
 if not defined SNAPSHOT_SHA (
@@ -197,7 +210,7 @@ if not defined SNAPSHOT_SHA (
   goto :failed
 )
 
-set "SNAPSHOT_ZIP=%SNAPSHOT_ROOT%\repo_%SNAPSHOT_SHA%_%RUN_ID%.zip"
+set "SNAPSHOT_ZIP=%SNAP_ROOT%\repo_%SNAPSHOT_SHA%_%RUN_ID%.zip"
 if exist "%SNAPSHOT_ZIP%" del /f /q "%SNAPSHOT_ZIP%" >nul 2>&1
 
 call :run git archive --format=zip --output="%SNAPSHOT_ZIP%" HEAD
