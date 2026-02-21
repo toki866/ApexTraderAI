@@ -52,6 +52,11 @@ on:
         required: true
         default: "A,B"
         type: string
+      diag_keep_latest:
+        description: "How many latest diag-logs runs to keep (older runs deleted from diag-logs branch)"
+        required: true
+        default: "10"
+        type: string
 
 concurrency:
   group: diag-logs
@@ -936,6 +941,10 @@ jobs:
 
           $latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'
           $latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'
+          $keepLatest = 10
+          try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
+          if ($keepLatest -lt 1) { $keepLatest = 1 }
+
           @(
             '# Latest ONE_TAP report',
             '',
@@ -947,8 +956,19 @@ jobs:
             '# Latest CSV index',
             '',
             "- folder: $runFolderName",
+            "- keep_latest: $keepLatest",
             "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
           ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
+
+          $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
+            Sort-Object Name -Descending
+
+          $toDelete = $runFolders | Select-Object -Skip $keepLatest
+          foreach ($d in $toDelete) {
+            Write-Host ("[RETENTION] delete old run folder: {0}" -f $d.FullName)
+            Remove-Item -Path $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
           "run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
