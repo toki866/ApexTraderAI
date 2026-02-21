@@ -835,7 +835,7 @@ jobs:
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
 
           $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
           if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
@@ -847,8 +847,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
 
-          git fetch origin diag-logs --depth 1 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          cmd /c "git fetch origin diag-logs --depth 1 1>nul 2>nul"
+          $fetchRc = $LASTEXITCODE
+          if ($fetchRc -eq 0) {
             git checkout -B diag-logs origin/diag-logs
           } else {
             git checkout --orphan diag-logs
@@ -892,11 +893,11 @@ jobs:
           }
 
           git commit -m "diag: add one_tap report $runFolderName"
-          git push origin diag-logs
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'Failed to push ONE_TAP report to diag-logs branch.'
+          cmd /c "git push origin diag-logs"
+          $pushRc = $LASTEXITCODE
+          if ($pushRc -ne 0) {
+            Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)
             Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
-            exit $LASTEXITCODE
           }
 
       - name: Collect diagnostics
