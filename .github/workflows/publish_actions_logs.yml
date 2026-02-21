@@ -111,7 +111,7 @@ jobs:
           mkdir -p runs
           cp -r "$GITHUB_WORKSPACE/out/$FOLDER" "runs/$FOLDER"
 
-          cat > runs/LATEST.md <<EOF
+          cat > runs/LATEST_ACTIONS.md <<EOF
           # Latest Actions Logs
           - folder: $FOLDER
           - tail: ./runs/$FOLDER/ACTIONS_JOB_LOG_TAIL.txt

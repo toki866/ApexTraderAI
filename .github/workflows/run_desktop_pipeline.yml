@@ -796,45 +796,8 @@ jobs:
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
 
-      - name: Publish diagnostics to Issue (always)
-        if: always()
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-
-            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'ONE_TAP_ERROR_REPORT.txt');
-            let report = fs.existsSync(reportPath)
-              ? fs.readFileSync(reportPath, 'utf8')
-              : '(missing ONE_TAP_ERROR_REPORT.txt)';
-
-            if (report.length > 60000) report = report.slice(-60000);
-
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const title = 'ApexTraderAI Diagnostics (latest)';
-            const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
-            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
-
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner,
-              repo,
-              state: 'open',
-              per_page: 100
-            });
-            const existing = issues.find(i => i.title === title);
-
-            if (existing) {
-              await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
-            } else {
-              await github.rest.issues.create({ owner, repo, title, body });
-            }
-
       - name: Publish ONE_TAP report to diag-logs branch
+        id: publish_diag_logs
         if: always()
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -971,14 +934,23 @@ jobs:
 
           $csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8
 
-          $latestMdPath = Join-Path $runsDir 'LATEST.md'
+          $latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'
+          $latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'
           @(
             '# Latest ONE_TAP report',
             '',
             "- folder: $runFolderName",
-            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt",
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+          ) -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
+
+          @(
+            '# Latest CSV index',
+            '',
+            "- folder: $runFolderName",
             "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
-          ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
+          ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
+
+          "run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
           git add runs
           if (git diff --cached --quiet) {
@@ -993,6 +965,50 @@ jobs:
             Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)
             Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
           }
+
+      - name: Publish diagnostics to Issue (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          DIAG_RUN_FOLDER: ${{ steps.publish_diag_logs.outputs.run_folder }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'ONE_TAP_ERROR_REPORT.txt');
+            let report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8')
+              : '(missing ONE_TAP_ERROR_REPORT.txt)';
+
+            if (report.length > 60000) report = report.slice(-60000);
+
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = 'ApexTraderAI Diagnostics (latest)';
+            const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
+            const diagRunFolder = process.env.DIAG_RUN_FOLDER || 'LATEST_CSV.md';
+            const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
+              ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+              : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
+            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+            const existing = issues.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
 
       - name: Collect diagnostics
         if: always()
