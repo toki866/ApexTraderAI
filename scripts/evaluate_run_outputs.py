@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Best-effort evaluator for StepA/StepB/StepE run outputs.
+"""Best-effort evaluator for StepA/StepB CSV outputs.
 
-Always exits with code 0 and writes markdown/json reports.
+The script NEVER raises a hard failure for workflow usage:
+- Missing files/columns are reported as SKIP.
+- Process exit code is always 0.
 """
 
 from __future__ import annotations
@@ -9,455 +11,337 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import math
 import os
 import traceback
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 
-@dataclass
-class SectionResult:
-    status: str
-    summary: str
-    details: dict[str, Any]
-
-
 def _find_first(pattern: str) -> str | None:
-    paths = sorted(glob.glob(pattern))
-    return paths[0] if paths else None
+    hits = sorted(glob.glob(pattern))
+    return hits[0] if hits else None
 
 
-def _find_all(patterns: list[str]) -> list[str]:
-    out: list[str] = []
-    for p in patterns:
-        out.extend(glob.glob(p))
-    return sorted(set(out))
-
-
-def _safe_read_csv(path: str) -> pd.DataFrame:
+def _read_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def _to_datetime_col(df: pd.DataFrame, col: str = "Date") -> tuple[pd.DataFrame, dict[str, Any]]:
-    info: dict[str, Any] = {}
-    if col not in df.columns:
-        info["date_column_present"] = False
-        return df, info
+def _parse_date(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out = df.copy()
-    out[col] = pd.to_datetime(out[col], errors="coerce")
-    info["date_column_present"] = True
-    info["date_parse_nat"] = int(out[col].isna().sum())
-    return out, info
+    if date_col in out.columns:
+        out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    return out
 
 
-def _date_checks(df: pd.DataFrame, col: str = "Date") -> dict[str, Any]:
-    if col not in df.columns:
-        return {
-            "date_column_present": False,
-            "date_monotonic_increasing": False,
-            "date_duplicates": None,
-            "date_missing_days": None,
-            "start": None,
-            "end": None,
-        }
-    s = df[col]
-    dt = s.dropna().sort_values()
-    miss = None
-    if len(dt) >= 2:
-        full = pd.date_range(dt.iloc[0], dt.iloc[-1], freq="D")
-        miss = int(len(full.difference(pd.DatetimeIndex(dt.unique()))))
-    return {
-        "date_column_present": True,
-        "date_monotonic_increasing": bool(s.is_monotonic_increasing),
-        "date_duplicates": int(s.duplicated().sum()),
-        "date_missing_days": miss,
-        "start": str(dt.iloc[0].date()) if len(dt) else None,
-        "end": str(dt.iloc[-1].date()) if len(dt) else None,
-    }
+def _parse_key_value_summary(df: pd.DataFrame) -> dict[str, Any]:
+    if df.empty:
+        return {}
 
+    keys = ["mode", "train_start", "train_end", "test_start", "test_end", "train_days", "test_days"]
+    lower_cols = {c.lower(): c for c in df.columns}
 
-def _ohlcv_missing(df: pd.DataFrame) -> dict[str, int]:
-    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-    return {c: int(df[c].isna().sum()) for c in cols}
+    # Table-style summary with named columns.
+    found = {k: df[lower_cols[k]].iloc[0] for k in keys if k in lower_cols}
+    if found:
+        return {k: (None if pd.isna(v) else str(v)) for k, v in found.items()}
 
-
-def _metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, Any]:
-    z = pd.DataFrame({"t": y_true, "p": y_pred}).dropna()
-    if z.empty:
-        return {"n": 0, "mae": None, "rmse": None, "corr": None, "dir_acc": None}
-    e = z["p"] - z["t"]
-    d_pred = z["p"].diff()
-    d_true = z["t"].diff()
-    valid = pd.DataFrame({"dp": d_pred, "dt": d_true}).dropna()
-    dir_acc = None
-    if not valid.empty:
-        dir_acc = float((np.sign(valid["dp"]) == np.sign(valid["dt"])).mean())
-    return {
-        "n": int(len(z)),
-        "mae": float(np.mean(np.abs(e))),
-        "rmse": float(np.sqrt(np.mean(np.square(e)))),
-        "corr": float(z["t"].corr(z["p"])) if len(z) >= 2 else None,
-        "dir_acc": dir_acc,
-    }
-
-
-def evaluate_step_a(output_root: str, symbol: str) -> SectionResult:
-    try:
-        p_summary = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_split_summary_{symbol}.csv"))
-        p_test = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
-        if not p_summary or not p_test:
-            miss = []
-            if not p_summary:
-                miss.append("stepA_split_summary")
-            if not p_test:
-                miss.append("stepA_prices_test")
-            return SectionResult("SKIP", f"missing files: {', '.join(miss)}", {"missing": miss})
-
-        s = _safe_read_csv(p_summary)
-        t = _safe_read_csv(p_test)
-        t, parse_info = _to_datetime_col(t, "Date")
-
-        split_test_start = None
-        split_test_end = None
-        if {"test_start", "test_end"}.issubset(s.columns) and len(s) > 0:
-            split_test_start = str(pd.to_datetime(s["test_start"].iloc[0], errors="coerce").date())
-            split_test_end = str(pd.to_datetime(s["test_end"].iloc[0], errors="coerce").date())
-
-        dck = _date_checks(t, "Date")
-        align_ok = None
-        if split_test_start and split_test_end and dck["start"] and dck["end"]:
-            align_ok = bool(split_test_start == dck["start"] and split_test_end == dck["end"])
-
-        details = {
-            "paths": {"split_summary": p_summary, "prices_test": p_test},
-            "split_test_start": split_test_start,
-            "split_test_end": split_test_end,
-            "test_rows": int(len(t)),
-            "test_cols": int(len(t.columns)),
-            "date_parse": parse_info,
-            "date_checks": dck,
-            "ohlcv_missing": _ohlcv_missing(t),
-            "split_vs_test_alignment_ok": align_ok,
-        }
-        status = "OK" if align_ok is not False else "SUSPECT"
-        return SectionResult(status, "evaluated stepA", details)
-    except Exception as e:
-        return SectionResult("SKIP", f"exception: {e}", {"traceback": traceback.format_exc(limit=2)})
+    # key/value style summary.
+    if len(df.columns) >= 2:
+        out: dict[str, Any] = {}
+        c0, c1 = df.columns[0], df.columns[1]
+        for _, row in df.iterrows():
+            k = str(row.get(c0, "")).strip().lower()
+            v = row.get(c1)
+            if k in keys:
+                out[k] = None if pd.isna(v) else str(v)
+        return out
+    return {}
 
 
 def _detect_pred_cols(df: pd.DataFrame) -> list[str]:
-    cols = []
+    cols: list[str] = []
     for c in df.columns:
         lc = c.lower()
-        if "pred" in lc or lc.startswith("close_pred"):
+        if "pred_" in lc or lc.endswith("_pred") or "close_pred" in lc or "delta_close_pred" in lc:
             if pd.api.types.is_numeric_dtype(df[c]):
                 cols.append(c)
     return cols
 
 
-def evaluate_step_b(output_root: str, symbol: str, stepa_test_df: pd.DataFrame | None) -> SectionResult:
-    try:
-        p_summary = _find_first(os.path.join(output_root, "stepB", "*", f"stepB_split_summary_{symbol}.csv"))
-        pred_files = _find_all(
-            [
-                os.path.join(output_root, "stepB", "*", f"stepB_pred_time_*_{symbol}.csv"),
-                os.path.join(output_root, "stepB", "*", f"stepB_pred_*_{symbol}.csv"),
-            ]
-        )
-        if not pred_files:
-            return SectionResult("SKIP", "no stepB prediction files found", {"pred_files": []})
+def _can_compare_close_scale(pred_col: str) -> bool:
+    lc = pred_col.lower()
+    if "delta" in lc:
+        return False
+    return "close" in lc or "pred_" in lc
 
-        summary_obj: dict[str, Any] = {
-            "split_summary_path": p_summary,
-            "prediction_files": [],
+
+def _calc_metrics(true_s: pd.Series, pred_s: pd.Series) -> dict[str, Any]:
+    pair = pd.DataFrame({"t": pd.to_numeric(true_s, errors="coerce"), "p": pd.to_numeric(pred_s, errors="coerce")}).dropna()
+    if pair.empty:
+        return {"mae": None, "rmse": None, "corr": None, "dir_acc": None, "n_eval": 0}
+
+    err = pair["p"] - pair["t"]
+    dp = pair["p"].diff()
+    dt = pair["t"].diff()
+    valid_dir = pd.DataFrame({"dp": dp, "dt": dt}).dropna()
+    dir_acc = None
+    if not valid_dir.empty:
+        dir_acc = float((np.sign(valid_dir["dp"]) == np.sign(valid_dir["dt"])).mean())
+
+    corr = pair["t"].corr(pair["p"]) if len(pair) >= 2 else None
+    return {
+        "mae": float(np.abs(err).mean()),
+        "rmse": float(np.sqrt(np.square(err).mean())),
+        "corr": (None if pd.isna(corr) else float(corr)),
+        "dir_acc": dir_acc,
+        "n_eval": int(len(pair)),
+    }
+
+
+def _status(non_null_ratio: float | None, coverage_ratio: float | None, pred_cols_found: bool) -> str:
+    if not pred_cols_found:
+        return "BAD"
+    nn = non_null_ratio if non_null_ratio is not None else 0.0
+    cov = coverage_ratio if coverage_ratio is not None else 0.0
+    if nn >= 0.90 and cov >= 0.90:
+        return "OK"
+    if nn < 0.50:
+        return "BAD"
+    return "WARN"
+
+
+def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "output_root": output_root,
+        "mode": mode,
+        "symbol": symbol,
+        "stepA": {"status": "SKIP", "summary": "not evaluated", "details": {}},
+        "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+    }
+
+    # StepA
+    prices_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
+    split_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_split_summary_{symbol}.csv"))
+    stepa_prices: pd.DataFrame | None = None
+
+    try:
+        if not prices_path:
+            report["stepA"] = {"status": "SKIP", "summary": "stepA_prices_test file missing", "details": {}}
+        else:
+            px = _parse_date(_read_csv(prices_path), "Date")
+            stepa_prices = px
+            d = {
+                "path": prices_path,
+                "rows": int(len(px)),
+                "cols": int(len(px.columns)),
+                "date_start": str(px["Date"].dropna().min().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
+                "date_end": str(px["Date"].dropna().max().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
+                "date_monotonic_increasing": bool(px["Date"].is_monotonic_increasing) if "Date" in px.columns else None,
+                "date_duplicates": int(px["Date"].duplicated().sum()) if "Date" in px.columns else None,
+                "ohlcv_missing": {c: int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns},
+            }
+            report["stepA"] = {"status": "OK", "summary": "prices_test evaluated", "details": d}
+
+        split_info: dict[str, Any] = {}
+        if split_path:
+            split_info = _parse_key_value_summary(_read_csv(split_path))
+        else:
+            split_info = {"status": "SKIP", "reason": "stepA_split_summary file missing"}
+        report["stepA"]["split_summary_path"] = split_path
+        report["stepA"]["split_summary"] = split_info
+    except Exception as exc:
+        report["stepA"] = {"status": "SKIP", "summary": f"exception: {exc}", "details": {"traceback": traceback.format_exc(limit=2)}}
+
+    # StepB
+    split_b_path = _find_first(os.path.join(output_root, "stepB", mode, f"stepB_split_summary_{symbol}.csv"))
+    patterns = [
+        f"stepB_pred_time_all_{symbol}.csv",
+        f"stepB_pred_close_mamba_{symbol}.csv",
+        f"stepB_pred_close_mamba_periodic_{symbol}.csv",
+        f"stepB_pred_path_mamba_{symbol}.csv",
+        f"stepB_pred_path_mamba_periodic_{symbol}.csv",
+        f"stepB_pred_*_{symbol}.csv",
+    ]
+
+    files: list[str] = []
+    for p in patterns:
+        files.extend(glob.glob(os.path.join(output_root, "stepB", mode, p)))
+    files = sorted(set(files))
+
+    if not files:
+        report["stepB"] = {
+            "status": "SKIP",
+            "summary": "no stepB prediction files found",
+            "split_summary_path": split_b_path,
+            "rows": [],
         }
-        for pf in pred_files:
-            item: dict[str, Any] = {"path": pf}
-            try:
-                df = _safe_read_csv(pf)
-                df, parse_info = _to_datetime_col(df)
-                item["date_parse"] = parse_info
-                item["rows"] = int(len(df))
-                item["cols"] = int(len(df.columns))
-                item["date_checks"] = _date_checks(df)
-                pred_cols = _detect_pred_cols(df)
-                item["pred_cols"] = pred_cols
-                item["pred_nan"] = {c: int(df[c].isna().sum()) for c in pred_cols}
+        return report
 
-                true_col = None
-                for c in ["Close_true", "close_true", "Close"]:
-                    if c in df.columns:
-                        true_col = c
-                        break
+    stepb_rows: list[dict[str, Any]] = []
+    for fpath in files:
+        try:
+            df = _read_csv(fpath)
+            date_col = "Date" if "Date" in df.columns else ("Date_anchor" if "Date_anchor" in df.columns else None)
+            if date_col:
+                df = _parse_date(df, date_col)
+            pred_cols = _detect_pred_cols(df)
 
-                merged = df
-                if true_col is None and stepa_test_df is not None and "Date" in df.columns and "Date" in stepa_test_df.columns:
-                    rhs = stepa_test_df[["Date", "Close"]].copy()
-                    rhs = rhs.rename(columns={"Close": "Close_true_from_stepA"})
-                    merged = df.merge(rhs, on="Date", how="left")
-                    true_col = "Close_true_from_stepA"
-                    item["close_true_source"] = "stepA_prices_test"
-                elif true_col is not None:
-                    item["close_true_source"] = true_col
-
-                item["metrics"] = {}
-                for pc in pred_cols:
-                    if true_col is not None and true_col in merged.columns:
-                        item["metrics"][pc] = _metrics(merged[true_col], merged[pc])
-                    else:
-                        item["metrics"][pc] = {
-                            "n": 0,
-                            "mae": None,
-                            "rmse": None,
-                            "corr": None,
-                            "dir_acc": None,
-                            "note": "Close_true unavailable",
-                        }
-            except Exception as ie:
-                item["status"] = "SKIP"
-                item["reason"] = str(ie)
-            summary_obj["prediction_files"].append(item)
-
-        any_metrics = any(bool(x.get("metrics")) for x in summary_obj["prediction_files"])
-        status = "OK" if any_metrics else "SUSPECT"
-        return SectionResult(status, "evaluated stepB prediction files", summary_obj)
-    except Exception as e:
-        return SectionResult("SKIP", f"exception: {e}", {"traceback": traceback.format_exc(limit=2)})
-
-
-def _max_drawdown(equity: pd.Series) -> float | None:
-    x = pd.to_numeric(equity, errors="coerce").dropna()
-    if x.empty:
-        return None
-    run_max = x.cummax()
-    dd = x / run_max - 1.0
-    return float(dd.min())
-
-
-def _sharpe(ret: pd.Series) -> float | None:
-    r = pd.to_numeric(ret, errors="coerce").dropna()
-    if len(r) < 2:
-        return None
-    sd = float(r.std(ddof=1))
-    if sd == 0:
-        return None
-    return float((r.mean() / sd) * math.sqrt(252.0))
-
-
-def _alignment_check(df: pd.DataFrame, price_df: pd.DataFrame | None) -> dict[str, Any]:
-    needed = ["Date", "pos", "ret"]
-    missing = [c for c in needed if c not in df.columns]
-    if price_df is None:
-        return {"status": "SKIP", "reason": "stepA test prices unavailable"}
-    if missing:
-        return {"status": "SKIP", "reason": f"missing columns: {missing}"}
-
-    px_col = "Close_eff" if "Close_eff" in price_df.columns else ("Close" if "Close" in price_df.columns else None)
-    if px_col is None:
-        return {"status": "SKIP", "reason": "Close/Close_eff unavailable in stepA test prices"}
-
-    p = price_df[["Date", px_col]].copy().rename(columns={px_col: "px"})
-    p = p.sort_values("Date")
-    p["cc_next"] = p["px"] / p["px"].shift(1) - 1.0
-
-    m = df.merge(p[["Date", "cc_next"]], on="Date", how="left")
-    m["implied_ret"] = pd.to_numeric(m["pos"], errors="coerce").shift(1) * pd.to_numeric(m["cc_next"], errors="coerce")
-
-    if "cost" in m.columns:
-        m["implied_ret"] = m["implied_ret"] - pd.to_numeric(m["cost"], errors="coerce")
-
-    out: dict[str, Any] = {"status": "OK"}
-    out["ret_vs_implied"] = _metrics(pd.to_numeric(m["ret"], errors="coerce"), pd.to_numeric(m["implied_ret"], errors="coerce"))
-
-    if "reward" in m.columns:
-        implied_reward = m["implied_ret"].copy()
-        if "penalty" in m.columns:
-            implied_reward = implied_reward - pd.to_numeric(m["penalty"], errors="coerce")
-        out["reward_vs_implied"] = _metrics(pd.to_numeric(m["reward"], errors="coerce"), pd.to_numeric(implied_reward, errors="coerce"))
-
-    ret_corr = out["ret_vs_implied"].get("corr")
-    ret_mae = out["ret_vs_implied"].get("mae")
-    ok = (ret_corr is not None and ret_corr >= 0.9) or (ret_mae is not None and ret_mae <= 1e-4)
-    out["alignment_judgement"] = "OK" if ok else "SUSPECT"
-    return out
-
-
-def evaluate_step_e(output_root: str, mode: str, symbol: str, stepa_test_df: pd.DataFrame | None) -> SectionResult:
-    try:
-        paths = _find_all([os.path.join(output_root, "stepE", mode, f"stepE_daily_log_*_{symbol}.csv")])
-        if not paths:
-            return SectionResult("SKIP", "no stepE daily log files found", {"files": []})
-
-        all_items: list[dict[str, Any]] = []
-        for p in paths:
-            item: dict[str, Any] = {"path": p}
-            try:
-                df = _safe_read_csv(p)
-                df, parse_info = _to_datetime_col(df)
-                item["date_parse"] = parse_info
-                if "Date" in df.columns:
-                    df = df.sort_values("Date")
-
-                t = df[df["Split"].astype(str).str.lower().eq("test")].copy() if "Split" in df.columns else df.copy()
-                if t.empty:
-                    item["status"] = "SKIP"
-                    item["reason"] = "no test rows"
-                    all_items.append(item)
-                    continue
-
-                eq_col = "equity" if "equity" in t.columns else None
-                ret_col = "ret" if "ret" in t.columns else None
-                rw_col = "reward" if "reward" in t.columns else None
-
-                item["test_days"] = int(len(t))
-                item["test_start"] = str(t["Date"].dropna().iloc[0].date()) if "Date" in t.columns and t["Date"].notna().any() else None
-                item["test_end"] = str(t["Date"].dropna().iloc[-1].date()) if "Date" in t.columns and t["Date"].notna().any() else None
-
-                if eq_col:
-                    eqs = pd.to_numeric(t[eq_col], errors="coerce").dropna()
-                    if not eqs.empty:
-                        item["equity_start"] = float(eqs.iloc[0])
-                        item["equity_end"] = float(eqs.iloc[-1])
-                        item["multiple"] = float(eqs.iloc[-1] / eqs.iloc[0]) if eqs.iloc[0] != 0 else None
-                        item["max_drawdown"] = _max_drawdown(eqs)
-
-                if ret_col:
-                    item["sharpe"] = _sharpe(t[ret_col])
-
-                if rw_col:
-                    rw = pd.to_numeric(t[rw_col], errors="coerce").dropna()
-                    item["reward_stats"] = {
-                        "mean": float(rw.mean()) if not rw.empty else None,
-                        "std": float(rw.std(ddof=1)) if len(rw) >= 2 else None,
-                        "min": float(rw.min()) if not rw.empty else None,
-                        "max": float(rw.max()) if not rw.empty else None,
+            if not pred_cols:
+                stepb_rows.append(
+                    {
+                        "file": os.path.basename(fpath),
+                        "pred_col": None,
+                        "rows": int(len(df)),
+                        "non_null_count": 0,
+                        "non_null_ratio": 0.0,
+                        "first_valid_date": None,
+                        "last_valid_date": None,
+                        "coverage_ratio": 0.0,
+                        "mae": None,
+                        "rmse": None,
+                        "corr": None,
+                        "dir_acc": None,
+                        "status": "BAD",
+                        "reason": "prediction columns not found",
                     }
+                )
+                continue
 
-                item["alignment"] = _alignment_check(t, stepa_test_df)
-                item["status"] = "OK"
-            except Exception as ie:
-                item["status"] = "SKIP"
-                item["reason"] = str(ie)
-            all_items.append(item)
+            for col in pred_cols:
+                total_rows = len(df)
+                nn = int(df[col].notna().sum())
+                nn_ratio = float(nn / total_rows) if total_rows else 0.0
 
-        has_ok = any(x.get("status") == "OK" for x in all_items)
-        status = "OK" if has_ok else "SKIP"
-        return SectionResult(status, "evaluated stepE logs", {"files": all_items})
-    except Exception as e:
-        return SectionResult("SKIP", f"exception: {e}", {"traceback": traceback.format_exc(limit=2)})
+                first_valid = None
+                last_valid = None
+                if date_col and nn > 0:
+                    valid_dates = df.loc[df[col].notna(), date_col].dropna()
+                    if not valid_dates.empty:
+                        first_valid = str(valid_dates.iloc[0].date())
+                        last_valid = str(valid_dates.iloc[-1].date())
+
+                coverage = None
+                merged: pd.DataFrame | None = None
+                if stepa_prices is not None and "Date" in stepa_prices.columns and date_col:
+                    left = stepa_prices[["Date"]].copy()
+                    right = df[[date_col, col]].copy().rename(columns={date_col: "Date"})
+                    merged = left.merge(right, on="Date", how="left")
+                    coverage = float(merged[col].notna().mean()) if len(merged) else None
+
+                mae = rmse = corr = dir_acc = None
+                if _can_compare_close_scale(col):
+                    true_s = None
+                    if "Close_true" in df.columns:
+                        true_s = df["Close_true"]
+                        pred_s = df[col]
+                    elif merged is not None and stepa_prices is not None and "Close" in stepa_prices.columns:
+                        merged_true = merged.merge(stepa_prices[["Date", "Close"]], on="Date", how="left")
+                        true_s = merged_true["Close"]
+                        pred_s = merged_true[col]
+                    else:
+                        pred_s = None
+
+                    if true_s is not None and pred_s is not None:
+                        mm = _calc_metrics(true_s, pred_s)
+                        mae, rmse, corr, dir_acc = mm["mae"], mm["rmse"], mm["corr"], mm["dir_acc"]
+
+                stepb_rows.append(
+                    {
+                        "file": os.path.basename(fpath),
+                        "pred_col": col,
+                        "rows": int(total_rows),
+                        "non_null_count": nn,
+                        "non_null_ratio": nn_ratio,
+                        "first_valid_date": first_valid,
+                        "last_valid_date": last_valid,
+                        "coverage_ratio": coverage,
+                        "mae": mae,
+                        "rmse": rmse,
+                        "corr": corr,
+                        "dir_acc": dir_acc,
+                        "status": _status(nn_ratio, coverage, True),
+                        "reason": None,
+                    }
+                )
+        except Exception as exc:
+            stepb_rows.append(
+                {
+                    "file": os.path.basename(fpath),
+                    "pred_col": None,
+                    "rows": 0,
+                    "non_null_count": 0,
+                    "non_null_ratio": None,
+                    "first_valid_date": None,
+                    "last_valid_date": None,
+                    "coverage_ratio": None,
+                    "mae": None,
+                    "rmse": None,
+                    "corr": None,
+                    "dir_acc": None,
+                    "status": "SKIP",
+                    "reason": str(exc),
+                }
+            )
+
+    overall = "OK" if any(r["status"] == "OK" for r in stepb_rows) else "WARN"
+    report["stepB"] = {
+        "status": overall,
+        "summary": "stepB files evaluated",
+        "split_summary_path": split_b_path,
+        "rows": stepb_rows,
+    }
+    return report
 
 
-def _render_markdown(step_a: SectionResult, step_b: SectionResult, step_e: SectionResult, output_root: str, mode: str, symbol: str) -> str:
+def render_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
-    lines.append("# Run Output Evaluation Report")
+    lines.append("# EVAL_REPORT")
     lines.append("")
-    lines.append(f"- output_root: `{output_root}`")
-    lines.append(f"- mode: `{mode}`")
-    lines.append(f"- symbol: `{symbol}`")
+    lines.append(f"- output_root: `{report.get('output_root')}`")
+    lines.append(f"- mode: `{report.get('mode')}`")
+    lines.append(f"- symbol: `{report.get('symbol')}`")
     lines.append("")
 
-    lines.append("## StepA Evaluation")
-    lines.append(f"**Status: {step_a.status}** - {step_a.summary}")
-    if step_a.status != "SKIP":
-        d = step_a.details
-        ck = d.get("date_checks", {})
-        lines.append("")
-        lines.append("| Metric | Value |")
-        lines.append("|---|---|")
-        lines.append(f"| test_rows | {d.get('test_rows')} |")
-        lines.append(f"| test_cols | {d.get('test_cols')} |")
-        lines.append(f"| test_start | {ck.get('start')} |")
-        lines.append(f"| test_end | {ck.get('end')} |")
-        lines.append(f"| date_monotonic_increasing | {ck.get('date_monotonic_increasing')} |")
-        lines.append(f"| date_duplicates | {ck.get('date_duplicates')} |")
-        lines.append(f"| date_missing_days | {ck.get('date_missing_days')} |")
-        lines.append(f"| split_vs_test_alignment_ok | {d.get('split_vs_test_alignment_ok')} |")
-        lines.append("")
-        lines.append("OHLCV missing counts:")
-        for k, v in d.get("ohlcv_missing", {}).items():
-            lines.append(f"- {k}: {v}")
-    else:
-        lines.append("")
-        lines.append(f"SKIP reason: {step_a.summary}")
+    stepa = report.get("stepA", {})
+    lines.append("## StepA summary")
+    lines.append(f"- status: **{stepa.get('status')}**")
+    lines.append(f"- summary: {stepa.get('summary')}")
+    d = stepa.get("details", {})
+    if d:
+        lines.append("- prices_test:")
+        for k in ["rows", "cols", "date_start", "date_end", "date_monotonic_increasing", "date_duplicates"]:
+            lines.append(f"  - {k}: {d.get(k)}")
+        if d.get("ohlcv_missing"):
+            lines.append("  - ohlcv_missing:")
+            for k, v in d["ohlcv_missing"].items():
+                lines.append(f"    - {k}: {v}")
+    lines.append(f"- split_summary_path: {stepa.get('split_summary_path')}")
+    lines.append(f"- split_summary: {json.dumps(stepa.get('split_summary', {}), ensure_ascii=False)}")
+    lines.append("")
+
+    stepb = report.get("stepB", {})
+    lines.append("## StepB file-by-file")
+    lines.append(f"- status: **{stepb.get('status')}**")
+    lines.append(f"- summary: {stepb.get('summary')}")
+    lines.append("")
+    lines.append("| file | pred_col | rows | non_null_ratio | first_valid | last_valid | coverage_ratio | MAE | corr | dir_acc | status |")
+    lines.append("|---|---|---:|---:|---|---|---:|---:|---:|---:|---|")
+    for row in stepb.get("rows", []):
+        lines.append(
+            f"| {row.get('file')} | {row.get('pred_col')} | {row.get('rows')} | {row.get('non_null_ratio')} | "
+            f"{row.get('first_valid_date')} | {row.get('last_valid_date')} | {row.get('coverage_ratio')} | "
+            f"{row.get('mae')} | {row.get('corr')} | {row.get('dir_acc')} | {row.get('status')} |"
+        )
+        if row.get("reason"):
+            lines.append(f"- note ({row.get('file')}): {row.get('reason')}")
 
     lines.append("")
-    lines.append("## StepB Evaluation")
-    lines.append(f"**Status: {step_b.status}** - {step_b.summary}")
-    if step_b.status == "SKIP":
-        lines.append("")
-        lines.append(f"SKIP reason: {step_b.summary}")
-    else:
-        for i, it in enumerate(step_b.details.get("prediction_files", []), 1):
-            lines.append("")
-            lines.append(f"### StepB file {i}")
-            lines.append(f"- path: `{it.get('path')}`")
-            lines.append(f"- rows/cols: {it.get('rows')}/{it.get('cols')}")
-            dck = it.get("date_checks", {})
-            lines.append(f"- date_monotonic: {dck.get('date_monotonic_increasing')}, duplicates: {dck.get('date_duplicates')}")
-            if it.get("status") == "SKIP":
-                lines.append(f"- SKIP: {it.get('reason')}")
-                continue
-            lines.append(f"- pred_cols: {', '.join(it.get('pred_cols', [])) or '(none)'}")
-            pred_nan = it.get("pred_nan", {})
-            if pred_nan:
-                lines.append("- pred NaN:")
-                for c, n in pred_nan.items():
-                    lines.append(f"  - {c}: {n}")
-            metrics = it.get("metrics", {})
-            if metrics:
-                lines.append("")
-                lines.append("| pred_col | n | MAE | RMSE | corr | dir_acc |")
-                lines.append("|---|---:|---:|---:|---:|---:|")
-                for c, m in metrics.items():
-                    lines.append(
-                        f"| {c} | {m.get('n')} | {m.get('mae')} | {m.get('rmse')} | {m.get('corr')} | {m.get('dir_acc')} |"
-                    )
-
+    lines.append("Status rule: OK if non_null_ratio>=0.90 and coverage_ratio>=0.90; WARN otherwise; BAD if non_null_ratio<0.50 or pred cols missing.")
+    lines.append("Best-effort mode: this evaluator writes SKIP/notes and always exits 0.")
     lines.append("")
-    lines.append("## StepE Reward/Return/Equity Evaluation")
-    lines.append(f"**Status: {step_e.status}** - {step_e.summary}")
-    if step_e.status == "SKIP":
-        lines.append("")
-        lines.append(f"SKIP reason: {step_e.summary}")
-    else:
-        for i, it in enumerate(step_e.details.get("files", []), 1):
-            lines.append("")
-            lines.append(f"### StepE file {i}")
-            lines.append(f"- path: `{it.get('path')}`")
-            lines.append(f"- status: {it.get('status')} {it.get('reason') or ''}")
-            if it.get("status") != "OK":
-                continue
-            lines.append("| Metric | Value |")
-            lines.append("|---|---|")
-            for k in ["test_days", "test_start", "test_end", "equity_start", "equity_end", "multiple", "max_drawdown", "sharpe"]:
-                if k in it:
-                    lines.append(f"| {k} | {it.get(k)} |")
-            if "reward_stats" in it:
-                rs = it["reward_stats"]
-                lines.append(f"| reward_mean | {rs.get('mean')} |")
-                lines.append(f"| reward_std | {rs.get('std')} |")
-                lines.append(f"| reward_min | {rs.get('min')} |")
-                lines.append(f"| reward_max | {rs.get('max')} |")
-            ali = it.get("alignment", {})
-            lines.append("")
-            lines.append(f"- alignment: **{ali.get('alignment_judgement', ali.get('status'))}**")
-            if ali.get("status") == "SKIP":
-                lines.append(f"- alignment SKIP reason: {ali.get('reason')}")
-            else:
-                rv = ali.get("ret_vs_implied", {})
-                lines.append(f"- ret_vs_implied corr={rv.get('corr')} mae={rv.get('mae')}")
-                rw = ali.get("reward_vs_implied")
-                if rw:
-                    lines.append(f"- reward_vs_implied corr={rw.get('corr')} mae={rw.get('mae')}")
-
-    lines.append("")
-    lines.append("---")
-    lines.append("best-effort evaluator: errors in individual sections are reported as SKIP; process exit code is always 0.")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -472,38 +356,17 @@ def main() -> None:
     os.makedirs(os.path.dirname(os.path.abspath(args.out_md)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
 
-    stepa_test_df: pd.DataFrame | None = None
-    p_test = _find_first(os.path.join(args.output_root, "stepA", "*", f"stepA_prices_test_{args.symbol}.csv"))
-    if p_test:
-        try:
-            stepa_test_df = _safe_read_csv(p_test)
-            stepa_test_df, _ = _to_datetime_col(stepa_test_df)
-        except Exception:
-            stepa_test_df = None
+    report = evaluate(args.output_root, args.mode, args.symbol)
+    md = render_markdown(report)
 
-    step_a = evaluate_step_a(args.output_root, args.symbol)
-    step_b = evaluate_step_b(args.output_root, args.symbol, stepa_test_df)
-    step_e = evaluate_step_e(args.output_root, args.mode, args.symbol, stepa_test_df)
-
-    md = _render_markdown(step_a, step_b, step_e, args.output_root, args.mode, args.symbol)
     with open(args.out_md, "w", encoding="utf-8") as f:
         f.write(md)
-
-    payload = {
-        "output_root": args.output_root,
-        "mode": args.mode,
-        "symbol": args.symbol,
-        "stepA": {"status": step_a.status, "summary": step_a.summary, "details": step_a.details},
-        "stepB": {"status": step_b.status, "summary": step_b.summary, "details": step_b.details},
-        "stepE": {"status": step_e.status, "summary": step_e.summary, "details": step_e.details},
-    }
     with open(args.out_json, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(report, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # Best effort contract: never fail pipeline for evaluator issues.
         traceback.print_exc()
