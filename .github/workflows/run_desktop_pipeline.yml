@@ -867,6 +867,8 @@ jobs:
           $runFolderName = "${timestamp}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
           $runFolder = Join-Path $runsDir $runFolderName
           $null = New-Item -Path $runFolder -ItemType Directory -Force
+          $csvOutDir = Join-Path $runFolder 'csv'
+          $null = New-Item -Path $csvOutDir -ItemType Directory -Force
 
           $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
@@ -882,12 +884,100 @@ jobs:
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
           }
 
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+          if ([string]::IsNullOrWhiteSpace($runDir) -or -not (Test-Path $runDir)) {
+            $runsRoot = 'C:\work\apex_work\runs'
+            if (Test-Path $runsRoot) {
+              $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+              if ($latestRun) {
+                $runDir = $latestRun.FullName
+              }
+            }
+          }
+
+          $outputRoot = if ([string]::IsNullOrWhiteSpace($runDir)) { '' } else { Join-Path $runDir 'output' }
+          $maxCsvBytes = 5MB
+          $headLines = 500
+          $publishedCsv = New-Object System.Collections.Generic.List[object]
+
+          if (-not [string]::IsNullOrWhiteSpace($outputRoot) -and (Test-Path $outputRoot)) {
+            $csvPatterns = @(
+              (Join-Path $outputRoot 'stepA\*\stepA_split_summary_*.csv'),
+              (Join-Path $outputRoot 'stepA\*\stepA_prices_test_*.csv'),
+              (Join-Path $outputRoot 'stepB\*\stepB_split_summary_*.csv'),
+              (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv')
+            )
+
+            $sourceCsvFiles = @()
+            foreach ($pattern in $csvPatterns) {
+              $sourceCsvFiles += Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
+            }
+
+            $sourceCsvFiles = $sourceCsvFiles |
+              Sort-Object FullName -Unique
+
+            foreach ($src in $sourceCsvFiles) {
+              $destName = $src.Name
+              $headOnly = $false
+
+              if ($src.Length -le $maxCsvBytes) {
+                Copy-Item -Path $src.FullName -Destination (Join-Path $csvOutDir $destName) -Force
+              } else {
+                $destName = '{0}__HEAD{1}' -f $src.BaseName, $src.Extension
+                Get-Content -Path $src.FullName -TotalCount $headLines -ErrorAction SilentlyContinue |
+                  Set-Content -Path (Join-Path $csvOutDir $destName) -Encoding UTF8
+                $headOnly = $true
+              }
+
+              $destPath = Join-Path $csvOutDir $destName
+              if (Test-Path $destPath) {
+                $previewLines = Get-Content -Path $destPath -TotalCount 2 -ErrorAction SilentlyContinue
+                $publishedCsv.Add([PSCustomObject]@{
+                  Name = $destName
+                  RelativePath = "./csv/$destName"
+                  SizeBytes = (Get-Item -Path $destPath).Length
+                  HeadOnly = $headOnly
+                  PreviewLines = @($previewLines)
+                })
+              }
+            }
+          }
+
+          $csvIndexPath = Join-Path $runFolder 'CSV_INDEX.md'
+          $csvIndexLines = New-Object System.Collections.Generic.List[string]
+          $csvIndexLines.Add('# CSV Index')
+          $csvIndexLines.Add('')
+          $csvIndexLines.Add("- source_run_dir: $runDir")
+          $csvIndexLines.Add("- source_output_root: $outputRoot")
+          $csvIndexLines.Add('')
+
+          if ($publishedCsv.Count -eq 0) {
+            $csvIndexLines.Add('_No CSV files matched the publish patterns for this run._')
+          } else {
+            foreach ($item in $publishedCsv) {
+              $headNote = if ($item.HeadOnly) { 'yes (500-line sample)' } else { 'no' }
+              $csvIndexLines.Add("- file: $($item.RelativePath) | size_bytes: $($item.SizeBytes) | head_only: $headNote")
+              if ($item.PreviewLines.Count -gt 0) {
+                $csvIndexLines.Add('  - preview:')
+                foreach ($line in $item.PreviewLines) {
+                  $safeLine = [string]$line
+                  $csvIndexLines.Add("    - $safeLine")
+                }
+              }
+            }
+          }
+
+          $csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8
+
           $latestMdPath = Join-Path $runsDir 'LATEST.md'
           @(
             '# Latest ONE_TAP report',
             '',
             "- folder: $runFolderName",
-            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt",
+            "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
           ) -join "`r`n" | Set-Content -Path $latestMdPath -Encoding UTF8
 
           git add runs
