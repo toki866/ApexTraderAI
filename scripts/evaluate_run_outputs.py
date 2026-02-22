@@ -101,14 +101,28 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
         reason = None
 
     if df_test.empty:
-        return {"test_days": 0, "equity_multiple": None, "max_drawdown": None, "sharpe": None}, "no test rows after split filter"
+        return {
+            "test_days": 0,
+            "equity_multiple": None,
+            "max_dd": None,
+            "mean_ret": None,
+            "std_ret": None,
+            "sharpe": None,
+        }, "no test rows after split filter"
 
     eq = pd.to_numeric(df_test[equity_col], errors="coerce")
     rets = pd.to_numeric(df_test[ret_col], errors="coerce")
     eq = eq[np.isfinite(eq)]
     rets = rets[np.isfinite(rets)]
     if len(eq) < 1:
-        return {"test_days": int(len(df_test)), "equity_multiple": None, "max_drawdown": None, "sharpe": None}, "equity has no numeric rows"
+        return {
+            "test_days": int(len(df_test)),
+            "equity_multiple": None,
+            "max_dd": None,
+            "mean_ret": None,
+            "std_ret": None,
+            "sharpe": None,
+        }, "equity has no numeric rows"
 
     eq_start, eq_end = float(eq.iloc[0]), float(eq.iloc[-1])
     eq_multiple = None if eq_start == 0 else (eq_end / eq_start)
@@ -117,12 +131,14 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
     dd = eq / peak - 1.0
     max_dd = float(dd.min()) if len(dd) else None
 
+    mean_ret = float(rets.mean()) if len(rets) >= 1 else None
+    std_ret = float(rets.std(ddof=1)) if len(rets) >= 2 else None
+
     sharpe = None
     sharpe_reason = None
     if len(rets) >= 2:
-        std = float(rets.std(ddof=1))
-        if std > 0:
-            sharpe = float(rets.mean() / std * np.sqrt(252.0))
+        if std_ret is not None and std_ret > 0:
+            sharpe = float((mean_ret or 0.0) / std_ret * np.sqrt(252.0))
         else:
             sharpe_reason = "sharpe NA: ret std is 0"
     else:
@@ -135,9 +151,94 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
     return {
         "test_days": int(len(df_test)),
         "equity_multiple": _to_float(eq_multiple),
-        "max_drawdown": _to_float(max_dd),
+        "max_dd": _to_float(max_dd),
+        "mean_ret": _to_float(mean_ret),
+        "std_ret": _to_float(std_ret),
         "sharpe": _to_float(sharpe),
     }, reason_out
+
+
+def _calc_diversity(pos_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(pos_rows) < 2:
+        return {
+            "status": "SKIP",
+            "summary": "need >=2 agents with numeric test position rows",
+            "max_corr": None,
+            "max_match_ratio": None,
+            "pairs_over_0_9999": 0,
+            "all_pairs": 0,
+            "identical_all_agents": False,
+        }
+
+    pair_corrs: list[float] = []
+    pair_match_ratios: list[float] = []
+    over_09999 = 0
+    valid_pairs = 0
+    all_corr_one = True
+    all_match_one = True
+
+    for i in range(len(pos_rows)):
+        for j in range(i + 1, len(pos_rows)):
+            left = pos_rows[i]
+            right = pos_rows[j]
+            merged = left["series"].to_frame("a").join(right["series"].to_frame("b"), how="inner").dropna()
+            if merged.empty:
+                continue
+            valid_pairs += 1
+            if len(merged) < 2:
+                corr = 1.0 if (merged["a"] == merged["b"]).all() else 0.0
+            else:
+                std_a = float(merged["a"].std(ddof=0))
+                std_b = float(merged["b"].std(ddof=0))
+                if std_a == 0.0 or std_b == 0.0:
+                    corr = 1.0 if (merged["a"] == merged["b"]).all() else 0.0
+                else:
+                    corr = merged["a"].corr(merged["b"])
+                    if corr is None or pd.isna(corr):
+                        corr = 1.0 if (merged["a"] == merged["b"]).all() else 0.0
+            corr = float(corr)
+            pair_corrs.append(corr)
+            if corr > 0.9999:
+                over_09999 += 1
+            if corr < 1.0:
+                all_corr_one = False
+
+            match_ratio = float((merged["a"] == merged["b"]).mean())
+            pair_match_ratios.append(match_ratio)
+            if match_ratio < 1.0:
+                all_match_one = False
+
+    if valid_pairs == 0:
+        return {
+            "status": "SKIP",
+            "summary": "no overlapping numeric test position rows across agents",
+            "max_corr": None,
+            "max_match_ratio": None,
+            "pairs_over_0_9999": 0,
+            "all_pairs": 0,
+            "identical_all_agents": False,
+        }
+
+    identical_all = all_corr_one and all_match_one
+    high_corr_ratio = over_09999 / valid_pairs
+    status = "OK"
+    summary = "agent positions look diverse"
+    if identical_all:
+        status = "BAD"
+        summary = "all agent test positions are identical"
+    elif over_09999 >= 3 or high_corr_ratio >= 0.5:
+        status = "WARN"
+        summary = "many agent pairs are near-identical (corr>0.9999)"
+
+    return {
+        "status": status,
+        "summary": summary,
+        "max_corr": _to_float(max(pair_corrs) if pair_corrs else None),
+        "max_match_ratio": _to_float(max(pair_match_ratios) if pair_match_ratios else None),
+        "pairs_over_0_9999": int(over_09999),
+        "all_pairs": int(valid_pairs),
+        "identical_all_agents": bool(identical_all),
+    }
 
 
 def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
@@ -149,6 +250,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "stepE": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "stepF": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "diversity": {"status": "SKIP", "summary": "not evaluated"},
         "overall_status": "WARN",
     }
 
@@ -284,6 +386,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             report["stepE"] = {"status": "SKIP", "summary": "stepE_daily_log missing", "rows": []}
         else:
             rows = []
+            pos_rows: list[dict[str, Any]] = []
             for fpath in step_e_logs:
                 try:
                     df = _read_csv(fpath)
@@ -318,9 +421,16 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                     if reason:
                         row["note"] = reason
                     rows.append(row)
+
+                    test_pos = df[df[split_col] == "test"][pos_col] if split_col in df.columns else pd.Series(dtype=float)
+                    test_pos = pd.to_numeric(test_pos, errors="coerce").dropna().reset_index(drop=True)
+                    if not test_pos.empty:
+                        pos_rows.append({"agent": agent, "series": test_pos})
                 except Exception as exc:
                     rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
-            rows = sorted(rows, key=lambda r: (0 if r.get("status") == "OK" else 1, str(r.get("agent", ""))))[:10]
+
+            report["diversity"] = _calc_diversity(pos_rows)
+            rows = sorted(rows, key=lambda r: (0 if r.get("status") == "OK" else 1, str(r.get("agent", ""))))
             report["stepE"] = {
                 "status": "OK" if any(r.get("status") == "OK" for r in rows) else "SKIP",
                 "summary": "stepE daily logs evaluated",
@@ -374,7 +484,13 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     except Exception as exc:
         report["stepF"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
-    statuses = [report["stepA"]["status"], report["stepB"]["status"], report["stepE"]["status"], report["stepF"]["status"]]
+    statuses = [
+        report["stepA"]["status"],
+        report["stepB"]["status"],
+        report["stepE"]["status"],
+        report["stepF"]["status"],
+        report.get("diversity", {}).get("status", "SKIP"),
+    ]
     report["overall_status"] = "BAD" if "BAD" in statuses else ("WARN" if "WARN" in statuses or "SKIP" in statuses else "OK")
     return report
 
@@ -393,13 +509,14 @@ def render_markdown(report: dict[str, Any]) -> str:
     stepe_rows = report.get("stepE", {}).get("rows", [])
     if stepe_rows:
         lines.extend([
-            "| agent | file | test_days | equity_multiple | max_drawdown | sharpe | note | status |",
-            "|---|---|---:|---:|---:|---:|---|---|",
+            "| agent | file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---|---|",
         ])
         for r in stepe_rows:
             lines.append(
                 f"| {r.get('agent', 'NA')} | {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | "
-                f"{_fmt(r.get('max_drawdown'))} | {_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
+                f"{_fmt(r.get('max_dd'))} | {_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('sharpe'))} | "
+                f"{r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
             )
     else:
         lines.append(f"- SKIP: {report.get('stepE', {}).get('summary')}")
@@ -411,16 +528,28 @@ def render_markdown(report: dict[str, Any]) -> str:
     stepf_rows = report.get("stepF", {}).get("rows", [])
     if stepf_rows:
         lines.extend([
-            "| file | test_days | equity_multiple | max_drawdown | sharpe | note | status |",
-            "|---|---:|---:|---:|---:|---|---|",
+            "| file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
+            "|---|---:|---:|---:|---:|---:|---:|---|---|",
         ])
         for r in stepf_rows:
             lines.append(
-                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_drawdown'))} | "
-                f"{_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
+                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_dd'))} | "
+                f"{_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
             )
     else:
         lines.append(f"- SKIP: {report.get('stepF', {}).get('summary')}")
+
+    div = report.get("diversity", {})
+    lines.extend([
+        "",
+        "## Diversity",
+        f"- status: **{div.get('status', 'SKIP')}**",
+        f"- summary: {div.get('summary', 'NA')}",
+        f"- max_corr: {_fmt(div.get('max_corr'))}",
+        f"- max_match_ratio: {_fmt(div.get('max_match_ratio'))}",
+        f"- pairs_over_0_9999: {_fmt(div.get('pairs_over_0_9999'))} / {_fmt(div.get('all_pairs'))}",
+        f"- identical_all_agents: {_fmt(div.get('identical_all_agents'))}",
+    ])
 
     lines.extend([
         "",
@@ -477,7 +606,7 @@ def render_summary(report: dict[str, Any]) -> str:
         for r in stepe.get("rows", [])[:MAX_LIST_ITEMS]:
             lines.append(
                 f"  {r.get('agent', 'NA')}::{r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
-                f"max_drawdown={_fmt(r.get('max_drawdown'))} sharpe={_fmt(r.get('sharpe'))}"
+                f"max_dd={_fmt(r.get('max_dd'))} mean_ret={_fmt(r.get('mean_ret'))} std_ret={_fmt(r.get('std_ret'))} sharpe={_fmt(r.get('sharpe'))}"
             )
             if r.get("reason"):
                 lines.append(f"    reason={r.get('reason')}")
@@ -492,12 +621,23 @@ def render_summary(report: dict[str, Any]) -> str:
         for r in stepf.get("rows", [])[:MAX_LIST_ITEMS]:
             lines.append(
                 f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
-                f"max_drawdown={_fmt(r.get('max_drawdown'))} sharpe={_fmt(r.get('sharpe'))}"
+                f"max_dd={_fmt(r.get('max_dd'))} mean_ret={_fmt(r.get('mean_ret'))} std_ret={_fmt(r.get('std_ret'))} sharpe={_fmt(r.get('sharpe'))}"
             )
             if r.get("reason"):
                 lines.append(f"    reason={r.get('reason')}")
             if r.get("note"):
                 lines.append(f"    note={r.get('note')}")
+
+    div = report.get("diversity", {})
+    lines.append("Diversity:")
+    lines.append(
+        "  "
+        + f"status={div.get('status', 'SKIP')} max_corr={_fmt(div.get('max_corr'))} "
+        + f"max_match_ratio={_fmt(div.get('max_match_ratio'))} "
+        + f"pairs_over_0_9999={_fmt(div.get('pairs_over_0_9999'))}/{_fmt(div.get('all_pairs'))} "
+        + f"identical_all_agents={_fmt(div.get('identical_all_agents'))}"
+    )
+    lines.append(f"  summary={div.get('summary', 'NA')}")
 
     text = "\n".join(lines)
     sliced = text[:MAX_SUMMARY_CHARS]
