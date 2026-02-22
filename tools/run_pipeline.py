@@ -1126,6 +1126,19 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
     return svc.run(cfg)
 
 
+
+
+def _validate_stepdprime_contract(output_root: Path, mode: str, symbol: str) -> None:
+    base = Path(output_root) / "stepD_prime" / str(mode)
+    required = [
+        base / f"stepDprime_state_bnf_{symbol}_test.csv",
+        base / f"stepDprime_state_all_features_{symbol}_test.csv",
+        base / f"stepDprime_state_mix_{symbol}_test.csv",
+    ]
+    miss = [str(x.as_posix()) for x in required if not x.exists()]
+    if miss:
+        raise RuntimeError("StepDPrime contract missing required state files: " + ", ".join(miss))
+
 def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, prev_results: Dict[str, Any]):
     mod_map = {
         "C": ("ai_core.services.step_c_service", "StepCService"),
@@ -1436,6 +1449,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if "DPRIME" in steps:
             print("[StepDPrime] start")
             results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+            _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
             print("[StepDPrime] done")
 
         for step in ("D", "E", "F"):
