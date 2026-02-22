@@ -1419,6 +1419,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     agents=",".join(sorted(unique_agents)),
                     seed=42,
                     device="auto",
+                    use_context=True,
+                    context_variant="mix",
+                    context_profile="minimal",
                 )
 
                 if isinstance(app_config, dict):
@@ -1426,7 +1429,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     setattr(app_config, "stepF", cfgF)
 
-                print(f"[headless] StepF default config injected: agents={cfgF.agents} seed={cfgF.seed} device={cfgF.device}")
+                print(
+                    f"[headless] StepF default config injected: agents={cfgF.agents} seed={cfgF.seed} "
+                    f"device={cfgF.device} use_context={int(cfgF.use_context)} "
+                    f"context_variant={cfgF.context_variant} context_profile={cfgF.context_profile}"
+                )
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepF config: {type(e).__name__}: {e}")
 
