@@ -166,6 +166,7 @@ def _make_state_base(df_prices: pd.DataFrame) -> pd.DataFrame:
 
     tr = pd.concat([(high - low), (high - close_prev).abs(), (low - close_prev).abs()], axis=1).max(axis=1)
     atr14 = tr.rolling(14, min_periods=14).mean()
+    daily_ret = close.pct_change(1)
 
     rng = (high - low).replace(0, np.nan)
     body = (close - open_).abs()
@@ -190,6 +191,19 @@ def _make_state_base(df_prices: pd.DataFrame) -> pd.DataFrame:
         "vol_log_ratio_20": vol_log_ratio_20,
         "dev_z_25": dev_z_25,
         "bnf_score": dev_z_25 * vol_log_ratio_20,
+        # 3-month fixed-length compression features (63 bdays)
+        "win_ret_63": (close / close.shift(63).replace(0, np.nan)) - 1.0,
+        "win_vol_63": daily_ret.rolling(63, min_periods=63).std(ddof=0) * math.sqrt(252.0),
+        "win_dd_63": close.rolling(63, min_periods=63).apply(
+            lambda x: float(np.min((x / np.maximum.accumulate(x)) - 1.0)),
+            raw=True,
+        ),
+        "win_range_atr_63": ((high - low) / atr14.replace(0, np.nan)).rolling(63, min_periods=63).mean(),
+        "envelope_top_63": (close / close.rolling(63, min_periods=63).max().replace(0, np.nan)) - 1.0,
+        "envelope_bot_63": (close / close.rolling(63, min_periods=63).min().replace(0, np.nan)) - 1.0,
+        "rbw_63": (
+            close.rolling(63, min_periods=63).max() - close.rolling(63, min_periods=63).min()
+        ) / close.rolling(63, min_periods=63).mean().replace(0, np.nan),
     })
 
     if "gap" in feat.columns and "Gap" not in feat.columns:
@@ -231,6 +245,7 @@ def _write_state_csvs(stepA_dir: Path, stepD_dir: Path, symbol: str) -> List[str
     mix_cols = [
         "Date", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "upper_wick_ratio", "lower_wick_ratio",
         "gap", "atr_norm", "vol_log_ratio_20", "dev_z_25", "bnf_score",
+        "win_ret_63", "win_vol_63", "win_dd_63", "win_range_atr_63", "envelope_top_63", "envelope_bot_63", "rbw_63",
     ]
     for opt in ("RSI", "RSI_14", "MACD_hist", "vol_z_20"):
         if opt in all_train.columns or opt in all_test.columns:
