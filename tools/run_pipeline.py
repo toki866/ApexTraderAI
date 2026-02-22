@@ -266,7 +266,7 @@ def _repo_root() -> Path:
 
 
 def _parse_steps(s: str) -> Tuple[str, ...]:
-    default_steps: Tuple[str, ...] = ("A", "B", "C", "D", "DPRIME", "E", "F")
+    default_steps: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
     canonical_order: Tuple[str, ...] = ("A", "B", "C", "D", "DPRIME", "E", "F")
 
     step_aliases = {
@@ -298,6 +298,63 @@ def _parse_steps(s: str) -> Tuple[str, ...]:
     return tuple(step for step in canonical_order if step in requested)
 
 
+
+
+
+
+_OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
+    "dprime_bnf_h01",
+    "dprime_bnf_h02",
+    "dprime_bnf_h03",
+    "dprime_all_features_h01",
+    "dprime_all_features_h02",
+    "dprime_all_features_h03",
+    "dprime_mix_h01",
+    "dprime_bnf_3scale",
+    "dprime_all_features_3scale",
+    "dprime_mix_3scale",
+)
+
+
+def _device_auto() -> str:
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
+    from ai_core.services.step_e_service import StepEConfig
+
+    cfg_list = []
+    for agent_name in _OFFICIAL_STEPE_AGENTS:
+        cfg = StepEConfig(agent=str(agent_name))
+        cfg.output_root = str(output_root)
+        cfg.obs_profile = "DPRIME"
+        cfg.seed = 42
+        cfg.device = "auto"
+        cfg.epochs = 200
+        cfg.patience = min(int(getattr(cfg, "patience", 15)), 10)
+        cfg_list.append(cfg)
+
+    if isinstance(app_config, dict):
+        app_config["stepE"] = cfg_list
+    else:
+        setattr(app_config, "stepE", cfg_list)
+
+
+def _extract_stepe_agents_from_config(app_config: Any) -> List[str]:
+    raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+    if raw is None:
+        return []
+    cfgs = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    out = []
+    for c in cfgs:
+        a = getattr(c, "agent", None) if not isinstance(c, dict) else c.get("agent")
+        if a:
+            out.append(str(a))
+    return sorted(set(out))
 
 
 def _symbols_for_data_prep(primary_symbol: str) -> List[str]:
@@ -1262,20 +1319,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         if not current_step_e_cfgs:
             try:
-                from ai_core.services.step_e_service import StepEConfig  # lazy import
-
-                default_agents = enabled_agents or ["mamba"]
-                cfg_list = []
-                for agent_name in default_agents:
-                    cfg = StepEConfig(agent=str(agent_name))
-                    cfg.output_root = str(getattr(app_config, "output_root", resolved_output_root))
-                    cfg.obs_profile = "DPRIME"
-                    cfg.epochs = 200
-                    cfg.patience = min(int(getattr(cfg, "patience", 15)), 10)
-                    cfg_list.append(cfg)
-
-                setattr(app_config, "stepE", cfg_list if len(cfg_list) != 1 else cfg_list[0])
-                print(f"[headless] StepE default config injected: agents={','.join(default_agents)} epochs=200 obs_profile=DPRIME")
+                _inject_default_stepe_configs(app_config, resolved_output_root)
+                print(f"[headless] StepE default config injected: agents={','.join(_OFFICIAL_STEPE_AGENTS)} seed=42 device=auto")
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
 
@@ -1296,20 +1341,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     if p.name.startswith("stepE_daily_log_") and p.name.endswith(f"_{symbol}.csv")
                 }
                 if not unique_agents:
-                    unique_agents = {"mamba"}
-
-                try:
-                    import torch
-
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                except Exception:
-                    device = "cpu"
+                    unique_agents = set(_extract_stepe_agents_from_config(app_config))
+                if not unique_agents:
+                    unique_agents = set(_OFFICIAL_STEPE_AGENTS)
 
                 cfgF = StepFConfig(
                     output_root=out_root,
                     agents=",".join(sorted(unique_agents)),
                     seed=42,
-                    device=device,
+                    device="auto",
                 )
 
                 if isinstance(app_config, dict):
