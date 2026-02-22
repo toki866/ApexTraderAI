@@ -578,8 +578,25 @@ jobs:
           Write-Host "Selected diagnostics output dir: $selectedDiagDir"
           "diag_dir=$selectedDiagDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+          $runDirForPackage = ''
+          $outputRootForPackage = ''
+          $runsRoot = 'C:\work\apex_work\runs'
+          if (Test-Path $runsRoot) {
+            $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+            if ($latestRun) {
+              $runDirForPackage = $latestRun.FullName
+              $outputRootForPackage = Join-Path $runDirForPackage 'output'
+            }
+          }
+          Add-Content -Path $reportPath -Value @(
+            ('[PUBLISH] run_dir={0}' -f $runDirForPackage),
+            ('[PUBLISH] output_root={0}' -f $outputRootForPackage)
+          )
+
           if (Test-Path $diagScript) {
-            powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript -DiagDir "$selectedDiagDir"
+            powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript -DiagDir "$selectedDiagDir" -RunDir "$runDirForPackage" -OutputRoot "$outputRootForPackage"
             if ($LASTEXITCODE -ne 0) {
               Add-Content -Path $reportPath -Value @(
                 '[NG] package_diagnostics_to_onedrive',
@@ -923,47 +940,55 @@ jobs:
           $headLines = 500
           $publishedCsv = New-Object System.Collections.Generic.List[object]
           $publishWarnings = New-Object System.Collections.Generic.List[string]
-          $stepFolderNameToLabel = @{
-            'stepa' = 'StepA'
-            'stepb' = 'StepB'
-            'stepd_prime' = 'StepDPrime'
-            'stepe' = 'StepE'
-            'stepf' = 'StepF'
-          }
-          $sourceItems = @{}
-          $allCsvFoundCount = 0
+          $allMatchedCandidates = New-Object System.Collections.Generic.List[object]
+          $seenSourcePaths = @{}
+          if ($null -eq $seenSourcePaths) { $seenSourcePaths = @{} }
+
+          $modeNames = @('sim', 'live', 'display')
+          $stepPatternSpecs = @(
+            @{ Label = 'StepA'; Base = 'stepA'; Patterns = @('*.csv') },
+            @{ Label = 'StepB'; Base = 'stepB'; Patterns = @('*.csv') },
+            @{ Label = 'StepDPrime'; Base = 'stepD_prime'; Patterns = @('*.csv') },
+            @{ Label = 'StepE'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv', 'stepE_equity_*.csv', 'stepE_summary_*.json') },
+            @{ Label = 'StepF'; Base = 'stepF'; Patterns = @('stepF_equity_marl_*.csv', 'stepF_daily_log_marl_*.csv', 'stepF_summary_marl_*.json') }
+          )
+
+          $searchedPatterns = New-Object System.Collections.Generic.List[string]
 
           if ([string]::IsNullOrWhiteSpace($outputRoot)) {
-            $publishWarnings.Add('[WARN] publish skipped: source output_root is empty.')
+            $publishWarnings.Add('[WARN] publish issue: source output_root is empty.')
           } elseif (-not (Test-Path $outputRoot)) {
-            $publishWarnings.Add("[WARN] publish skipped: output_root not found: $outputRoot")
+            $publishWarnings.Add("[WARN] publish issue: output_root not found: $outputRoot")
           } else {
-            $allCsvCandidates = @(Get-ChildItem -Path $outputRoot -File -Recurse -Filter '*.csv' -ErrorAction SilentlyContinue)
-            $allCsvFoundCount = $allCsvCandidates.Count
+            Add-Content -Path $oneTapDest -Encoding UTF8 -Value ("[PUBLISH] output_root={0}" -f $outputRoot)
 
-            foreach ($hit in $allCsvCandidates) {
-              if ($null -eq $hit) { continue }
+            foreach ($spec in $stepPatternSpecs) {
+              foreach ($mode in $modeNames) {
+                $modeRoot = Join-Path $outputRoot (Join-Path $spec.Base $mode)
+                foreach ($pat in $spec.Patterns) {
+                  $searchedPatterns.Add(("{0}/**/{1}" -f ($modeRoot -replace '\\','/'), $pat))
+                }
+                if (-not (Test-Path $modeRoot)) { continue }
 
-              $relPath = $hit.FullName
-              if ($relPath.StartsWith($outputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $relPath = $relPath.Substring($outputRoot.Length).TrimStart('\\', '/')
-              }
-              $segments = @($relPath -split '[\\/]')
-              if ($segments.Count -eq 0) { continue }
-              $stepFolder = ([string]$segments[0]).ToLowerInvariant()
-              if (-not $stepFolderNameToLabel.ContainsKey($stepFolder)) { continue }
-
-              if (-not $sourceItems.ContainsKey($hit.FullName)) {
-                $sourceItems[$hit.FullName] = [PSCustomObject]@{
-                  File = $hit
-                  Label = $stepFolderNameToLabel[$stepFolder]
+                foreach ($pat in $spec.Patterns) {
+                  $hits = @(Get-ChildItem -Path $modeRoot -File -Recurse -Filter $pat -ErrorAction SilentlyContinue)
+                  foreach ($hit in $hits) {
+                    if ($null -eq $hit) {
+                      $publishWarnings.Add("[WARN] publish issue: null file hit for pattern $pat under $modeRoot")
+                      continue
+                    }
+                    if ($null -eq $seenSourcePaths) { $seenSourcePaths = @{} }
+                    if ($seenSourcePaths.ContainsKey($hit.FullName)) { continue }
+                    $seenSourcePaths[$hit.FullName] = $true
+                    $allMatchedCandidates.Add([PSCustomObject]@{ File = $hit; Label = [string]$spec.Label })
+                  }
                 }
               }
             }
 
-            foreach ($entry in ($sourceItems.Values | Sort-Object { $_.File.FullName })) {
+            foreach ($entry in ($allMatchedCandidates | Sort-Object { $_.File.FullName })) {
               if ($null -eq $entry -or $null -eq $entry.File) {
-                $publishWarnings.Add('[WARN] publish skipped: source entry was null.')
+                $publishWarnings.Add('[WARN] publish issue: source entry was null.')
                 continue
               }
 
@@ -971,11 +996,11 @@ jobs:
               $destName = $src.Name
               $headOnly = $false
 
-              $relativeCsvPath = $src.FullName
-              if ($relativeCsvPath.StartsWith($outputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $relativeCsvPath = $relativeCsvPath.Substring($outputRoot.Length).TrimStart('\\', '/')
+              $relativePath = $src.FullName
+              if ($relativePath.StartsWith($outputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $relativePath = $relativePath.Substring($outputRoot.Length).TrimStart('\', '/')
               }
-              $safeRelative = ($relativeCsvPath -replace '[\\/]', '__')
+              $safeRelative = ($relativePath -replace '[\/]', '__')
               if (-not [string]::IsNullOrWhiteSpace($safeRelative)) {
                 $destName = $safeRelative
               }
@@ -1003,8 +1028,29 @@ jobs:
               }
             }
 
-            if ($sourceItems.Count -eq 0) {
-              $publishWarnings.Add("[WARN] publish skipped: no CSV under target step folders (stepA/stepB/stepD_prime/stepE/stepF). all_csv_found=$allCsvFoundCount")
+            if ($allMatchedCandidates.Count -eq 0) {
+              $publishWarnings.Add('[WARN] publish issue: no files matched target step/mode patterns.')
+            }
+          }
+
+          $evalSpecs = @(
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'); Name = 'EVAL_REPORT.md'; Label = 'Eval' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'); Name = 'EVAL_SUMMARY.txt'; Label = 'Eval' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval' }
+          )
+          foreach ($evalSpec in $evalSpecs) {
+            if (Test-Path $evalSpec.Source) {
+              $evalDest = Join-Path $csvOutDir $evalSpec.Name
+              Copy-Item -Path $evalSpec.Source -Destination $evalDest -Force
+              $evalPreview = @(Get-Content -Path $evalDest -TotalCount 2 -ErrorAction SilentlyContinue)
+              $publishedCsv.Add([PSCustomObject]@{
+                Name = $evalSpec.Name
+                RelativePath = "./csv/$($evalSpec.Name)"
+                SizeBytes = (Get-Item -Path $evalDest).Length
+                HeadOnly = $false
+                PreviewLines = $evalPreview
+                Label = 'Eval'
+              })
             }
           }
 
@@ -1014,14 +1060,21 @@ jobs:
           $csvIndexLines.Add('')
           $csvIndexLines.Add("- source_run_dir: $runDir")
           $csvIndexLines.Add("- source_output_root: $outputRoot")
-          $csvIndexLines.Add('')
-
-          $csvIndexLines.Add("- discovered_csv_count: $allCsvFoundCount")
-          $csvIndexLines.Add("- published_csv_count: $($publishedCsv.Count)")
+          $csvIndexLines.Add("- searched_pattern_count: $($searchedPatterns.Count)")
+          $csvIndexLines.Add("- matched_file_count: $($allMatchedCandidates.Count)")
+          $csvIndexLines.Add("- published_file_count: $($publishedCsv.Count)")
           $csvIndexLines.Add('')
 
           if ($publishedCsv.Count -eq 0) {
             $csvIndexLines.Add('_No CSV files were published for this run._')
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('## Search context')
+            $csvIndexLines.Add("- output_root: $outputRoot")
+            $csvIndexLines.Add('- patterns:')
+            foreach ($pat in $searchedPatterns) {
+              $csvIndexLines.Add("  - $pat")
+            }
+            $csvIndexLines.Add("- actual_matches: $($allMatchedCandidates.Count)")
             if ($publishWarnings.Count -gt 0) {
               $csvIndexLines.Add('')
               $csvIndexLines.Add('Reasons:')
@@ -1031,13 +1084,12 @@ jobs:
             }
           } else {
             foreach ($item in $publishedCsv) {
-              $headNote = if ($item.HeadOnly) { 'yes (HEAD版: header + first 500 lines)' } else { 'no' }
-              $csvIndexLines.Add("- file: $($item.RelativePath) | size_bytes: $($item.SizeBytes) | head_only: $headNote")
+              $headNote = if ($item.HeadOnly) { 'yes (__HEAD.csv, first 500 lines only)' } else { 'no' }
+              $csvIndexLines.Add("- [$($item.Name)]($($item.RelativePath)) | bytes: $($item.SizeBytes) | head-only: $headNote")
               if ($item.PreviewLines.Count -gt 0) {
                 $csvIndexLines.Add('  - preview:')
                 foreach ($line in $item.PreviewLines) {
-                  $safeLine = [string]$line
-                  $csvIndexLines.Add("    - $safeLine")
+                  $csvIndexLines.Add("    - $([string]$line)")
                 }
               }
             }
@@ -1049,7 +1101,6 @@ jobs:
               Add-Content -Path $oneTapDest -Encoding UTF8 -Value $warn
             }
           }
-
           $stepDPrimeItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepDPrime' })
           $stepFItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepF' })
 
