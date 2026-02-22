@@ -13,6 +13,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import traceback
 from typing import Any
 
@@ -81,6 +82,62 @@ def _calc_metrics(true_s: pd.Series, pred_s: pd.Series) -> dict[str, Any]:
         "corr": (None if pd.isna(corr) else float(corr)),
         "n_eval": int(len(pair)),
     }
+
+
+def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_col: str | None) -> tuple[dict[str, Any], str | None]:
+    work = df.copy()
+    if split_col is None:
+        reason = "Split missing: evaluated all rows as test"
+        df_test = work
+    else:
+        df_test = work[work[split_col] == "test"]
+        reason = None
+
+    if df_test.empty:
+        return {"test_days": 0, "equity_multiple": None, "max_drawdown": None, "sharpe": None}, "no test rows after split filter"
+
+    eq = pd.to_numeric(df_test[equity_col], errors="coerce")
+    rets = pd.to_numeric(df_test[ret_col], errors="coerce")
+    eq = eq[np.isfinite(eq)]
+    rets = rets[np.isfinite(rets)]
+    if len(eq) < 1:
+        return {"test_days": int(len(df_test)), "equity_multiple": None, "max_drawdown": None, "sharpe": None}, "equity has no numeric rows"
+
+    eq_start, eq_end = float(eq.iloc[0]), float(eq.iloc[-1])
+    eq_multiple = None if eq_start == 0 else (eq_end / eq_start)
+
+    peak = eq.cummax()
+    dd = eq / peak - 1.0
+    max_dd = float(dd.min()) if len(dd) else None
+
+    sharpe = None
+    sharpe_reason = None
+    if len(rets) >= 2:
+        std = float(rets.std(ddof=1))
+        if std > 0:
+            sharpe = float(rets.mean() / std * np.sqrt(252.0))
+        else:
+            sharpe_reason = "sharpe NA: ret std is 0"
+    else:
+        sharpe_reason = "sharpe NA: ret rows < 2"
+
+    reason_out = reason
+    if sharpe_reason:
+        reason_out = f"{reason_out}; {sharpe_reason}" if reason_out else sharpe_reason
+
+    return {
+        "test_days": int(len(df_test)),
+        "equity_multiple": _to_float(eq_multiple),
+        "max_drawdown": _to_float(max_dd),
+        "sharpe": _to_float(sharpe),
+    }, reason_out
 
 
 def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
@@ -211,9 +268,9 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
     # StepE
     try:
-        step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
+        step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, f"stepE_daily_log_*_{symbol}.csv")))
         if not step_e_logs:
-            step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", "stepE_daily_log_*.csv")))
+            step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", f"stepE_daily_log_*_{symbol}.csv")))
         if not step_e_logs:
             report["stepE"] = {"status": "SKIP", "summary": "stepE_daily_log missing", "rows": []}
         else:
@@ -221,20 +278,42 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             for fpath in step_e_logs:
                 try:
                     df = _read_csv(fpath)
+                    fname = os.path.basename(fpath)
+                    m = re.match(rf"stepE_daily_log_(.+)_{re.escape(symbol)}\.csv$", fname)
+                    agent = m.group(1) if m else fname
+                    pos_col = _pick_col(df, ["pos", "Position"])
+                    ret_col = _pick_col(df, ["ret"])
+                    equity_col = _pick_col(df, ["equity"])
+                    split_col = _pick_col(df, ["Split"])
+
+                    missing_reasons = []
+                    if pos_col is None:
+                        missing_reasons.append("pos/Position missing")
+                    if ret_col is None:
+                        missing_reasons.append("ret missing")
+                    if equity_col is None:
+                        missing_reasons.append("equity missing")
+                    if split_col is None:
+                        missing_reasons.append("Split missing")
+                    if missing_reasons:
+                        rows.append({"file": fname, "agent": agent, "status": "SKIP", "reason": ", ".join(missing_reasons)})
+                        continue
+
+                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col)
                     row = {
-                        "file": os.path.basename(fpath),
-                        "test_days": int(len(df)),
-                        "equity_multiple": _to_float(df["equity_multiple"].iloc[-1]) if "equity_multiple" in df.columns and len(df) else None,
-                        "max_dd": _to_float(df["max_dd"].iloc[-1]) if "max_dd" in df.columns and len(df) else None,
-                        "sharpe": _to_float(df["sharpe"].iloc[-1]) if "sharpe" in df.columns and len(df) else None,
-                        "mean_reward": _to_float(df["reward"].mean()) if "reward" in df.columns and len(df) else None,
-                        "status": "OK" if len(df) > 0 else "WARN",
+                        "file": fname,
+                        "agent": agent,
+                        **metrics,
+                        "status": "OK" if metrics["test_days"] > 0 else "WARN",
                     }
+                    if reason:
+                        row["note"] = reason
                     rows.append(row)
                 except Exception as exc:
                     rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
+            rows = sorted(rows, key=lambda r: (0 if r.get("status") == "OK" else 1, str(r.get("agent", ""))))[:10]
             report["stepE"] = {
-                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
+                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "SKIP",
                 "summary": "stepE daily logs evaluated",
                 "rows": rows,
             }
@@ -243,9 +322,9 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
     # StepF
     try:
-        step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", mode, "stepF_equity_marl*.csv")))
+        step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", mode, f"stepF_equity_marl_{symbol}.csv")))
         if not step_f_logs:
-            step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", "*", "stepF_equity_marl*.csv")))
+            step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", "*", f"stepF_equity_marl_{symbol}.csv")))
         if not step_f_logs:
             report["stepF"] = {"status": "SKIP", "summary": "stepF_equity_marl missing", "rows": []}
         else:
@@ -253,19 +332,33 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             for fpath in step_f_logs:
                 try:
                     df = _read_csv(fpath)
+                    equity_col = _pick_col(df, ["equity", "Equity"])
+                    if equity_col is None:
+                        rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": "equity/Equity missing"})
+                        continue
+                    ret_col = _pick_col(df, ["ret"])
+                    note = None
+                    if ret_col is None:
+                        work = df.copy()
+                        work["_ret_eval"] = pd.to_numeric(work[equity_col], errors="coerce").pct_change()
+                        df = work
+                        ret_col = "_ret_eval"
+                        note = "ret missing: computed from equity pct_change"
+                    split_col = _pick_col(df, ["Split"])
+                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col)
                     row = {
                         "file": os.path.basename(fpath),
-                        "test_days": int(len(df)),
-                        "total_return": _to_float(df["total_return"].iloc[-1]) if "total_return" in df.columns and len(df) else None,
-                        "max_drawdown": _to_float(df["max_drawdown"].iloc[-1]) if "max_drawdown" in df.columns and len(df) else None,
-                        "sharpe": _to_float(df["sharpe"].iloc[-1]) if "sharpe" in df.columns and len(df) else None,
-                        "status": "OK" if len(df) > 0 else "WARN",
+                        **metrics,
+                        "status": "OK" if metrics["test_days"] > 0 else "WARN",
                     }
+                    merged_note = "; ".join([x for x in [note, reason] if x])
+                    if merged_note:
+                        row["note"] = merged_note
                     rows.append(row)
                 except Exception as exc:
                     rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
             report["stepF"] = {
-                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
+                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "SKIP",
                 "summary": "stepF equity logs evaluated",
                 "rows": rows,
             }
@@ -278,13 +371,49 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
-    return "\n".join([
+    lines = [
         "# EVAL_REPORT",
         "",
         f"- output_root: `{report.get('output_root')}`",
         f"- mode: `{report.get('mode')}`",
         f"- symbol: `{report.get('symbol')}`",
         f"- overall_status: **{report.get('overall_status')}**",
+        "",
+        "## StepE agents table",
+    ]
+    stepe_rows = report.get("stepE", {}).get("rows", [])
+    if stepe_rows:
+        lines.extend([
+            "| agent | file | test_days | equity_multiple | max_drawdown | sharpe | note | status |",
+            "|---|---|---:|---:|---:|---:|---|---|",
+        ])
+        for r in stepe_rows:
+            lines.append(
+                f"| {r.get('agent', 'NA')} | {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | "
+                f"{_fmt(r.get('max_drawdown'))} | {_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
+            )
+    else:
+        lines.append(f"- SKIP: {report.get('stepE', {}).get('summary')}")
+
+    lines.extend([
+        "",
+        "## StepF router summary",
+    ])
+    stepf_rows = report.get("stepF", {}).get("rows", [])
+    if stepf_rows:
+        lines.extend([
+            "| file | test_days | equity_multiple | max_drawdown | sharpe | note | status |",
+            "|---|---:|---:|---:|---:|---|---|",
+        ])
+        for r in stepf_rows:
+            lines.append(
+                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_drawdown'))} | "
+                f"{_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
+            )
+    else:
+        lines.append(f"- SKIP: {report.get('stepF', {}).get('summary')}")
+
+    lines.extend([
         "",
         "## Raw JSON",
         "```json",
@@ -293,6 +422,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "Best-effort mode: this evaluator writes SKIP/notes and always exits 0.",
     ])
+    return "\n".join(lines)
 
 
 def render_summary(report: dict[str, Any]) -> str:
@@ -337,9 +467,13 @@ def render_summary(report: dict[str, Any]) -> str:
     else:
         for r in stepe.get("rows", [])[:MAX_LIST_ITEMS]:
             lines.append(
-                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
-                f"max_dd={_fmt(r.get('max_dd'))} sharpe={_fmt(r.get('sharpe'))} mean_reward={_fmt(r.get('mean_reward'))}"
+                f"  {r.get('agent', 'NA')}::{r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
+                f"max_drawdown={_fmt(r.get('max_drawdown'))} sharpe={_fmt(r.get('sharpe'))}"
             )
+            if r.get("reason"):
+                lines.append(f"    reason={r.get('reason')}")
+            if r.get("note"):
+                lines.append(f"    note={r.get('note')}")
 
     stepf = report.get("stepF", {})
     lines.append("StepF:")
@@ -348,9 +482,13 @@ def render_summary(report: dict[str, Any]) -> str:
     else:
         for r in stepf.get("rows", [])[:MAX_LIST_ITEMS]:
             lines.append(
-                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} total_return={_fmt(r.get('total_return'))} "
+                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
                 f"max_drawdown={_fmt(r.get('max_drawdown'))} sharpe={_fmt(r.get('sharpe'))}"
             )
+            if r.get("reason"):
+                lines.append(f"    reason={r.get('reason')}")
+            if r.get("note"):
+                lines.append(f"    note={r.get('note')}")
 
     text = "\n".join(lines)
     sliced = text[:MAX_SUMMARY_CHARS]
