@@ -959,6 +959,8 @@ def run_mamba_multi_model_by_horizon(
         "batch_size": batch_size,
         "lr": lr,
         "hidden_dim": hidden_dim,
+        "model_arch": "GRU",
+        "model_name": "SimpleSeqModel(GRU)",
         "standardize": standardize,
         "train_samples_by_h": train_samples_by_h,
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
