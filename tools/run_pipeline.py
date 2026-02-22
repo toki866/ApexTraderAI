@@ -1134,6 +1134,10 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
     for name in candidates:
         fn = getattr(svc, name, None)
         if callable(fn):
+            if step_letter in {"E", "F"}:
+                ctx2 = dict(ctx)
+                ctx2.pop("agents", None)
+                return _call_with_best_effort(fn, ctx2)
             return _call_with_best_effort(fn, ctx)
 
     # If nothing matched, provide a helpful error with available callables.
@@ -1278,9 +1282,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     results: Dict[str, Any] = {}
 
-    # Enabled agents list (propagated to StepE/StepF via ctx so they can run multi-agent).
+    # StepB enabled models list.
     enabled_agents: List[str] = ['mamba'] if enable_mamba else []
-    # Store into results so _run_step_generic passes it as ctx['agents'].
+    # Store into results so downstream steps can read ctx['agents'] if needed.
     results['agents'] = enabled_agents
     # Optional: configure StepE to use StepD' transformer embeddings (compression-as-learning).
     # This lets StepE consume embeddings from:
