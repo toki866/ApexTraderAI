@@ -105,11 +105,8 @@ call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBO
 if errorlevel 1 goto :failed
 
 set "PIPELINE_FLAGS="
-if "%ENABLE_ALL%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-all"
-if "%ENABLE_XSR%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-xsr"
 if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
-if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-fedformer"
 if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
 
 call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%" --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!

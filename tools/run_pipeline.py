@@ -77,7 +77,7 @@ class _ConfigShim:
             return getattr(self._base, name)
         except AttributeError:
             # Provide a soft default for missing fields expected by some services (e.g. StepE/StepF).
-            # Returning None lets the service apply its own defaults (e.g. config.agents or ['xsr']).
+            # Returning None lets the service apply its own defaults.
             return None
 
 
@@ -605,8 +605,6 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
         return cands[0]
 
     agent_map = {
-        'XSR': _pick_best(files, 'xsr'),
-        'FED': _pick_best(files, 'fed'),
         'MAMBA': _pick_best(files, 'mamba'),
     }
 
@@ -892,17 +890,8 @@ def _apply_config_output_root(app_config: Any, output_root: Path) -> Any:
 
 
 
-def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedformer: bool) -> None:
-    """Best-effort enabling of StepB agents across differing config schemas.
-
-    This repository evolved over time; StepBConfig may expose:
-      - cfg.xsr.enabled / cfg.mamba.enabled / cfg.fedformer.enabled
-      - cfg.train_xsr / cfg.train_mamba / cfg.train_fedformer (bool)
-      - cfg.enable_xsr / cfg.enable_mamba / cfg.enable_fedformer (bool)
-      - cfg.use_xsr / cfg.use_mamba / cfg.use_fedformer (bool)
-      - cfg.agents = {"xsr": True, ...} or cfg.enabled_agents = ["mamba", ...]
-    We try common patterns without failing if the shape differs.
-    """
+def _enable_stepb_agents(cfg, enable_mamba: bool) -> None:
+    """Best-effort enabling of StepB Mamba across differing config schemas."""
     def _try_set(obj, attr: str, value):
         if hasattr(obj, attr):
             try:
@@ -930,18 +919,14 @@ def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedfo
             _try_set(subcfg, flag, value)
             _try_set_in_mapping(subcfg, flag, value)
 
-    desired = {
-        "xsr": bool(enable_xsr),
-        "mamba": bool(enable_mamba),
-        "fedformer": bool(enable_fedformer),
-    }
+    desired = {"mamba": bool(enable_mamba)}
 
     # 1) Direct boolean flags on cfg
     for name, value in desired.items():
         for prefix in ("train_", "enable_", "use_"):
             _try_set(cfg, f"{prefix}{name}", value)
 
-    # 2) Nested sub-configs cfg.xsr / cfg.mamba / cfg.fedformer
+    # 2) Nested sub-configs
     for name, value in desired.items():
         if hasattr(cfg, name):
             try:
@@ -955,9 +940,7 @@ def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedfo
 
     # 3) Aliases sometimes used
     alias_map = {
-        "xsr": ("xsr_cfg", "xsr_config", "xsr_train", "xsr_model"),
         "mamba": ("wavelet_mamba", "mamba_cfg", "mamba_config", "mamba_train", "mamba_model"),
-        "fedformer": ("fed", "fedformer_cfg", "fedformer_config", "fedformer_train", "fedformer_model"),
     }
     for name, aliases in alias_map.items():
         value = desired[name]
@@ -997,7 +980,7 @@ def _enable_stepb_agents(cfg, enable_xsr: bool, enable_mamba: bool, enable_fedfo
                 pass
 
 
-def _run_stepB(app_config, symbol: str, date_range, enable_xsr: bool, enable_mamba: bool, enable_mamba_periodic: bool, enable_fedformer: bool, mamba_lookback: Optional[int], mamba_horizons: Optional[List[int]]):
+def _run_stepB(app_config, symbol: str, date_range, enable_mamba: bool, enable_mamba_periodic: bool, mamba_lookback: Optional[int], mamba_horizons: Optional[List[int]]):
     from ai_core.services.step_b_service import StepBService
     from ai_core.config.step_b_config import StepBConfig
     ctx = {"app_config": app_config, "symbol": symbol, "sym": symbol, "date_range": date_range}
@@ -1013,7 +996,7 @@ def _run_stepB(app_config, symbol: str, date_range, enable_xsr: bool, enable_mam
         except TypeError:
             cfg = StepBConfig()
 
-    _enable_stepb_agents(cfg, enable_xsr=enable_xsr, enable_mamba=enable_mamba, enable_fedformer=enable_fedformer)
+    _enable_stepb_agents(cfg, enable_mamba=enable_mamba)
 
     # Apply Mamba multi-horizon overrides (lookback/horizons) if provided
     cfg = _apply_mamba_overrides_to_stepb_config(cfg, mamba_lookback=mamba_lookback, mamba_horizons=mamba_horizons)
@@ -1141,11 +1124,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="StepD envelope horizons as CSV list (e.g. 1,5,10,20). Overrides --env-horizon-days list component.",
     )
-    ap.add_argument("--enable-xsr", action="store_true", help="Enable XSR training in StepB (best-effort).")
     ap.add_argument("--enable-mamba", action="store_true", help="Enable Wavelet-Mamba training in StepB (best-effort).")
     ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
-    ap.add_argument("--enable-fedformer", action="store_true", help="Enable FEDformer training in StepB (best-effort).")
-    ap.add_argument("--enable-all", action="store_true", help="Enable all StepB agents (xsr/mamba/fedformer).")
     ap.add_argument("--auto-prepare-data", type=int, default=1, choices=[0, 1], help="Automatically generate missing data/prices_<SYMBOL>.csv before StepA.")
     ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
     ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
@@ -1160,18 +1140,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if skip_stepe and "E" in steps:
         steps = tuple(step for step in steps if step != "E")
 
-    # StepB agent enabling (best-effort).
-    if args.enable_all:
-        enable_xsr = True
+    # StepB is Mamba-only. If user didn't specify, default to enabled.
+    enable_mamba = bool(args.enable_mamba)
+    if not enable_mamba:
         enable_mamba = True
-        enable_fedformer = True
-    else:
-        enable_xsr = bool(args.enable_xsr)
-        enable_mamba = bool(args.enable_mamba)
-        enable_fedformer = bool(args.enable_fedformer)
-        # If user didn't specify any, default to mamba only (matches current working path).
-        if not (enable_xsr or enable_mamba or enable_fedformer):
-            enable_mamba = True
 
 
     # Ensure repo_root is on sys.path
@@ -1250,13 +1222,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     results: Dict[str, Any] = {}
 
     # Enabled agents list (propagated to StepE/StepF via ctx so they can run multi-agent).
-    enabled_agents: List[str] = []
-    if enable_xsr:
-        enabled_agents.append('xsr')
-    if enable_mamba:
-        enabled_agents.append('mamba')
-    if enable_fedformer:
-        enabled_agents.append('fed')
+    enabled_agents: List[str] = ['mamba'] if enable_mamba else []
     # Store into results so _run_step_generic passes it as ctx['agents'].
     results['agents'] = enabled_agents
     # Optional: configure StepE to use StepD' transformer embeddings (compression-as-learning).
@@ -1381,8 +1347,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if "B" in steps:
             print("[StepB] start")
             mamba_horizons_list = _parse_int_list(args.mamba_horizons)
-            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_xsr, enable_mamba, args.enable_mamba_periodic, enable_fedformer, args.mamba_lookback, mamba_horizons_list)
-            print(f"[StepB] agents: xsr={enable_xsr}, mamba={enable_mamba}, fedformer={enable_fedformer}")
+            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+            print(f"[StepB] agents: mamba={enable_mamba}")
             print("[StepB] done")
             # Ensure contract artifact exists
             try:
