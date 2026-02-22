@@ -826,6 +826,7 @@ jobs:
           New-Item $repDir -ItemType Directory -Force | Out-Null
           $md=Join-Path $repDir 'EVAL_REPORT.md'
           $js=Join-Path $repDir 'EVAL_REPORT.json'
+          $summary=Join-Path $repDir 'EVAL_SUMMARY.txt'
 
           $symbols = '${{ inputs.symbols }}'
           $symbol = 'SOXL'
@@ -836,7 +837,7 @@ jobs:
           $mode = '${{ inputs.mode }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
-          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js"
+          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
 
@@ -898,6 +899,10 @@ jobs:
           $evalJsonSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'
           if (Test-Path $evalJsonSource) {
             Copy-Item -Path $evalJsonSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.json') -Force
+          }
+          $evalSummarySource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'
+          if (Test-Path $evalSummarySource) {
+            Copy-Item -Path $evalSummarySource -Destination (Join-Path $csvOutDir 'EVAL_SUMMARY.txt') -Force
           }
 
           $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
@@ -993,6 +998,9 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('- eval_report: ./csv/EVAL_REPORT.md')
           }
+          if (Test-Path (Join-Path $csvOutDir 'EVAL_SUMMARY.txt')) {
+            $csvIndexLines.Add('- eval_summary: ./csv/EVAL_SUMMARY.txt')
+          }
 
           $csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8
 
@@ -1062,7 +1070,13 @@ jobs:
               ? fs.readFileSync(reportPath, 'utf8')
               : '(missing ONE_TAP_ERROR_REPORT.txt)';
 
+            const evalPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'eval', 'EVAL_SUMMARY.txt');
+            let evalTxt = fs.existsSync(evalPath)
+              ? fs.readFileSync(evalPath, 'utf8')
+              : '(EVAL_SUMMARY.txt missing)';
+
             if (report.length > 60000) report = report.slice(-60000);
+            if (evalTxt.length > 15000) evalTxt = evalTxt.slice(-15000);
 
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const title = 'ApexTraderAI Diagnostics (latest)';
@@ -1071,7 +1085,10 @@ jobs:
             const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
               ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
               : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
-            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const evalUrl = diagRunFolder === 'LATEST_CSV.md'
+              ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+              : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
+            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs eval report: ${evalUrl}\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n`;
 
             const { data: issues } = await github.rest.issues.listForRepo({
               owner,
