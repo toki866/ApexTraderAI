@@ -1120,10 +1120,11 @@ jobs:
             const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
               ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
               : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
-            const evalUrl = diagRunFolder === 'LATEST_CSV.md'
-              ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
-              : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
-            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs eval report: ${evalUrl}\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n`;
+            const evalPathInBranch = diagRunFolder === 'LATEST_CSV.md'
+              ? 'runs/LATEST_CSV.md'
+              : `runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
+            const evalUrl = `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/${evalPathInBranch}`;
+            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n\`\`\`text\n${report}\n\`\`\`\n`;
 
             const { data: issues } = await github.rest.issues.listForRepo({
               owner,
