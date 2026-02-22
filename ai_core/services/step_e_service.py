@@ -115,7 +115,7 @@ class StepEService:
         """
         self.app_config = app_config
 
-    def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None) -> None:
+    def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
         mode = str(mode or getattr(date_range, "mode", None) or "sim")
 
         raw_cfgs = getattr(self.app_config, "stepE", None)
@@ -129,10 +129,23 @@ class StepEService:
             cfgs = [c for c in cfgs if c.agent in set(agents)]
 
         if not cfgs:
-            raise ValueError("No StepE configs to run.")
+            print("[StepE] WARN: No StepE configs to run. Skipping StepE.")
+            return {
+                "skipped": True,
+                "reason": "no_stepE_configs",
+                "symbol": symbol,
+                "mode": mode,
+            }
 
         for cfg in cfgs:
             self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
+
+        return {
+            "skipped": False,
+            "configs_run": len(cfgs),
+            "symbol": symbol,
+            "mode": mode,
+        }
 
     # -----------------------
     # Main per-agent run
