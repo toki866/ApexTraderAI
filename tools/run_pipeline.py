@@ -319,16 +319,19 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
     """Return deterministic StepE expert specs for the official 10-agent set."""
     return [
-        {"agent": "dprime_bnf_h01", "dprime_sources": "bnf", "dprime_horizons": "1", "obs_profile": "A"},
-        {"agent": "dprime_bnf_h02", "dprime_sources": "bnf", "dprime_horizons": "2", "obs_profile": "B"},
-        {"agent": "dprime_bnf_h03", "dprime_sources": "bnf", "dprime_horizons": "3", "obs_profile": "C"},
-        {"agent": "dprime_all_features_h01", "dprime_sources": "all_features", "dprime_horizons": "1", "obs_profile": "A"},
-        {"agent": "dprime_all_features_h02", "dprime_sources": "all_features", "dprime_horizons": "2", "obs_profile": "B"},
-        {"agent": "dprime_all_features_h03", "dprime_sources": "all_features", "dprime_horizons": "3", "obs_profile": "C"},
-        {"agent": "dprime_mix_h01", "dprime_sources": "bnf,all_features", "dprime_horizons": "1", "obs_profile": "D"},
-        {"agent": "dprime_bnf_3scale", "dprime_sources": "bnf", "dprime_horizons": "1,2,3", "obs_profile": "D"},
-        {"agent": "dprime_all_features_3scale", "dprime_sources": "all_features", "dprime_horizons": "1,2,3", "obs_profile": "D"},
-        {"agent": "dprime_mix_3scale", "dprime_sources": "bnf,all_features", "dprime_horizons": "1,2,3", "obs_profile": "D"},
+        # StepDPrime currently emits source=mamba for horizons 1/5/10/20.
+        # Keep historical agent names for compatibility, but align load targets
+        # so StepE expects existing artifacts and does not crash in headless runs.
+        {"agent": "dprime_bnf_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A"},
+        {"agent": "dprime_bnf_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B"},
+        {"agent": "dprime_bnf_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C"},
+        {"agent": "dprime_all_features_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A"},
+        {"agent": "dprime_all_features_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B"},
+        {"agent": "dprime_all_features_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C"},
+        {"agent": "dprime_mix_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "D"},
+        {"agent": "dprime_bnf_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
+        {"agent": "dprime_all_features_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
+        {"agent": "dprime_mix_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
     ]
 
 
