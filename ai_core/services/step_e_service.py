@@ -217,8 +217,8 @@ class StepEService:
             print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
 
         # Prepare tensors
-        X_train, yret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
-        X_test, yret_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
+        X_train, yret_train, cc_ret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
+        X_test, yret_test, cc_ret_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
 
         # Standardize based on train
         mu = X_train.mean(axis=0)
@@ -255,17 +255,19 @@ class StepEService:
         def _smooth_abs(x: torch.Tensor) -> torch.Tensor:
             return torch.sqrt(x * x + float(cfg.smooth_abs_eps))
 
-        def _rollout(net_: DiffPolicyNet, X_: torch.Tensor, r_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        def _rollout(net_: DiffPolicyNet, X_: torch.Tensor, r_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             """
             Sequential rollout with differentiable pos_prev dependency.
             Returns:
               ret_net: (T,) daily net returns
               pos:     (T,) positions
+              cost:    (T,) transaction cost component
             """
             T = X_.shape[0]
             pos_prev = torch.zeros((), device=X_.device)
             pos_list = []
             ret_list = []
+            cost_list = []
             cost_k = float(cfg.trade_cost_bps) * 1e-4
             for t in range(T):
                 xt = torch.cat([X_[t], pos_prev.unsqueeze(0)], dim=0)
@@ -276,16 +278,18 @@ class StepEService:
                 ret_net = pos_t * r_[t] - cost - float(cfg.pos_l2) * (pos_t * pos_t)
                 pos_list.append(pos_t)
                 ret_list.append(ret_net)
+                cost_list.append(cost)
                 pos_prev = pos_t
             pos = torch.stack(pos_list, dim=0)
             ret_net = torch.stack(ret_list, dim=0)
-            return ret_net, pos
+            cost = torch.stack(cost_list, dim=0)
+            return ret_net, pos, cost
 
         for ep in range(1, int(cfg.epochs) + 1):
             net.train()
             opt.zero_grad()
 
-            ret_fit, _ = _rollout(net, X_train_t[:n_fit], r_train_t[:n_fit])
+            ret_fit, _, _ = _rollout(net, X_train_t[:n_fit], r_train_t[:n_fit])
             # maximize log equity: sum log(1+ret)
             obj = -torch.log1p(ret_fit).mean()
             obj.backward()
@@ -295,7 +299,7 @@ class StepEService:
             # validation
             net.eval()
             with torch.no_grad():
-                ret_val, _ = _rollout(net, X_train_t[n_fit:], r_train_t[n_fit:])
+                ret_val, _, _ = _rollout(net, X_train_t[n_fit:], r_train_t[n_fit:])
                 val_loss = float((-torch.log1p(ret_val).mean()).item())
 
             if cfg.verbose:
@@ -318,15 +322,19 @@ class StepEService:
         # Evaluate on full train + test for daily log
         net.eval()
         with torch.no_grad():
-            ret_tr_full, pos_tr_full = _rollout(net, X_train_t, r_train_t)
-            ret_te_full, pos_te_full = _rollout(net, X_test_t, r_test_t)
+            ret_tr_full, pos_tr_full, cost_tr_full = _rollout(net, X_train_t, r_train_t)
+            ret_te_full, pos_te_full, cost_te_full = _rollout(net, X_test_t, r_test_t)
 
         df_log = pd.DataFrame({
             "Date": pd.to_datetime(list(dates_train) + list(dates_test)),
             "Split": (["train"] * len(dates_train)) + (["test"] * len(dates_test)),
             "pos": torch.cat([pos_tr_full, pos_te_full], dim=0).cpu().numpy().astype(float),
             "ret": torch.cat([ret_tr_full, ret_te_full], dim=0).cpu().numpy().astype(float),
+            "cc_ret_next": np.concatenate([cc_ret_train, cc_ret_test]).astype(float),
+            "cost": torch.cat([cost_tr_full, cost_te_full], dim=0).cpu().numpy().astype(float),
         })
+        df_log["ratio"] = df_log["pos"]
+        df_log["reward_next"] = df_log["ret"]
         df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
 
         # Also provide Action/Position columns for StepF compatibility
@@ -631,7 +639,7 @@ class StepEService:
         out = dprime_cols + [c for c in all_num if c not in dprime_cols]
         return out
 
-    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         df2 = df.copy()
         df2 = df2.sort_values("Date").reset_index(drop=True)
 
@@ -645,8 +653,9 @@ class StepEService:
         else:
             r_ser = df2["oc_ret"]
         r = r_ser.astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
+        cc_ret_next = r.copy()
         dates = df2["Date"].to_numpy()
-        return X, r, dates
+        return X, r, cc_ret_next, dates
 
     # -----------------------
     # Metrics
