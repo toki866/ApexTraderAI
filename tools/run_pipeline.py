@@ -1279,6 +1279,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as e:
             print(f"[headless] WARNING: failed to configure StepE StepD' embeddings: {type(e).__name__}: {e}")
 
+    # Ensure StepE has at least one runnable config in headless pipeline mode.
+    if "E" in steps:
+        raw_step_e_cfgs = getattr(app_config, "stepE", None)
+        if raw_step_e_cfgs is None:
+            current_step_e_cfgs = []
+        elif isinstance(raw_step_e_cfgs, (list, tuple)):
+            current_step_e_cfgs = list(raw_step_e_cfgs)
+        else:
+            current_step_e_cfgs = [raw_step_e_cfgs]
+
+        if not current_step_e_cfgs:
+            try:
+                from ai_core.services.step_e_service import StepEConfig  # lazy import
+
+                default_agents = enabled_agents or ["mamba"]
+                cfg_list = []
+                for agent_name in default_agents:
+                    cfg = StepEConfig(agent=str(agent_name))
+                    cfg.output_root = str(getattr(app_config, "output_root", resolved_output_root))
+                    cfg.obs_profile = "DPRIME"
+                    cfg.epochs = 200
+                    cfg.patience = min(int(getattr(cfg, "patience", 15)), 10)
+                    cfg_list.append(cfg)
+
+                setattr(app_config, "stepE", cfg_list if len(cfg_list) != 1 else cfg_list[0])
+                print(f"[headless] StepE default config injected: agents={','.join(default_agents)} epochs=200 obs_profile=DPRIME")
+            except Exception as e:
+                print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
+
 
     print(f"[headless] repo_root={repo_root}")
     print(f"[headless] symbol={symbol}")
