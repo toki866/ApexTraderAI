@@ -924,47 +924,59 @@ jobs:
           $publishedCsv = New-Object System.Collections.Generic.List[object]
 
           if (-not [string]::IsNullOrWhiteSpace($outputRoot) -and (Test-Path $outputRoot)) {
-            $csvPatterns = @(
-              (Join-Path $outputRoot 'stepA\*\stepA_split_summary_*.csv'),
-              (Join-Path $outputRoot 'stepA\*\stepA_prices_test_*.csv'),
-              (Join-Path $outputRoot 'stepB\*\stepB_split_summary_*.csv'),
-              (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv'),
-              (Join-Path $outputRoot 'stepC\*\*summary*.csv'),
-              (Join-Path $outputRoot 'stepD_prime\*\*summary*.csv'),
-              (Join-Path $outputRoot 'stepE\*\stepE_daily_log_*.csv'),
-              (Join-Path $outputRoot 'stepF\*\*summary*.csv')
+            $publishSpecs = @(
+              @{ Label = 'StepA'; Pattern = (Join-Path $outputRoot 'stepA\*\stepA_split_summary_*.csv') },
+              @{ Label = 'StepA'; Pattern = (Join-Path $outputRoot 'stepA\*\stepA_prices_test_*.csv') },
+              @{ Label = 'StepB'; Pattern = (Join-Path $outputRoot 'stepB\*\stepB_split_summary_*.csv') },
+              @{ Label = 'StepB'; Pattern = (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv') },
+              @{ Label = 'StepC'; Pattern = (Join-Path $outputRoot 'stepC\*\*summary*.csv') },
+              @{ Label = 'StepDPrime'; Pattern = (Join-Path $outputRoot 'stepD_prime\*\*summary*.csv') },
+              @{ Label = 'StepDPrime'; Pattern = (Join-Path $outputRoot 'stepD_prime\*\**\*.csv') },
+              @{ Label = 'StepE'; Pattern = (Join-Path $outputRoot 'stepE\*\stepE_daily_log_*.csv') },
+              @{ Label = 'StepF'; Pattern = (Join-Path $outputRoot 'stepF\*\stepF_equity_marl_*.csv') },
+              @{ Label = 'StepF'; Pattern = (Join-Path $outputRoot 'stepF\*\stepF_daily_log_marl_*.csv') },
+              @{ Label = 'StepF'; Pattern = (Join-Path $outputRoot 'stepF\*\stepF_summary_marl_*.json') },
+              @{ Label = 'StepF'; Pattern = (Join-Path $outputRoot 'stepF\*\*summary*.csv') }
             )
 
-            $sourceCsvFiles = @()
-            foreach ($pattern in $csvPatterns) {
-              $sourceCsvFiles += Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
+            $sourceItems = New-Object System.Collections.Generic.Dictionary[string, object]
+            foreach ($spec in $publishSpecs) {
+              $hits = Get-ChildItem -Path $spec.Pattern -File -ErrorAction SilentlyContinue
+              foreach ($hit in $hits) {
+                if (-not $sourceItems.ContainsKey($hit.FullName)) {
+                  $sourceItems[$hit.FullName] = [PSCustomObject]@{ File = $hit; Label = $spec.Label }
+                }
+              }
             }
 
-            $sourceCsvFiles = $sourceCsvFiles |
-              Sort-Object FullName -Unique
-
-            foreach ($src in $sourceCsvFiles) {
+            foreach ($entry in ($sourceItems.Values | Sort-Object { $_.File.FullName })) {
+              $src = $entry.File
               $destName = $src.Name
               $headOnly = $false
 
-              if ($src.Length -le $maxCsvBytes) {
-                Copy-Item -Path $src.FullName -Destination (Join-Path $csvOutDir $destName) -Force
-              } else {
+              if ($src.Extension -ieq '.csv' -and $src.Length -gt $maxCsvBytes) {
                 $destName = '{0}__HEAD{1}' -f $src.BaseName, $src.Extension
                 Get-Content -Path $src.FullName -TotalCount $headLines -ErrorAction SilentlyContinue |
                   Set-Content -Path (Join-Path $csvOutDir $destName) -Encoding UTF8
                 $headOnly = $true
+              } else {
+                Copy-Item -Path $src.FullName -Destination (Join-Path $csvOutDir $destName) -Force
               }
 
               $destPath = Join-Path $csvOutDir $destName
               if (Test-Path $destPath) {
-                $previewLines = Get-Content -Path $destPath -TotalCount 2 -ErrorAction SilentlyContinue
+                $previewLines = if ($destName -like '*.csv') {
+                  @(Get-Content -Path $destPath -TotalCount 2 -ErrorAction SilentlyContinue)
+                } else {
+                  @()
+                }
                 $publishedCsv.Add([PSCustomObject]@{
                   Name = $destName
                   RelativePath = "./csv/$destName"
                   SizeBytes = (Get-Item -Path $destPath).Length
                   HeadOnly = $headOnly
-                  PreviewLines = @($previewLines)
+                  PreviewLines = $previewLines
+                  Label = [string]$entry.Label
                 })
               }
             }
@@ -991,6 +1003,29 @@ jobs:
                   $csvIndexLines.Add("    - $safeLine")
                 }
               }
+            }
+          }
+
+          $stepDPrimeItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepDPrime' })
+          $stepFItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepF' })
+
+          $csvIndexLines.Add('')
+          $csvIndexLines.Add('## StepD'' (stepD_prime)')
+          if ($stepDPrimeItems.Count -eq 0) {
+            $csvIndexLines.Add('- (none found)')
+          } else {
+            foreach ($item in $stepDPrimeItems) {
+              $csvIndexLines.Add("- $($item.RelativePath)")
+            }
+          }
+
+          $csvIndexLines.Add('')
+          $csvIndexLines.Add('## StepF')
+          if ($stepFItems.Count -eq 0) {
+            $csvIndexLines.Add('- (none found)')
+          } else {
+            foreach ($item in $stepFItems) {
+              $csvIndexLines.Add("- $($item.RelativePath)")
             }
           }
 
