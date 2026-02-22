@@ -62,11 +62,34 @@ class StepBService:
         out_path = stepb_dir / f"stepB_pred_time_all_{symbol}.csv"
 
         pred_path = None
-        for k in ("pred_close", "pred_close_path", "output_path"):
-            v = getattr(mamba_result, k, None)
-            if v:
-                pred_path = Path(v)
-                break
+        csv_paths = getattr(mamba_result, "csv_paths", None)
+        if isinstance(csv_paths, dict):
+            for key in ("pred_close", "pred_close_path", "output_path"):
+                value = csv_paths.get(key)
+                if value:
+                    pred_path = Path(value)
+                    break
+
+        iter_csv_preview = []
+        if pred_path is None and hasattr(mamba_result, "iter_csv_paths"):
+            try:
+                iter_paths = list(mamba_result.iter_csv_paths() or [])
+            except Exception:
+                iter_paths = []
+            iter_csv_preview = [str(p) for p in iter_paths[:5]]
+            for value in iter_paths:
+                p = Path(value)
+                if "pred_close" in p.name.lower():
+                    pred_path = p
+                    break
+
+        # Legacy compatibility fallbacks.
+        if pred_path is None:
+            for k in ("pred_close", "pred_close_path", "output_path"):
+                v = getattr(mamba_result, k, None)
+                if v:
+                    pred_path = Path(v)
+                    break
         if pred_path is None:
             artifacts = getattr(mamba_result, "artifacts", {}) or {}
             for key in ("pred_close", "pred_close_path", "output_path"):
@@ -75,13 +98,24 @@ class StepBService:
                     pred_path = Path(v)
                     break
         if pred_path is None or not pred_path.exists():
-            raise FileNotFoundError("StepB Mamba output path not found")
+            csv_paths_keys = list(csv_paths.keys()) if isinstance(csv_paths, dict) else []
+            debug = {
+                "mamba_result_type": type(mamba_result).__name__,
+                "has_csv_paths": csv_paths is not None,
+                "has_artifacts": hasattr(mamba_result, "artifacts"),
+                "has_iter_csv_paths": hasattr(mamba_result, "iter_csv_paths"),
+                "csv_paths_keys": csv_paths_keys,
+                "iter_csv_paths_preview": iter_csv_preview,
+            }
+            raise FileNotFoundError(f"StepB Mamba output path not found: {debug}")
 
         df = pd.read_csv(pred_path)
         if "Date" not in df.columns:
             raise ValueError("StepB Mamba output must include Date")
 
-        mamba_col = next((c for c in df.columns if c.lower() == "pred_close_mamba"), None)
+        mamba_col = next((c for c in df.columns if c == "Pred_Close_MAMBA"), None)
+        if mamba_col is None:
+            mamba_col = next((c for c in df.columns if c.lower() == "pred_close_mamba"), None)
         if mamba_col is None:
             raise ValueError("StepB Mamba output must include Pred_Close_MAMBA")
 
