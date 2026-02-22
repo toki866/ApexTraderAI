@@ -619,7 +619,29 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
     stepb_mode_dir.mkdir(parents=True, exist_ok=True)
 
     target = stepb_mode_dir / f'stepB_pred_time_all_{symbol}.csv'
-    if target.exists() and target.stat().st_size > 0:
+
+    def _normalize_pred_time_all(path: Path) -> bool:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            return False
+        if 'Date' not in df.columns:
+            return False
+
+        mamba_col = next((c for c in df.columns if c == 'Pred_Close_MAMBA'), None)
+        if mamba_col is None:
+            mamba_col = next((c for c in df.columns if c.lower() == 'pred_close_mamba'), None)
+        if mamba_col is None:
+            return False
+
+        clean = df[['Date', mamba_col]].copy()
+        clean = clean.rename(columns={mamba_col: 'Pred_Close_MAMBA'})
+        clean.to_csv(path, index=False, encoding='utf-8')
+        return True
+
+    if _normalize_pred_time_all(target):
         return target
 
     # If a legacy pred_time_all exists, copy it into the mode folder (do not delete legacy).
@@ -630,7 +652,8 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
     for c in legacy_candidates:
         if c.exists() and c.stat().st_size > 0:
             shutil.copy2(c, target)
-            return target
+            if _normalize_pred_time_all(target):
+                return target
 
     # Build from agent pred_close files.
     prices_dates = _load_prices_dates(symbol, repo_root)
@@ -671,6 +694,10 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
         series = _load_pred_close(path, agent)
         df = df.merge(series, on='Date', how='left')
 
+    if 'Pred_Close_MAMBA' in df.columns:
+        df = df[['Date', 'Pred_Close_MAMBA']]
+    else:
+        df = df[['Date']]
     df.to_csv(target, index=False, encoding='utf-8')
     return target
 def _get_app_config(repo_root: Path):

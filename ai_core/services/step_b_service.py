@@ -14,6 +14,8 @@ from ai_core.types.step_b_types import StepBResult
 class StepBService:
     """Mamba-only StepB service."""
 
+    STEPB_PRED_TIME_ALL_COLUMNS = ("Date", "Pred_Close_MAMBA")
+
     def __init__(self, app_config: AppConfig) -> None:
         self.app_config = app_config
 
@@ -121,6 +123,7 @@ class StepBService:
 
         out_df = df[["Date", mamba_col]].copy()
         out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
+        out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
         out_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path
 
