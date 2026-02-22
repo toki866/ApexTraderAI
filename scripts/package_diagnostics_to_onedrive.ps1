@@ -1,6 +1,8 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$DiagDir
+  [string]$DiagDir,
+  [string]$RunDir,
+  [string]$OutputRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,10 +19,27 @@ function Add-OneTapWarning {
     $workspaceTemp = Join-Path $workspace 'temp'
     $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
     $reportPath = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
-    Add-Content -Path $reportPath -Encoding UTF8 -Value ("[WARN] publish skipped: {0}" -f $Message)
+    Add-Content -Path $reportPath -Encoding UTF8 -Value ("[WARN] publish issue: {0}" -f $Message)
   } catch {
     Write-Warning ("Unable to append ONE_TAP warning: {0}" -f $_.Exception.Message)
   }
+}
+
+function Add-PublishSummaryWarning {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Message,
+    [Parameter(Mandatory = $true)]
+    [string]$SummaryPath
+  )
+
+  try {
+    Add-Content -Path $SummaryPath -Encoding UTF8 -Value ("[WARN] publish issue: {0}" -f $Message)
+  } catch {
+    Write-Warning ("Unable to append summary warning: {0}" -f $_.Exception.Message)
+  }
+
+  Add-OneTapWarning -Message $Message
 }
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -40,6 +59,41 @@ if (!(Test-Path $runnerDiag)) {
 
 $DiagDir = [System.IO.Path]::GetFullPath($DiagDir)
 $null = New-Item -Path $DiagDir -ItemType Directory -Force
+$summaryPath = Join-Path $DiagDir 'diag_publish_summary.txt'
+@(
+  ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+  ('run_id={0}' -f $runId),
+  ('attempt={0}' -f $attempt)
+) | Set-Content -Path $summaryPath -Encoding UTF8
+
+if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path $RunDir)) {
+  $runsRoot = 'C:\work\apex_work\runs'
+  if (Test-Path $runsRoot) {
+    $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+    if ($latestRun) {
+      $RunDir = $latestRun.FullName
+    }
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+  if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
+    $OutputRoot = Join-Path $RunDir 'output'
+  }
+}
+
+Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] run_dir={0}" -f $RunDir)
+Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] output_root={0}" -f $OutputRoot)
+
+if ([string]::IsNullOrWhiteSpace($RunDir)) {
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message 'run_dir unresolved; falling back to diagnostics-only packaging.'
+}
+if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) {
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message ("output_root unavailable: {0}" -f $OutputRoot)
+}
+
 Write-Host "runnerDiag=$runnerDiag"
 Write-Host "diagDir=$DiagDir"
 
@@ -47,6 +101,7 @@ $zipName = "diag_${runId}_${attempt}_${timestamp}.zip"
 $zipPath = Join-Path $DiagDir $zipName
 $zipSources = New-Object System.Collections.Generic.List[string]
 $sourceItems = @{}
+if ($null -eq $sourceItems) { $sourceItems = @{} }
 if (Test-Path $runnerDiag) {
   $runnerDiagWildcard = Join-Path $runnerDiag '*'
   $sourceItems[$runnerDiagWildcard] = $true
@@ -57,6 +112,9 @@ $oneTapReport = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
 if (Test-Path $oneTapReport) {
   $sourceItems[$oneTapReport] = $true
 }
+if (Test-Path $summaryPath) {
+  $sourceItems[$summaryPath] = $true
+}
 
 $consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
 if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
@@ -65,18 +123,20 @@ if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
 $consoleLogCandidates = $consoleLogCandidates | Where-Object { $_ -and (Test-Path $_) }
 foreach ($candidate in $consoleLogCandidates) {
   if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+    if ($null -eq $sourceItems) { $sourceItems = @{} }
     $sourceItems[$candidate] = $true
   }
 }
 
-foreach ($key in $sourceItems.Keys) {
+if ($null -eq $sourceItems) { $sourceItems = @{} }
+foreach ($key in @($sourceItems.Keys)) {
   if (-not [string]::IsNullOrWhiteSpace($key) -and (Test-Path $key)) {
     $zipSources.Add($key)
   }
 }
 
 if ($zipSources.Count -eq 0) {
-  Add-OneTapWarning -Message 'runner _diag and known logs were unavailable; packaging placeholder only.'
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message 'runner _diag and known logs were unavailable; packaging placeholder only.'
   $placeholder = Join-Path $workspaceTemp 'diag_placeholder.txt'
   $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
   @(
@@ -90,7 +150,7 @@ try {
   Compress-Archive -Path $zipSources -DestinationPath $zipPath -Force -ErrorAction Stop
 } catch {
   Write-Warning "Primary diagnostics archive failed: $($_.Exception.Message)"
-  Add-OneTapWarning -Message ("Primary diagnostics archive failed: {0}" -f $_.Exception.Message)
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message ("Primary diagnostics archive failed: {0}" -f $_.Exception.Message)
   $placeholder = Join-Path $workspaceTemp 'diag_zip_fallback_notice.txt'
   @(
     '[WARN] Primary diagnostics archive failed; created fallback package only.',
@@ -117,7 +177,7 @@ try {
 }
 
 if (!(Test-Path $zipPath)) {
-  Add-OneTapWarning -Message ("zip not created: {0}" -f $zipPath)
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message ("zip not created: {0}" -f $zipPath)
   throw "zip not created: $zipPath"
 }
 Write-Host "zipPath=$zipPath"
