@@ -1,0 +1,1671 @@
+Run: https://github.com/toki866/ApexTraderAI/actions/runs/22269035409
+SHA: 78098d7558029783c747488a31ee224673a8e707
+Attempt: 1
+Conclusion: success
+
+==== TAILS (each file last 200 lines) ====
+
+----- FILE: actions_logs/0_run.txt -----
+let report = fs.existsSync(reportPath)
+  ? fs.readFileSync(reportPath, 'utf8')
+  : '(missing ONE_TAP_ERROR_REPORT.txt)';
+
+const evalPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'eval', 'EVAL_SUMMARY.txt');
+let evalTxt = fs.existsSync(evalPath)
+  ? fs.readFileSync(evalPath, 'utf8')
+  : '(EVAL_SUMMARY.txt missing)';
+
+if (report.length > 60000) report = report.slice(-60000);
+if (evalTxt.length > 15000) evalTxt = evalTxt.slice(-15000);
+
+const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+const title = 'ApexTraderAI Diagnostics (latest)';
+const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
+const diagRunFolder = process.env.DIAG_RUN_FOLDER || 'LATEST_CSV.md';
+const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
+  ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+  : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
+const evalUrl = diagRunFolder === 'LATEST_CSV.md'
+  ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+  : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
+const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs eval report: ${evalUrl}\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n`;
+
+const { data: issues } = await github.rest.issues.listForRepo({
+  owner,
+  repo,
+  state: 'open',
+  per_page: 100
+});
+const existing = issues.find(i => i.title === title);
+
+if (existing) {
+  await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+} else {
+  await github.rest.issues.create({ owner, repo, title, body });
+}
+
+2026-02-22T02:45:20.1833571Z   github-token: ***
+2026-02-22T02:45:20.1833768Z   debug: false
+2026-02-22T02:45:20.1833956Z   user-agent: actions/github-script
+2026-02-22T02:45:20.1834204Z   result-encoding: json
+2026-02-22T02:45:20.1834398Z   retries: 0
+2026-02-22T02:45:20.1834643Z   retry-exempt-status-codes: 400,401,403,404,422
+2026-02-22T02:45:20.1834974Z env:
+2026-02-22T02:45:20.1835168Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:20.1835532Z   DIAG_RUN_FOLDER: 20260222_114518_run22269035409_att1_78098d7
+2026-02-22T02:45:20.1835844Z ##[endgroup]
+2026-02-22T02:45:22.1093716Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:45:22.1094222Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:45:22.1094470Z [36;1m[0m
+2026-02-22T02:45:22.1094635Z [36;1mfunction Mask-Secrets {[0m
+2026-02-22T02:45:22.1094867Z [36;1m  param([string]$Text)[0m
+2026-02-22T02:45:22.1095069Z [36;1m[0m
+2026-02-22T02:45:22.1095413Z [36;1m  if ([string]::IsNullOrEmpty($Text)) { return $Text }[0m
+2026-02-22T02:45:22.1095722Z [36;1m[0m
+2026-02-22T02:45:22.1095869Z [36;1m  $masked = $Text[0m
+2026-02-22T02:45:22.1096286Z [36;1m  $masked = [regex]::Replace($masked, 'github_pat_[A-Za-z0-9_]{20,}', 'github_pat_***MASKED***')[0m
+2026-02-22T02:45:22.1096897Z [36;1m  $masked = [regex]::Replace($masked, 'gh[pousr]_[A-Za-z0-9_]{20,}', 'gh***_***MASKED***')[0m
+2026-02-22T02:45:22.1097548Z [36;1m  $masked = [regex]::Replace($masked, '(?im)\b(token|password|secret)\b\s*[:=]\s*\S+', '$1=***MASKED***')[0m
+2026-02-22T02:45:22.1098054Z [36;1m  return $masked[0m
+2026-02-22T02:45:22.1098253Z [36;1m}[0m
+2026-02-22T02:45:22.1098401Z [36;1m[0m
+2026-02-22T02:45:22.1098572Z [36;1mfunction Get-MaskedTail {[0m
+2026-02-22T02:45:22.1098795Z [36;1m  param([0m
+2026-02-22T02:45:22.1098972Z [36;1m    [string]$Path,[0m
+2026-02-22T02:45:22.1099314Z [36;1m    [int]$Tail = 200[0m
+2026-02-22T02:45:22.1099521Z [36;1m  )[0m
+2026-02-22T02:45:22.1099673Z [36;1m[0m
+2026-02-22T02:45:22.1099927Z [36;1m  if (-not (Test-Path $Path)) { return "(not found) $Path" }[0m
+2026-02-22T02:45:22.1100505Z [36;1m  $raw = (Get-Content -Path $Path -Tail $Tail -ErrorAction SilentlyContinue) -join "`r`n"[0m
+2026-02-22T02:45:22.1100976Z [36;1m  return (Mask-Secrets -Text $raw)[0m
+2026-02-22T02:45:22.1101435Z [36;1m}[0m
+2026-02-22T02:45:22.1101587Z [36;1m[0m
+2026-02-22T02:45:22.1101804Z [36;1m$diagOut = Join-Path $env:RUNNER_TEMP 'diag_out'[0m
+2026-02-22T02:45:22.1102201Z [36;1m$null = New-Item -Path $diagOut -ItemType Directory -Force[0m
+2026-02-22T02:45:22.1102591Z [36;1m[0m
+2026-02-22T02:45:22.1102790Z [36;1m$ws = $env:GITHUB_WORKSPACE[0m
+2026-02-22T02:45:22.1103137Z [36;1m$runnerRoot = (Resolve-Path (Join-Path $ws '..\..\..')).Path[0m
+2026-02-22T02:45:22.1103535Z [36;1m$runnerDiag = Join-Path $runnerRoot '_diag'[0m
+2026-02-22T02:45:22.1103830Z [36;1m$runId = '22269035409'[0m
+2026-02-22T02:45:22.1104058Z [36;1m$runAttempt = '1'[0m
+2026-02-22T02:45:22.1104327Z [36;1m$sha = '78098d7558029783c747488a31ee224673a8e707'[0m
+2026-02-22T02:45:22.1104625Z [36;1m$branch = 'main'[0m
+2026-02-22T02:45:22.1104849Z [36;1m$repo = 'toki866/ApexTraderAI'[0m
+2026-02-22T02:45:22.1105296Z [36;1m$artifactName = "diag_full_${runId}_${runAttempt}"[0m
+2026-02-22T02:45:22.1105712Z [36;1m[0m
+2026-02-22T02:45:22.1105964Z [36;1m$latestRunnerLog = $null[0m
+2026-02-22T02:45:22.1106358Z [36;1m$latestWorkerLog = $null[0m
+2026-02-22T02:45:22.1106723Z [36;1mif (Test-Path $runnerDiag) {[0m
+2026-02-22T02:45:22.1108118Z [36;1m  $latestRunnerLog = Get-ChildItem -Path $runnerDiag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:22.1109582Z [36;1m  $latestWorkerLog = Get-ChildItem -Path $runnerDiag -Filter 'Worker_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:22.1110377Z [36;1m}[0m
+2026-02-22T02:45:22.1110528Z [36;1m[0m
+2026-02-22T02:45:22.1110858Z [36;1m$workflowLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:22.1111441Z [36;1m$runLogPath = 'C:\work\apex_work\runs\20260222_114212\logs\run_20260222_114212.log'[0m
+2026-02-22T02:45:22.1111963Z [36;1m$stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'[0m
+2026-02-22T02:45:22.1112593Z [36;1m$oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:22.1113055Z [36;1m[0m
+2026-02-22T02:45:22.1115071Z [36;1mif ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }[0m
+2026-02-22T02:45:22.1116148Z [36;1mif ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }[0m
+2026-02-22T02:45:22.1117149Z [36;1mif (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }[0m
+2026-02-22T02:45:22.1118175Z [36;1mif ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }[0m
+2026-02-22T02:45:22.1119294Z [36;1mif (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }[0m
+2026-02-22T02:45:22.1120249Z [36;1mGet-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {[0m
+2026-02-22T02:45:22.1120898Z [36;1m  Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force[0m
+2026-02-22T02:45:22.1121307Z [36;1m}[0m
+2026-02-22T02:45:22.1121467Z [36;1m[0m
+2026-02-22T02:45:22.1121671Z [36;1mforeach ($subDir in @('pages', 'blocks')) {[0m
+2026-02-22T02:45:22.1122075Z [36;1m  $src = Join-Path $runnerDiag $subDir[0m
+2026-02-22T02:45:22.1122380Z [36;1m  if (Test-Path $src) {[0m
+2026-02-22T02:45:22.1122792Z [36;1m    Copy-Item -Path $src -Destination (Join-Path $diagOut $subDir) -Recurse -Force[0m
+2026-02-22T02:45:22.1123208Z [36;1m  }[0m
+2026-02-22T02:45:22.1123370Z [36;1m}[0m
+2026-02-22T02:45:22.1123524Z [36;1m[0m
+2026-02-22T02:45:22.1124071Z [36;1m$runnerTailText = if ($latestRunnerLog) { Get-MaskedTail -Path $latestRunnerLog.FullName -Tail 200 } else { '(runner diag not found)' }[0m
+2026-02-22T02:45:22.1125347Z [36;1m$workflowTailText = if (Test-Path $workflowLog) { Get-MaskedTail -Path $workflowLog -Tail 200 } else { '(workflow log not found)' }[0m
+2026-02-22T02:45:22.1125949Z [36;1m[0m
+2026-02-22T02:45:22.1126177Z [36;1m$summaryPath = Join-Path $diagOut 'summary.md'[0m
+2026-02-22T02:45:22.1126478Z [36;1m$summary = @([0m
+2026-02-22T02:45:22.1126746Z [36;1m  '# Diagnostics Summary',[0m
+2026-02-22T02:45:22.1127013Z [36;1m  '',[0m
+2026-02-22T02:45:22.1127191Z [36;1m  "- repo: $repo",[0m
+2026-02-22T02:45:22.1127416Z [36;1m  "- branch: $branch",[0m
+2026-02-22T02:45:22.1127642Z [36;1m  "- sha: $sha",[0m
+2026-02-22T02:45:22.1127848Z [36;1m  "- run_id: $runId",[0m
+2026-02-22T02:45:22.1128073Z [36;1m  "- attempt: $runAttempt",[0m
+2026-02-22T02:45:22.1128350Z [36;1m  "- failing_step: $env:FAILING_STEP",[0m
+2026-02-22T02:45:22.1128645Z [36;1m  "- artifact_name: $artifactName",[0m
+2026-02-22T02:45:22.1128977Z [36;1m  '- one_tap_report: See ONE_TAP_ERROR_REPORT.txt',[0m
+2026-02-22T02:45:22.1129312Z [36;1m  '',[0m
+2026-02-22T02:45:22.1129544Z [36;1m  '## runner_diag_tail (last 200 lines)',[0m
+2026-02-22T02:45:22.1129809Z [36;1m  '```text',[0m
+2026-02-22T02:45:22.1130021Z [36;1m  $runnerTailText,[0m
+2026-02-22T02:45:22.1130234Z [36;1m  '```',[0m
+2026-02-22T02:45:22.1130396Z [36;1m  '',[0m
+2026-02-22T02:45:22.1130597Z [36;1m  '## workflow_tail (last 200 lines)',[0m
+2026-02-22T02:45:22.1130858Z [36;1m  '```text',[0m
+2026-02-22T02:45:22.1131053Z [36;1m  $workflowTailText,[0m
+2026-02-22T02:45:22.1131260Z [36;1m  '```'[0m
+2026-02-22T02:45:22.1131476Z [36;1m) -join "`r`n"[0m
+2026-02-22T02:45:22.1131760Z [36;1m$summary = Mask-Secrets -Text $summary[0m
+2026-02-22T02:45:22.1132167Z [36;1mSet-Content -Path $summaryPath -Value $summary -Encoding UTF8[0m
+2026-02-22T02:45:22.1132531Z [36;1m[0m
+2026-02-22T02:45:22.1132799Z [36;1m$runnerTailPath = Join-Path $diagOut 'runner_diag_tail.txt'[0m
+2026-02-22T02:45:22.1133315Z [36;1mSet-Content -Path $runnerTailPath -Value $runnerTailText -Encoding UTF8[0m
+2026-02-22T02:45:22.1133819Z [36;1m$workflowTailPath = Join-Path $diagOut 'workflow_tail.txt'[0m
+2026-02-22T02:45:22.1134995Z [36;1mSet-Content -Path $workflowTailPath -Value $workflowTailText -Encoding UTF8[0m
+2026-02-22T02:45:22.1135466Z [36;1m[0m
+2026-02-22T02:45:22.1135747Z [36;1m$fullZip = Join-Path $env:RUNNER_TEMP ("{0}.zip" -f $artifactName)[0m
+2026-02-22T02:45:22.1136208Z [36;1mif (Test-Path $fullZip) { Remove-Item $fullZip -Force }[0m
+2026-02-22T02:45:22.1136746Z [36;1mCompress-Archive -Path (Join-Path $diagOut '*') -DestinationPath $fullZip -Force[0m
+2026-02-22T02:45:22.1137176Z [36;1m[0m
+2026-02-22T02:45:22.1137506Z [36;1m"diag_out=$diagOut" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1138137Z [36;1m"diag_summary=$summaryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1138905Z [36;1m"diag_runner_tail=$runnerTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1139648Z [36;1m"diag_workflow_tail=$workflowTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1140317Z [36;1m"diag_zip=$fullZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1140972Z [36;1m"diag_artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1159390Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:22.1160071Z env:
+2026-02-22T02:45:22.1160269Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:22.1160539Z   FAILING_STEP: unknown
+2026-02-22T02:45:22.1160783Z ##[endgroup]
+2026-02-22T02:45:23.4368747Z ##[group]Run actions/upload-artifact@v4
+2026-02-22T02:45:23.4369066Z with:
+2026-02-22T02:45:23.4369429Z   name: diag_full_22269035409_1
+2026-02-22T02:45:23.4369647Z   if-no-files-found: warn
+2026-02-22T02:45:23.4369846Z   retention-days: 7
+2026-02-22T02:45:23.4370320Z   path: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_full_22269035409_1.zip
+2026-02-22T02:45:23.4370827Z   compression-level: 6
+2026-02-22T02:45:23.4371014Z   overwrite: false
+2026-02-22T02:45:23.4371195Z   include-hidden-files: false
+2026-02-22T02:45:23.4371403Z env:
+2026-02-22T02:45:23.4371586Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:23.4371853Z ##[endgroup]
+2026-02-22T02:45:23.7369361Z With the provided path, there will be 1 file uploaded
+2026-02-22T02:45:23.7375743Z Artifact name is valid!
+2026-02-22T02:45:23.7378960Z Root directory input is valid!
+2026-02-22T02:45:24.3112905Z Beginning upload of artifact content to blob storage
+2026-02-22T02:45:25.3917358Z Uploaded bytes 85124
+2026-02-22T02:45:25.5835122Z Finished uploading artifact content to blob storage!
+2026-02-22T02:45:25.5839587Z SHA256 digest of uploaded artifact zip is ddb163a1ab422eba4bc98be600df509c0e7af3e8e13820e04cacc4f3e1fbfdec
+2026-02-22T02:45:25.5841476Z Finalizing artifact upload
+2026-02-22T02:45:25.8170715Z Artifact diag_full_22269035409_1.zip successfully finalized. Artifact ID 5604637938
+2026-02-22T02:45:25.8171517Z Artifact diag_full_22269035409_1 has been successfully uploaded! Final size is 85124 bytes. Artifact ID is 5604637938
+2026-02-22T02:45:25.8183729Z Artifact download URL: https://github.com/toki866/ApexTraderAI/actions/runs/22269035409/artifacts/5604637938
+2026-02-22T02:45:25.8967239Z ##[group]Run actions/upload-artifact@v4
+2026-02-22T02:45:25.8967880Z with:
+2026-02-22T02:45:25.8968104Z   name: diagnostics
+2026-02-22T02:45:25.8968392Z   if-no-files-found: warn
+2026-02-22T02:45:25.8968734Z   path: _diagnostics/**/*
+2026-02-22T02:45:25.8969029Z   compression-level: 6
+2026-02-22T02:45:25.8969292Z   overwrite: false
+2026-02-22T02:45:25.8969562Z   include-hidden-files: false
+2026-02-22T02:45:25.8969884Z env:
+2026-02-22T02:45:25.8970198Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:25.8970760Z ##[endgroup]
+2026-02-22T02:45:26.1666471Z ##[warning]No files were found with the provided path: _diagnostics/**/*. No artifacts will be uploaded.
+2026-02-22T02:45:26.1829012Z Cleaning up orphan processes
+
+----- FILE: actions_logs/run/10_Stage console log in workspace.txt -----
+﻿2026-02-22T02:45:01.8214307Z ##[group]Run $workspaceTemp = Join-Path $env:GITHUB_WORKSPACE 'temp'
+2026-02-22T02:45:01.8214988Z [36;1m$workspaceTemp = Join-Path $env:GITHUB_WORKSPACE 'temp'[0m
+2026-02-22T02:45:01.8215477Z [36;1m$null = New-Item -Path $workspaceTemp -ItemType Directory -Force[0m
+2026-02-22T02:45:01.8216001Z [36;1m$consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:01.8216616Z [36;1m$workspaceConsoleLog = Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:01.8217090Z [36;1mif (Test-Path $consoleLog) {[0m
+2026-02-22T02:45:01.8217473Z [36;1m  Copy-Item -Path $consoleLog -Destination $workspaceConsoleLog -Force[0m
+2026-02-22T02:45:01.8217955Z [36;1m  Write-Host "Staged console log: $workspaceConsoleLog"[0m
+2026-02-22T02:45:01.8218283Z [36;1m} else {[0m
+2026-02-22T02:45:01.8218548Z [36;1m  Write-Warning "Console log not found at: $consoleLog"[0m
+2026-02-22T02:45:01.8218859Z [36;1m  @([0m
+2026-02-22T02:45:01.8219129Z [36;1m    '[WARN] Console log was not generated by BAT execution.',[0m
+2026-02-22T02:45:01.8219658Z [36;1m    '[WARN] Never finish a workflow run without leaving a readable log artifact.',[0m
+2026-02-22T02:45:01.8220222Z [36;1m    ('[WARN] generated_at={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))[0m
+2026-02-22T02:45:01.8220714Z [36;1m  ) | Set-Content -Path $workspaceConsoleLog -Encoding UTF8[0m
+2026-02-22T02:45:01.8221167Z [36;1m  Write-Host "Created fallback console log: $workspaceConsoleLog"[0m
+2026-02-22T02:45:01.8221563Z [36;1m}[0m
+2026-02-22T02:45:01.8239526Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:01.8240444Z env:
+2026-02-22T02:45:01.8240800Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:01.8241286Z ##[endgroup]
+2026-02-22T02:45:02.0792530Z Staged console log: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\run_all_local_then_copy_console.log
+
+----- FILE: actions_logs/run/11_Append error tails to ONE_TAP (always).txt -----
+﻿2026-02-22T02:45:02.1057444Z ##[group]Run $ErrorActionPreference = 'Continue'
+2026-02-22T02:45:02.1057959Z [36;1m$ErrorActionPreference = 'Continue'[0m
+2026-02-22T02:45:02.1058257Z [36;1m[0m
+2026-02-22T02:45:02.1058565Z [36;1m$report = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:02.1059057Z [36;1mif (!(Test-Path $report)) {[0m
+2026-02-22T02:45:02.1059508Z [36;1m  New-Item -Path (Split-Path $report -Parent) -ItemType Directory -Force | Out-Null[0m
+2026-02-22T02:45:02.1060147Z [36;1m  '[WARN] ONE_TAP report missing; created.' | Set-Content -Path $report -Encoding UTF8[0m
+2026-02-22T02:45:02.1060582Z [36;1m}[0m
+2026-02-22T02:45:02.1060751Z [36;1m[0m
+2026-02-22T02:45:02.1060918Z [36;1mAdd-Content $report ""[0m
+2026-02-22T02:45:02.1061272Z [36;1mAdd-Content $report "[STEP] append_error_tails"[0m
+2026-02-22T02:45:02.1068729Z [36;1mAdd-Content $report ("timestamp={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))[0m
+2026-02-22T02:45:02.1069621Z [36;1m[0m
+2026-02-22T02:45:02.1070084Z [36;1m# python env snapshot (to compare with local)[0m
+2026-02-22T02:45:02.1070691Z [36;1mAdd-Content $report "---- python_env ----"[0m
+2026-02-22T02:45:02.1072114Z [36;1mtry { (& where.exe python 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }[0m
+2026-02-22T02:45:02.1073229Z [36;1mtry { (& python --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }[0m
+2026-02-22T02:45:02.1074183Z [36;1mtry { (& python -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }[0m
+2026-02-22T02:45:02.1074942Z [36;1m[0m
+2026-02-22T02:45:02.1075117Z [36;1m# console log tail[0m
+2026-02-22T02:45:02.1075494Z [36;1m$consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:02.1076024Z [36;1mAdd-Content $report ("[INFO] console_log={0}" -f $consoleLog)[0m
+2026-02-22T02:45:02.1076427Z [36;1mif (Test-Path $consoleLog) {[0m
+2026-02-22T02:45:02.1076835Z [36;1m  Add-Content $report "---- console_log_tail (last 350 lines) ----"[0m
+2026-02-22T02:45:02.1077420Z [36;1m  (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report[0m
+2026-02-22T02:45:02.1077874Z [36;1m} else {[0m
+2026-02-22T02:45:02.1078121Z [36;1m  Add-Content $report "[WARN] console log not found"[0m
+2026-02-22T02:45:02.1078424Z [36;1m}[0m
+2026-02-22T02:45:02.1078626Z [36;1m[0m
+2026-02-22T02:45:02.1078829Z [36;1m# run_*.log tail (best effort)[0m
+2026-02-22T02:45:02.1079116Z [36;1m$workRoot = 'C:\work\apex_work\runs'[0m
+2026-02-22T02:45:02.1079592Z [36;1m$latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:02.1080181Z [36;1m  Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:02.1080644Z [36;1mAdd-Content $report ("[INFO] work_root={0}" -f $workRoot)[0m
+2026-02-22T02:45:02.1081051Z [36;1mif ($latestRunDir) {[0m
+2026-02-22T02:45:02.1081463Z [36;1m  Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)[0m
+2026-02-22T02:45:02.1082375Z [36;1m  $latestRunLog = Get-ChildItem -Path (Join-Path $latestRunDir.FullName 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:02.1083099Z [36;1m    Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:02.1083457Z [36;1m  if ($latestRunLog) {[0m
+2026-02-22T02:45:02.1083914Z [36;1m    Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)[0m
+2026-02-22T02:45:02.1084370Z [36;1m    Add-Content $report "---- run_log_tail (last 350 lines) ----"[0m
+2026-02-22T02:45:02.1084944Z [36;1m    (Get-Content $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report[0m
+2026-02-22T02:45:02.1085426Z [36;1m  } else {[0m
+2026-02-22T02:45:02.1085745Z [36;1m    Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"[0m
+2026-02-22T02:45:02.1087992Z [36;1m  }[0m
+2026-02-22T02:45:02.1088144Z [36;1m} else {[0m
+2026-02-22T02:45:02.1088440Z [36;1m  Add-Content $report "[WARN] no run_dir found under work_root"[0m
+2026-02-22T02:45:02.1088825Z [36;1m}[0m
+2026-02-22T02:45:02.1088976Z [36;1m[0m
+2026-02-22T02:45:02.1089132Z [36;1m$global:LASTEXITCODE = 0[0m
+2026-02-22T02:45:02.1089360Z [36;1mexit 0[0m
+2026-02-22T02:45:02.1106448Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:02.1106957Z env:
+2026-02-22T02:45:02.1107156Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:02.1107470Z ##[endgroup]
+
+----- FILE: actions_logs/run/12_Package diagnostics to OneDrive (always).txt -----
+﻿2026-02-22T02:45:03.0515239Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:45:03.0515692Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:45:03.0516153Z [36;1m$diagScript = Join-Path $env:REPO_ROOT 'scripts\package_diagnostics_to_onedrive.ps1'[0m
+2026-02-22T02:45:03.0516754Z [36;1m$reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:03.0517161Z [36;1m[0m
+2026-02-22T02:45:03.0517577Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:03.0517907Z [36;1m  '[STEP] package_diagnostics_to_onedrive',[0m
+2026-02-22T02:45:03.0518234Z [36;1m  ('[INFO] diag_script={0}' -f $diagScript)[0m
+2026-02-22T02:45:03.0518490Z [36;1m)[0m
+2026-02-22T02:45:03.0518726Z [36;1mWrite-Host "Diagnostics script path: $diagScript"[0m
+2026-02-22T02:45:03.0519047Z [36;1m[0m
+2026-02-22T02:45:03.0519220Z [36;1m$diagDirCandidates = @()[0m
+2026-02-22T02:45:03.0519455Z [36;1mif ($env:OneDrive) {[0m
+2026-02-22T02:45:03.0519819Z [36;1m  $diagDirCandidates += (Join-Path $env:OneDrive 'ApexTraderAI\diagnostics')[0m
+2026-02-22T02:45:03.0520237Z [36;1m}[0m
+2026-02-22T02:45:03.0520411Z [36;1mif ($env:USERPROFILE) {[0m
+2026-02-22T02:45:03.0520848Z [36;1m  $diagDirCandidates += (Join-Path $env:USERPROFILE 'OneDrive\ApexTraderAI\diagnostics')[0m
+2026-02-22T02:45:03.0521293Z [36;1m}[0m
+2026-02-22T02:45:03.0521613Z [36;1m$diagDirCandidates += (Join-Path $env:RUNNER_TEMP 'ApexTraderAI\diagnostics')[0m
+2026-02-22T02:45:03.0522009Z [36;1m[0m
+2026-02-22T02:45:03.0522178Z [36;1m$selectedDiagDir = $null[0m
+2026-02-22T02:45:03.0522606Z [36;1mforeach ($candidate in $diagDirCandidates) {[0m
+2026-02-22T02:45:03.0522872Z [36;1m  try {[0m
+2026-02-22T02:45:03.0523201Z [36;1m    $null = New-Item -Path $candidate -ItemType Directory -Force -ErrorAction Stop[0m
+2026-02-22T02:45:03.0523627Z [36;1m    $selectedDiagDir = $candidate[0m
+2026-02-22T02:45:03.0523862Z [36;1m    break[0m
+2026-02-22T02:45:03.0524025Z [36;1m  } catch {[0m
+2026-02-22T02:45:03.0524423Z [36;1m    Write-Warning "Diagnostics dir candidate unavailable: $candidate ($($_.Exception.Message))"[0m
+2026-02-22T02:45:03.0524865Z [36;1m  }[0m
+2026-02-22T02:45:03.0525016Z [36;1m}[0m
+2026-02-22T02:45:03.0525149Z [36;1m[0m
+2026-02-22T02:45:03.0525312Z [36;1mif (-not $selectedDiagDir) {[0m
+2026-02-22T02:45:03.0525587Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:03.0525900Z [36;1m    '[NG] package_diagnostics_to_onedrive',[0m
+2026-02-22T02:45:03.0526221Z [36;1m    '[NG] selected diagnostics dir unavailable',[0m
+2026-02-22T02:45:03.0526484Z [36;1m    ''[0m
+2026-02-22T02:45:03.0526639Z [36;1m  )[0m
+2026-02-22T02:45:03.0527047Z [36;1m  throw 'Unable to resolve diagnostics output directory from OneDrive/USERPROFILE/RUNNER_TEMP candidates.'[0m
+2026-02-22T02:45:03.0527533Z [36;1m}[0m
+2026-02-22T02:45:03.0527670Z [36;1m[0m
+2026-02-22T02:45:03.0527931Z [36;1mWrite-Host "Selected diagnostics output dir: $selectedDiagDir"[0m
+2026-02-22T02:45:03.0528594Z [36;1m"diag_dir=$selectedDiagDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:03.0529011Z [36;1m[0m
+2026-02-22T02:45:03.0529172Z [36;1mif (Test-Path $diagScript) {[0m
+2026-02-22T02:45:03.0529603Z [36;1m  powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript -DiagDir "$selectedDiagDir"[0m
+2026-02-22T02:45:03.0530047Z [36;1m  if ($LASTEXITCODE -ne 0) {[0m
+2026-02-22T02:45:03.0530310Z [36;1m    Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:03.0530609Z [36;1m      '[NG] package_diagnostics_to_onedrive',[0m
+2026-02-22T02:45:03.0530901Z [36;1m      ('[NG] exit_code={0}' -f $LASTEXITCODE),[0m
+2026-02-22T02:45:03.0531137Z [36;1m      ''[0m
+2026-02-22T02:45:03.0531285Z [36;1m    )[0m
+2026-02-22T02:45:03.0531539Z [36;1m    Write-Error "Diagnostics script exited with code $LASTEXITCODE"[0m
+2026-02-22T02:45:03.0531873Z [36;1m    exit $LASTEXITCODE[0m
+2026-02-22T02:45:03.0532062Z [36;1m  }[0m
+2026-02-22T02:45:03.0533349Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:03.0533643Z [36;1m    '[OK] package_diagnostics_to_onedrive',[0m
+2026-02-22T02:45:03.0533930Z [36;1m    ('[OK] diag_dir={0}' -f $selectedDiagDir),[0m
+2026-02-22T02:45:03.0534177Z [36;1m    ''[0m
+2026-02-22T02:45:03.0534318Z [36;1m  )[0m
+2026-02-22T02:45:03.0534461Z [36;1m} else {[0m
+2026-02-22T02:45:03.0534662Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:03.0535077Z [36;1m    '[NG] package_diagnostics_to_onedrive',[0m
+2026-02-22T02:45:03.0535365Z [36;1m    '[NG] diagnostics script not found',[0m
+2026-02-22T02:45:03.0535598Z [36;1m    ''[0m
+2026-02-22T02:45:03.0535734Z [36;1m  )[0m
+2026-02-22T02:45:03.0535966Z [36;1m  Write-Error "Diagnostics script not found: $diagScript"[0m
+2026-02-22T02:45:03.0536254Z [36;1m  exit 1[0m
+2026-02-22T02:45:03.0542648Z [36;1m}[0m
+2026-02-22T02:45:03.0542836Z [36;1m[0m
+2026-02-22T02:45:03.0543042Z [36;1mif ((Get-Item $reportPath).Length -gt 60000) {[0m
+2026-02-22T02:45:03.0543383Z [36;1m  $tail = Get-Content -Path $reportPath -Raw[0m
+2026-02-22T02:45:03.0543728Z [36;1m  $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))[0m
+2026-02-22T02:45:03.0544132Z [36;1m  Set-Content -Path $reportPath -Value $tail -Encoding UTF8[0m
+2026-02-22T02:45:03.0544438Z [36;1m}[0m
+2026-02-22T02:45:03.0559516Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:03.0559999Z env:
+2026-02-22T02:45:03.0560187Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:03.0560434Z ##[endgroup]
+2026-02-22T02:45:03.3191959Z Diagnostics script path: C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
+2026-02-22T02:45:03.3315654Z Selected diagnostics output dir: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+2026-02-22T02:45:03.5730037Z runnerDiag=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_diag
+2026-02-22T02:45:03.5734335Z diagDir=C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+2026-02-22T02:45:04.0200872Z WARNING: Primary diagnostics archive failed: The process cannot access the file 
+2026-02-22T02:45:04.0201753Z 'C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_diag\blocks\6c3244ae-1a62-4e51-bb4b-0576a669b416_
+2026-02-22T02:45:04.0202523Z 22f58566-0227-5b2e-820a-8ad07dd23f20.1' because it is being used by another process.
+2026-02-22T02:45:04.0788971Z zipPath=C:\Users\becky\OneDrive\ApexTraderAI\diagnostics\diag_22269035409_1_20260222_114503.zip
+2026-02-22T02:45:04.1011720Z 
+2026-02-22T02:45:04.1012110Z 
+2026-02-22T02:45:04.1013824Z     ディレクトリ: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+2026-02-22T02:45:04.1014138Z 
+2026-02-22T02:45:04.1014144Z 
+2026-02-22T02:45:04.1017922Z Mode                 LastWriteTime         Length Name                                                                 
+2026-02-22T02:45:04.1019108Z ----                 -------------         ------ ----                                                                 
+2026-02-22T02:45:04.1022605Z -a----        2026/02/22     11:45           4930 diag_22269035409_1_20260222_114503.zip                               
+2026-02-22T02:45:04.1030985Z -a----        2026/02/22     11:17           4934 diag_22268676913_1_20260222_111738.zip                               
+2026-02-22T02:45:04.1037506Z -a----        2026/02/22     11:01           6771 diag_22268462317_1_20260222_110151.zip                               
+2026-02-22T02:45:04.1044443Z -a----        2026/02/22      9:55           6061 diag_22267589833_1_20260222_095503.zip                               
+2026-02-22T02:45:04.1051442Z -a----        2026/02/21     20:02           5153 diag_22255636168_1_20260221_200205.zip                               
+2026-02-22T02:45:04.1057943Z -a----        2026/02/21     19:50           5225 diag_22255482209_1_20260221_195016.zip                               
+2026-02-22T02:45:04.1064741Z -a----        2026/02/21     18:51           5266 diag_22254693514_1_20260221_185125.zip                               
+2026-02-22T02:45:04.1071435Z -a----        2026/02/21     18:03           4845 diag_22254040899_1_20260221_180313.zip                               
+2026-02-22T02:45:04.1078171Z -a----        2026/02/21     17:57           4845 diag_22253961100_1_20260221_175721.zip                               
+2026-02-22T02:45:04.1084802Z -a----        2026/02/21     17:23           4840 diag_22253509025_1_20260221_172305.zip                               
+2026-02-22T02:45:04.1091156Z -a----        2026/02/21     16:43           4839 diag_22252976665_1_20260221_164333.zip                               
+2026-02-22T02:45:04.1097900Z -a----        2026/02/21     16:11           4806 diag_22252533924_1_20260221_161105.zip                               
+2026-02-22T02:45:04.1104116Z -a----        2026/02/21     15:35           4851 diag_22252052676_1_20260221_153526.zip                               
+2026-02-22T02:45:04.1110694Z -a----        2026/02/21     15:17           4846 diag_22251800216_1_20260221_151709.zip                               
+2026-02-22T02:45:04.1117210Z -a----        2026/02/21     13:43           4912 diag_22250512578_1_20260221_134327.zip                               
+2026-02-22T02:45:04.1123469Z -a----        2026/02/21     11:34           4944 diag_22248695422_1_20260221_113420.zip                               
+2026-02-22T02:45:04.1129720Z -a----        2026/02/21     11:09           4759 diag_22248308415_1_20260221_110900.zip                               
+2026-02-22T02:45:04.1135961Z -a----        2026/02/21     10:51           4964 diag_22248046183_1_20260221_105148.zip                               
+2026-02-22T02:45:04.1136365Z 
+2026-02-22T02:45:04.1136684Z 
+
+----- FILE: actions_logs/run/13_Verify diagnostics directory content.txt -----
+﻿2026-02-22T02:45:04.1685009Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:45:04.1685449Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:45:04.1685896Z [36;1m$diagDir = 'C:\Users\becky\OneDrive\ApexTraderAI\diagnostics'[0m
+2026-02-22T02:45:04.1686249Z [36;1mif (-not $diagDir) {[0m
+2026-02-22T02:45:04.1686589Z [36;1m  $diagDir = Join-Path $env:RUNNER_TEMP 'ApexTraderAI\diagnostics'[0m
+2026-02-22T02:45:04.1686948Z [36;1m}[0m
+2026-02-22T02:45:04.1687168Z [36;1mWrite-Host '=== diagnostics dir listing ==='[0m
+2026-02-22T02:45:04.1687472Z [36;1mif (Test-Path $diagDir) {[0m
+2026-02-22T02:45:04.1687719Z [36;1m  dir $diagDir[0m
+2026-02-22T02:45:04.1687936Z [36;1m} else {[0m
+2026-02-22T02:45:04.1688243Z [36;1m  Write-Warning "Diagnostics directory not found: $diagDir"[0m
+2026-02-22T02:45:04.1688639Z [36;1m}[0m
+2026-02-22T02:45:04.1688786Z [36;1m[0m
+2026-02-22T02:45:04.1689218Z [36;1m$latestZip = Get-ChildItem -Path $diagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:04.1689860Z [36;1m  Sort-Object LastWriteTime -Descending |[0m
+2026-02-22T02:45:04.1690322Z [36;1m  Select-Object -First 1[0m
+2026-02-22T02:45:04.1690932Z [36;1m[0m
+2026-02-22T02:45:04.1691298Z [36;1mif (-not $latestZip) {[0m
+2026-02-22T02:45:04.1691702Z [36;1m  Write-Warning "diag zip missing in $diagDir"[0m
+2026-02-22T02:45:04.1692523Z [36;1m  Write-Host 'Hint: package diagnostics step uses OneDrive -> USERPROFILE\\OneDrive -> RUNNER_TEMP fallback. Check step logs for selected path and creation errors.'[0m
+2026-02-22T02:45:04.1693279Z [36;1m  exit 0[0m
+2026-02-22T02:45:04.1693486Z [36;1m}[0m
+2026-02-22T02:45:04.1693673Z [36;1m[0m
+2026-02-22T02:45:04.1694046Z [36;1mWrite-Host "latestDiagZip=$($latestZip.FullName)"[0m
+2026-02-22T02:45:04.1711245Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:04.1711767Z env:
+2026-02-22T02:45:04.1711963Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:04.1712244Z ##[endgroup]
+2026-02-22T02:45:04.4618843Z === diagnostics dir listing ===
+2026-02-22T02:45:04.5091550Z 
+2026-02-22T02:45:04.5091824Z 
+2026-02-22T02:45:04.5094004Z     ディレクトリ: C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+2026-02-22T02:45:04.5094447Z 
+2026-02-22T02:45:04.5094455Z 
+2026-02-22T02:45:04.5105630Z Mode                 LastWriteTime         Length Name                                                                 
+2026-02-22T02:45:04.5107124Z ----                 -------------         ------ ----                                                                 
+2026-02-22T02:45:04.5108771Z -a----        2026/02/21     10:51           4964 diag_22248046183_1_20260221_105148.zip                               
+2026-02-22T02:45:04.5120096Z -a----        2026/02/21     11:09           4759 diag_22248308415_1_20260221_110900.zip                               
+2026-02-22T02:45:04.5127619Z -a----        2026/02/21     11:34           4944 diag_22248695422_1_20260221_113420.zip                               
+2026-02-22T02:45:04.5135151Z -a----        2026/02/21     13:43           4912 diag_22250512578_1_20260221_134327.zip                               
+2026-02-22T02:45:04.5142061Z -a----        2026/02/21     15:17           4846 diag_22251800216_1_20260221_151709.zip                               
+2026-02-22T02:45:04.5149249Z -a----        2026/02/21     15:35           4851 diag_22252052676_1_20260221_153526.zip                               
+2026-02-22T02:45:04.5156553Z -a----        2026/02/21     16:11           4806 diag_22252533924_1_20260221_161105.zip                               
+2026-02-22T02:45:04.5163658Z -a----        2026/02/21     16:43           4839 diag_22252976665_1_20260221_164333.zip                               
+2026-02-22T02:45:04.5170854Z -a----        2026/02/21     17:23           4840 diag_22253509025_1_20260221_172305.zip                               
+2026-02-22T02:45:04.5178872Z -a----        2026/02/21     17:57           4845 diag_22253961100_1_20260221_175721.zip                               
+2026-02-22T02:45:04.5187568Z -a----        2026/02/21     18:03           4845 diag_22254040899_1_20260221_180313.zip                               
+2026-02-22T02:45:04.5197367Z -a----        2026/02/21     18:51           5266 diag_22254693514_1_20260221_185125.zip                               
+2026-02-22T02:45:04.5204661Z -a----        2026/02/21     19:50           5225 diag_22255482209_1_20260221_195016.zip                               
+2026-02-22T02:45:04.5211930Z -a----        2026/02/21     20:02           5153 diag_22255636168_1_20260221_200205.zip                               
+2026-02-22T02:45:04.5219087Z -a----        2026/02/22      9:55           6061 diag_22267589833_1_20260222_095503.zip                               
+2026-02-22T02:45:04.5226429Z -a----        2026/02/22     11:01           6771 diag_22268462317_1_20260222_110151.zip                               
+2026-02-22T02:45:04.5233631Z -a----        2026/02/22     11:17           4934 diag_22268676913_1_20260222_111738.zip                               
+2026-02-22T02:45:04.5242293Z -a----        2026/02/22     11:45           4930 diag_22269035409_1_20260222_114503.zip                               
+2026-02-22T02:45:04.5366794Z latestDiagZip=C:\Users\becky\OneDrive\ApexTraderAI\diagnostics\diag_22269035409_1_20260222_114503.zip
+2026-02-22T02:45:04.5372419Z 
+2026-02-22T02:45:04.5372715Z 
+
+----- FILE: actions_logs/run/15_Resolve latest run artifacts.txt -----
+﻿2026-02-22T02:45:04.5649539Z ##[group]Run $workRoot = 'C:\work\apex_work\runs'
+2026-02-22T02:45:04.5650044Z [36;1m$workRoot = 'C:\work\apex_work\runs'[0m
+2026-02-22T02:45:04.5650488Z [36;1m$consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:04.5651032Z [36;1m$reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:04.5651419Z [36;1m[0m
+2026-02-22T02:45:04.5651635Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:04.5651961Z [36;1m  '[STEP] resolve_latest_run_artifacts',[0m
+2026-02-22T02:45:04.5652275Z [36;1m  ('[INFO] work_root={0}' -f $workRoot)[0m
+2026-02-22T02:45:04.5652520Z [36;1m)[0m
+2026-02-22T02:45:04.5652666Z [36;1m[0m
+2026-02-22T02:45:04.5652817Z [36;1m$runId = ''[0m
+2026-02-22T02:45:04.5653023Z [36;1mif (Test-Path $consoleLog) {[0m
+2026-02-22T02:45:04.5653496Z [36;1m  $runIdLine = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1[0m
+2026-02-22T02:45:04.5654033Z [36;1m  if ($runIdLine) {[0m
+2026-02-22T02:45:04.5654404Z [36;1m    $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()[0m
+2026-02-22T02:45:04.5655007Z [36;1m  }[0m
+2026-02-22T02:45:04.5655159Z [36;1m}[0m
+2026-02-22T02:45:04.5655301Z [36;1m[0m
+2026-02-22T02:45:04.5655451Z [36;1m$runDir = $null[0m
+2026-02-22T02:45:04.5655634Z [36;1mif ($runId) {[0m
+2026-02-22T02:45:04.5655868Z [36;1m  $candidateDir = Join-Path $workRoot $runId[0m
+2026-02-22T02:45:04.5656165Z [36;1m  if (Test-Path $candidateDir) {[0m
+2026-02-22T02:45:04.5656449Z [36;1m    $runDir = Get-Item $candidateDir[0m
+2026-02-22T02:45:04.5656732Z [36;1m  }[0m
+2026-02-22T02:45:04.5656893Z [36;1m}[0m
+2026-02-22T02:45:04.5657036Z [36;1m[0m
+2026-02-22T02:45:04.5657254Z [36;1mif (-not $runDir -and (Test-Path $workRoot)) {[0m
+2026-02-22T02:45:04.5657845Z [36;1m  $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:04.5658432Z [36;1m  if ($runDir -and -not $runId) {[0m
+2026-02-22T02:45:04.5658698Z [36;1m    $runId = $runDir.Name[0m
+2026-02-22T02:45:04.5658960Z [36;1m  }[0m
+2026-02-22T02:45:04.5659148Z [36;1m}[0m
+2026-02-22T02:45:04.5659297Z [36;1m[0m
+2026-02-22T02:45:04.5659441Z [36;1mif ($runId) {[0m
+2026-02-22T02:45:04.5659791Z [36;1m  "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:04.5660215Z [36;1m  Write-Host "Resolved run_id=$runId"[0m
+2026-02-22T02:45:04.5660467Z [36;1m} else {[0m
+2026-02-22T02:45:04.5660847Z [36;1m  Add-Content -Path $reportPath -Value '[NG] resolve_latest_run_artifacts run_id unresolved'[0m
+2026-02-22T02:45:04.5661488Z [36;1m  Write-Warning 'Failed to resolve run_id from console log and latest run folder.'[0m
+2026-02-22T02:45:04.5661892Z [36;1m}[0m
+2026-02-22T02:45:04.5662038Z [36;1m[0m
+2026-02-22T02:45:04.5662195Z [36;1mif ($runDir) {[0m
+2026-02-22T02:45:04.5662464Z [36;1m  $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'[0m
+2026-02-22T02:45:04.5662922Z [36;1m  $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)[0m
+2026-02-22T02:45:04.5663451Z [36;1m  $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)[0m
+2026-02-22T02:45:04.5664030Z [36;1m  "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:04.5664614Z [36;1m  "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:04.5665199Z [36;1m  "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:04.5665832Z [36;1m  "run_dir=$($runDir.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:04.5666405Z [36;1m  Write-Host "Resolved run directory: $($runDir.FullName)"[0m
+2026-02-22T02:45:04.5666731Z [36;1m}[0m
+2026-02-22T02:45:04.5666884Z [36;1m[0m
+2026-02-22T02:45:04.5667031Z [36;1mif ($runDir) {[0m
+2026-02-22T02:45:04.5668818Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:45:04.5669154Z [36;1m    '[OK] resolve_latest_run_artifacts',[0m
+2026-02-22T02:45:04.5669466Z [36;1m    ('[OK] run_dir={0}' -f $runDir.FullName),[0m
+2026-02-22T02:45:04.5669760Z [36;1m    ('[OK] run_id={0}' -f $runId),[0m
+2026-02-22T02:45:04.5669989Z [36;1m    ''[0m
+2026-02-22T02:45:04.5670144Z [36;1m  )[0m
+2026-02-22T02:45:04.5670288Z [36;1m}[0m
+2026-02-22T02:45:04.5670435Z [36;1m[0m
+2026-02-22T02:45:04.5670634Z [36;1mif ((Get-Item $reportPath).Length -gt 60000) {[0m
+2026-02-22T02:45:04.5670967Z [36;1m  $tail = Get-Content -Path $reportPath -Raw[0m
+2026-02-22T02:45:04.5671323Z [36;1m  $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))[0m
+2026-02-22T02:45:04.5671750Z [36;1m  Set-Content -Path $reportPath -Value $tail -Encoding UTF8[0m
+2026-02-22T02:45:04.5672074Z [36;1m}[0m
+2026-02-22T02:45:04.5688547Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:04.5689123Z env:
+2026-02-22T02:45:04.5689327Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:04.5690370Z ##[endgroup]
+2026-02-22T02:45:04.8506185Z Resolved run_id=20260222_114212
+2026-02-22T02:45:04.8575333Z Resolved run directory: C:\work\apex_work\runs\20260222_114212
+
+----- FILE: actions_logs/run/16_Trim ONE_TAP report size.txt -----
+﻿2026-02-22T02:45:04.9011476Z ##[group]Run $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+2026-02-22T02:45:04.9012563Z [36;1m$reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:04.9013133Z [36;1m$maxBytes = 60000[0m
+2026-02-22T02:45:04.9013720Z [36;1mif ((Test-Path $reportPath) -and ((Get-Item $reportPath).Length -gt $maxBytes)) {[0m
+2026-02-22T02:45:04.9014518Z [36;1m  $tail = Get-Content -Path $reportPath -Raw[0m
+2026-02-22T02:45:04.9015061Z [36;1m  $tail = $tail.Substring([Math]::Max(0, $tail.Length - $maxBytes))[0m
+2026-02-22T02:45:04.9015684Z [36;1m  Set-Content -Path $reportPath -Value $tail -Encoding UTF8[0m
+2026-02-22T02:45:04.9016140Z [36;1m}[0m
+2026-02-22T02:45:04.9044224Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:04.9044931Z env:
+2026-02-22T02:45:04.9045190Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:04.9045620Z ##[endgroup]
+
+----- FILE: actions_logs/run/17_Stage run artifacts.txt -----
+﻿2026-02-22T02:45:05.1405990Z ##[group]Run $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
+2026-02-22T02:45:05.1406715Z [36;1m$artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'[0m
+2026-02-22T02:45:05.1407208Z [36;1m$null = New-Item -Path $artifactRoot -ItemType Directory -Force[0m
+2026-02-22T02:45:05.1408101Z [36;1m$workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'[0m
+2026-02-22T02:45:05.1408650Z [36;1m$null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force[0m
+2026-02-22T02:45:05.1408994Z [36;1m[0m
+2026-02-22T02:45:05.1409305Z [36;1m$reportSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:05.1410062Z [36;1m$reportDest = Join-Path $artifactRoot 'ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:05.1410643Z [36;1mif (Test-Path $reportSource) {[0m
+2026-02-22T02:45:05.1411032Z [36;1m  Copy-Item -Path $reportSource -Destination $reportDest -Force[0m
+2026-02-22T02:45:05.1411359Z [36;1m} else {[0m
+2026-02-22T02:45:05.1411548Z [36;1m  @([0m
+2026-02-22T02:45:05.1411811Z [36;1m    '[WARN] ONE_TAP_ERROR_REPORT.txt was missing at stage time.',[0m
+2026-02-22T02:45:05.1412659Z [36;1m    ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))[0m
+2026-02-22T02:45:05.1413232Z [36;1m  ) | Set-Content -Path $reportDest -Encoding UTF8[0m
+2026-02-22T02:45:05.1413525Z [36;1m}[0m
+2026-02-22T02:45:05.1413658Z [36;1m[0m
+2026-02-22T02:45:05.1414007Z [36;1m$consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:05.1414639Z [36;1mif (Test-Path $consoleLog) {[0m
+2026-02-22T02:45:05.1415612Z [36;1m  Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force[0m
+2026-02-22T02:45:05.1416161Z [36;1m}[0m
+2026-02-22T02:45:05.1416302Z [36;1m[0m
+2026-02-22T02:45:05.1416568Z [36;1m$runLog = 'C:\work\apex_work\runs\20260222_114212\logs\run_20260222_114212.log'[0m
+2026-02-22T02:45:05.1416995Z [36;1mif ((-not $runLog) -or (-not (Test-Path $runLog))) {[0m
+2026-02-22T02:45:05.1417706Z [36;1m  $runDir = 'C:\work\apex_work\runs\20260222_114212'[0m
+2026-02-22T02:45:05.1418287Z [36;1m  if ($runDir -and (Test-Path $runDir)) {[0m
+2026-02-22T02:45:05.1419095Z [36;1m    $latestRunLog = Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:05.1420212Z [36;1m    if ($latestRunLog) {[0m
+2026-02-22T02:45:05.1420566Z [36;1m      $runLog = $latestRunLog.FullName[0m
+2026-02-22T02:45:05.1420882Z [36;1m    }[0m
+2026-02-22T02:45:05.1421036Z [36;1m  }[0m
+2026-02-22T02:45:05.1421181Z [36;1m}[0m
+2026-02-22T02:45:05.1422519Z [36;1m[0m
+2026-02-22T02:45:05.1422866Z [36;1mif ($runLog -and (Test-Path $runLog)) {[0m
+2026-02-22T02:45:05.1423286Z [36;1m  $runLogName = Split-Path -Path $runLog -Leaf[0m
+2026-02-22T02:45:05.1423783Z [36;1m  Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot $runLogName) -Force[0m
+2026-02-22T02:45:05.1424864Z [36;1m  Copy-Item -Path $runLog -Destination (Join-Path $workspaceLogRoot $runLogName) -Force[0m
+2026-02-22T02:45:05.1425384Z [36;1m  Write-Host "Staged run log: $runLog"[0m
+2026-02-22T02:45:05.1425638Z [36;1m} else {[0m
+2026-02-22T02:45:05.1426025Z [36;1m  Write-Warning 'Run log was not found for artifact staging. Uploading console log artifact only.'[0m
+2026-02-22T02:45:05.1426479Z [36;1m  @([0m
+2026-02-22T02:45:05.1426759Z [36;1m    '[WARN] run_*.log was not found. Artifact includes console log only.',[0m
+2026-02-22T02:45:05.1427288Z [36;1m    '[WARN] Never finish a workflow run without leaving a readable log artifact.',[0m
+2026-02-22T02:45:05.1427869Z [36;1m    ('[WARN] generated_at={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))[0m
+2026-02-22T02:45:05.1428445Z [36;1m  ) | Set-Content -Path (Join-Path $artifactRoot 'missing_run_log_warning.txt') -Encoding UTF8[0m
+2026-02-22T02:45:05.1430344Z [36;1m}[0m
+2026-02-22T02:45:05.1430496Z [36;1m[0m
+2026-02-22T02:45:05.1430763Z [36;1m$zipPath = 'C:\work\apex_work\runs\20260222_114212\run_20260222_114212.zip'[0m
+2026-02-22T02:45:05.1431166Z [36;1mif ($zipPath -and (Test-Path $zipPath)) {[0m
+2026-02-22T02:45:05.1431701Z [36;1m  Copy-Item -Path $zipPath -Destination (Join-Path $artifactRoot (Split-Path -Path $zipPath -Leaf)) -Force[0m
+2026-02-22T02:45:05.1432196Z [36;1m}[0m
+2026-02-22T02:45:05.1432355Z [36;1m[0m
+2026-02-22T02:45:05.1432765Z [36;1m"artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:05.1433286Z [36;1mWrite-Host "Staged artifacts under: $artifactRoot"[0m
+2026-02-22T02:45:05.1450476Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:05.1450993Z env:
+2026-02-22T02:45:05.1451184Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:05.1451448Z ##[endgroup]
+2026-02-22T02:45:05.4668123Z Staged run log: C:\work\apex_work\runs\20260222_114212\logs\run_20260222_114212.log
+2026-02-22T02:45:05.4761490Z Staged artifacts under: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\desktop_artifacts
+
+----- FILE: actions_logs/run/18_Upload run artifacts.txt -----
+﻿2026-02-22T02:45:05.5224929Z ##[group]Run actions/upload-artifact@v4
+2026-02-22T02:45:05.5225422Z with:
+2026-02-22T02:45:05.5225620Z   name: desktop-run-20260222_114212
+2026-02-22T02:45:05.5225878Z   if-no-files-found: warn
+2026-02-22T02:45:05.5226429Z   path: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\desktop_artifacts\**
+2026-02-22T02:45:05.5227007Z   compression-level: 6
+2026-02-22T02:45:05.5227219Z   overwrite: false
+2026-02-22T02:45:05.5227408Z   include-hidden-files: false
+2026-02-22T02:45:05.5227611Z env:
+2026-02-22T02:45:05.5227802Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:05.5228082Z ##[endgroup]
+2026-02-22T02:45:06.2684112Z With the provided path, there will be 36 files uploaded
+2026-02-22T02:45:06.2686707Z Artifact name is valid!
+2026-02-22T02:45:06.2686967Z Root directory input is valid!
+2026-02-22T02:45:06.8587466Z Beginning upload of artifact content to blob storage
+2026-02-22T02:45:10.7363833Z Uploaded bytes 8388608
+2026-02-22T02:45:11.4806225Z Uploaded bytes 16777216
+2026-02-22T02:45:11.7642036Z Uploaded bytes 25165824
+2026-02-22T02:45:12.2077447Z Uploaded bytes 33554432
+2026-02-22T02:45:13.5062152Z Uploaded bytes 41943040
+2026-02-22T02:45:13.8637108Z Uploaded bytes 42074691
+2026-02-22T02:45:14.0511637Z Finished uploading artifact content to blob storage!
+2026-02-22T02:45:14.0515434Z SHA256 digest of uploaded artifact zip is bd5e64e05a4611f5745a7c1d961d72498bf6532997abe8f483224c360edc433b
+2026-02-22T02:45:14.0517583Z Finalizing artifact upload
+2026-02-22T02:45:14.6137895Z Artifact desktop-run-20260222_114212.zip successfully finalized. Artifact ID 5604637332
+2026-02-22T02:45:14.6138943Z Artifact desktop-run-20260222_114212 has been successfully uploaded! Final size is 42074691 bytes. Artifact ID is 5604637332
+2026-02-22T02:45:14.6153171Z Artifact download URL: https://github.com/toki866/ApexTraderAI/actions/runs/22269035409/artifacts/5604637332
+
+----- FILE: actions_logs/run/19_Evaluate outputs (StepA_StepE best-effort) and write report.txt -----
+﻿2026-02-22T02:45:14.6471272Z ##[group]Run $ErrorActionPreference='Continue'
+2026-02-22T02:45:14.6472107Z [36;1m$ErrorActionPreference='Continue'[0m
+2026-02-22T02:45:14.6472498Z [36;1mSet-Location $env:REPO_ROOT[0m
+2026-02-22T02:45:14.6472733Z [36;1m[0m
+2026-02-22T02:45:14.6472916Z [36;1m$workRoot='C:\work\apex_work\runs'[0m
+2026-02-22T02:45:14.6473549Z [36;1m$latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1[0m
+2026-02-22T02:45:14.6474364Z [36;1mif (-not $latest) { Write-Host "[WARN] no run_dir"; exit 0 }[0m
+2026-02-22T02:45:14.6474682Z [36;1m[0m
+2026-02-22T02:45:14.6474913Z [36;1m$outputRoot=Join-Path $latest.FullName 'output'[0m
+2026-02-22T02:45:14.6475376Z [36;1mif (-not (Test-Path $outputRoot)) { Write-Host "[WARN] no output_root"; exit 0 }[0m
+2026-02-22T02:45:14.6475783Z [36;1m[0m
+2026-02-22T02:45:14.6476008Z [36;1m$repDir=Join-Path $env:GITHUB_WORKSPACE 'temp\eval'[0m
+2026-02-22T02:45:14.6476460Z [36;1mNew-Item $repDir -ItemType Directory -Force | Out-Null[0m
+2026-02-22T02:45:14.6476897Z [36;1m$md=Join-Path $repDir 'EVAL_REPORT.md'[0m
+2026-02-22T02:45:14.6477205Z [36;1m$js=Join-Path $repDir 'EVAL_REPORT.json'[0m
+2026-02-22T02:45:14.6477538Z [36;1m$summary=Join-Path $repDir 'EVAL_SUMMARY.txt'[0m
+2026-02-22T02:45:14.6477809Z [36;1m[0m
+2026-02-22T02:45:14.6477969Z [36;1m$symbols = 'SOXL,SOXS'[0m
+2026-02-22T02:45:14.6478188Z [36;1m$symbol = 'SOXL'[0m
+2026-02-22T02:45:14.6478479Z [36;1mif (-not [string]::IsNullOrWhiteSpace($symbols)) {[0m
+2026-02-22T02:45:14.6478863Z [36;1m  $symbol = ($symbols -split ',')[0].Trim()[0m
+2026-02-22T02:45:14.6479289Z [36;1m  if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }[0m
+2026-02-22T02:45:14.6479632Z [36;1m}[0m
+2026-02-22T02:45:14.6479791Z [36;1m$mode = 'sim'[0m
+2026-02-22T02:45:14.6480075Z [36;1mif ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }[0m
+2026-02-22T02:45:14.6480391Z [36;1m[0m
+2026-02-22T02:45:14.6480989Z [36;1mpython scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"[0m
+2026-02-22T02:45:14.6481690Z [36;1mexit 0[0m
+2026-02-22T02:45:14.6499165Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:14.6499728Z env:
+2026-02-22T02:45:14.6499944Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:14.6500244Z ##[endgroup]
+
+----- FILE: actions_logs/run/1_Set up job.txt -----
+﻿2026-02-22T02:42:03.5807697Z Current runner version: '2.331.0'
+2026-02-22T02:42:03.5818693Z Runner name: 'DESKTOP-C54PIIA'
+2026-02-22T02:42:03.5819368Z Runner group name: 'Default'
+2026-02-22T02:42:03.5820110Z Machine name: 'DESKTOP-C54PIIA'
+2026-02-22T02:42:03.5823772Z ##[group]GITHUB_TOKEN Permissions
+2026-02-22T02:42:03.5825872Z Actions: read
+2026-02-22T02:42:03.5826372Z Contents: write
+2026-02-22T02:42:03.5826832Z Issues: write
+2026-02-22T02:42:03.5827241Z Metadata: read
+2026-02-22T02:42:03.5827676Z ##[endgroup]
+2026-02-22T02:42:03.5829768Z Secret source: Actions
+2026-02-22T02:42:03.5830447Z Prepare workflow directory
+2026-02-22T02:42:03.6522646Z Prepare all required actions
+2026-02-22T02:42:03.6720155Z Getting action download info
+2026-02-22T02:42:04.9507845Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-02-22T02:42:06.5342177Z Download action repository 'actions/github-script@v7' (SHA:f28e40c7f34bde8b3046d885e986cb6290c5673b)
+2026-02-22T02:42:07.5488516Z Complete job name: run
+
+----- FILE: actions_logs/run/20_Publish ONE_TAP report to diag-logs branch.txt -----
+2026-02-22T02:45:15.6299342Z [36;1m}[0m
+2026-02-22T02:45:15.6299482Z [36;1m[0m
+2026-02-22T02:45:15.6299784Z [36;1m$evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'[0m
+2026-02-22T02:45:15.6300187Z [36;1mif (Test-Path $evalMdSource) {[0m
+2026-02-22T02:45:15.6300633Z [36;1m  Copy-Item -Path $evalMdSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.md') -Force[0m
+2026-02-22T02:45:15.6301114Z [36;1m}[0m
+2026-02-22T02:45:15.6301434Z [36;1m$evalJsonSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'[0m
+2026-02-22T02:45:15.6301867Z [36;1mif (Test-Path $evalJsonSource) {[0m
+2026-02-22T02:45:15.6303789Z [36;1m  Copy-Item -Path $evalJsonSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.json') -Force[0m
+2026-02-22T02:45:15.6304223Z [36;1m}[0m
+2026-02-22T02:45:15.6304536Z [36;1m$evalSummarySource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'[0m
+2026-02-22T02:45:15.6304951Z [36;1mif (Test-Path $evalSummarySource) {[0m
+2026-02-22T02:45:15.6305415Z [36;1m  Copy-Item -Path $evalSummarySource -Destination (Join-Path $csvOutDir 'EVAL_SUMMARY.txt') -Force[0m
+2026-02-22T02:45:15.6305897Z [36;1m}[0m
+2026-02-22T02:45:15.6306055Z [36;1m[0m
+2026-02-22T02:45:15.6306251Z [36;1m$runDir = 'C:\work\apex_work\runs\20260222_114212'[0m
+2026-02-22T02:45:15.6306692Z [36;1mif ([string]::IsNullOrWhiteSpace($runDir) -or -not (Test-Path $runDir)) {[0m
+2026-02-22T02:45:15.6307086Z [36;1m  $runsRoot = 'C:\work\apex_work\runs'[0m
+2026-02-22T02:45:15.6307337Z [36;1m  if (Test-Path $runsRoot) {[0m
+2026-02-22T02:45:15.6308219Z [36;1m    $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:15.6308710Z [36;1m      Sort-Object LastWriteTime -Descending |[0m
+2026-02-22T02:45:15.6308993Z [36;1m      Select-Object -First 1[0m
+2026-02-22T02:45:15.6309218Z [36;1m    if ($latestRun) {[0m
+2026-02-22T02:45:15.6309451Z [36;1m      $runDir = $latestRun.FullName[0m
+2026-02-22T02:45:15.6309680Z [36;1m    }[0m
+2026-02-22T02:45:15.6309822Z [36;1m  }[0m
+2026-02-22T02:45:15.6309961Z [36;1m}[0m
+2026-02-22T02:45:15.6310097Z [36;1m[0m
+2026-02-22T02:45:15.6310477Z [36;1m$outputRoot = if ([string]::IsNullOrWhiteSpace($runDir)) { '' } else { Join-Path $runDir 'output' }[0m
+2026-02-22T02:45:15.6310928Z [36;1m$maxCsvBytes = 5MB[0m
+2026-02-22T02:45:15.6311128Z [36;1m$headLines = 500[0m
+2026-02-22T02:45:15.6311436Z [36;1m$publishedCsv = New-Object System.Collections.Generic.List[object][0m
+2026-02-22T02:45:15.6311774Z [36;1m[0m
+2026-02-22T02:45:15.6312094Z [36;1mif (-not [string]::IsNullOrWhiteSpace($outputRoot) -and (Test-Path $outputRoot)) {[0m
+2026-02-22T02:45:15.6312498Z [36;1m  $csvPatterns = @([0m
+2026-02-22T02:45:15.6312818Z [36;1m    (Join-Path $outputRoot 'stepA\*\stepA_split_summary_*.csv'),[0m
+2026-02-22T02:45:15.6313261Z [36;1m    (Join-Path $outputRoot 'stepA\*\stepA_prices_test_*.csv'),[0m
+2026-02-22T02:45:15.6313661Z [36;1m    (Join-Path $outputRoot 'stepB\*\stepB_split_summary_*.csv'),[0m
+2026-02-22T02:45:15.6314042Z [36;1m    (Join-Path $outputRoot 'stepB\*\stepB_pred_*.csv'),[0m
+2026-02-22T02:45:15.6314384Z [36;1m    (Join-Path $outputRoot 'stepC\*\*summary*.csv'),[0m
+2026-02-22T02:45:15.6314736Z [36;1m    (Join-Path $outputRoot 'stepD_prime\*\*summary*.csv'),[0m
+2026-02-22T02:45:15.6315142Z [36;1m    (Join-Path $outputRoot 'stepE\*\stepE_daily_log_*.csv'),[0m
+2026-02-22T02:45:15.6315556Z [36;1m    (Join-Path $outputRoot 'stepF\*\*summary*.csv')[0m
+2026-02-22T02:45:15.6315825Z [36;1m  )[0m
+2026-02-22T02:45:15.6315969Z [36;1m[0m
+2026-02-22T02:45:15.6316125Z [36;1m  $sourceCsvFiles = @()[0m
+2026-02-22T02:45:15.6316367Z [36;1m  foreach ($pattern in $csvPatterns) {[0m
+2026-02-22T02:45:15.6316820Z [36;1m    $sourceCsvFiles += Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue[0m
+2026-02-22T02:45:15.6317222Z [36;1m  }[0m
+2026-02-22T02:45:15.6317361Z [36;1m[0m
+2026-02-22T02:45:15.6317534Z [36;1m  $sourceCsvFiles = $sourceCsvFiles |[0m
+2026-02-22T02:45:15.6317854Z [36;1m    Sort-Object FullName -Unique[0m
+2026-02-22T02:45:15.6318076Z [36;1m[0m
+2026-02-22T02:45:15.6318240Z [36;1m  foreach ($src in $sourceCsvFiles) {[0m
+2026-02-22T02:45:15.6318488Z [36;1m    $destName = $src.Name[0m
+2026-02-22T02:45:15.6318704Z [36;1m    $headOnly = $false[0m
+2026-02-22T02:45:15.6318890Z [36;1m[0m
+2026-02-22T02:45:15.6319069Z [36;1m    if ($src.Length -le $maxCsvBytes) {[0m
+2026-02-22T02:45:15.6319493Z [36;1m      Copy-Item -Path $src.FullName -Destination (Join-Path $csvOutDir $destName) -Force[0m
+2026-02-22T02:45:15.6320344Z [36;1m    } else {[0m
+2026-02-22T02:45:15.6320602Z [36;1m      $destName = '{0}__HEAD{1}' -f $src.BaseName, $src.Extension[0m
+2026-02-22T02:45:15.6321106Z [36;1m      Get-Content -Path $src.FullName -TotalCount $headLines -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:15.6321644Z [36;1m        Set-Content -Path (Join-Path $csvOutDir $destName) -Encoding UTF8[0m
+2026-02-22T02:45:15.6321991Z [36;1m      $headOnly = $true[0m
+2026-02-22T02:45:15.6322190Z [36;1m    }[0m
+2026-02-22T02:45:15.6322391Z [36;1m[0m
+2026-02-22T02:45:15.6322607Z [36;1m    $destPath = Join-Path $csvOutDir $destName[0m
+2026-02-22T02:45:15.6322891Z [36;1m    if (Test-Path $destPath) {[0m
+2026-02-22T02:45:15.6323315Z [36;1m      $previewLines = Get-Content -Path $destPath -TotalCount 2 -ErrorAction SilentlyContinue[0m
+2026-02-22T02:45:15.6323779Z [36;1m      $publishedCsv.Add([PSCustomObject]@{[0m
+2026-02-22T02:45:15.6324151Z [36;1m        Name = $destName[0m
+2026-02-22T02:45:15.6324391Z [36;1m        RelativePath = "./csv/$destName"[0m
+2026-02-22T02:45:15.6324753Z [36;1m        SizeBytes = (Get-Item -Path $destPath).Length[0m
+2026-02-22T02:45:15.6325078Z [36;1m        HeadOnly = $headOnly[0m
+2026-02-22T02:45:15.6325317Z [36;1m        PreviewLines = @($previewLines)[0m
+2026-02-22T02:45:15.6325555Z [36;1m      })[0m
+2026-02-22T02:45:15.6325707Z [36;1m    }[0m
+2026-02-22T02:45:15.6325849Z [36;1m  }[0m
+2026-02-22T02:45:15.6325991Z [36;1m}[0m
+2026-02-22T02:45:15.6326130Z [36;1m[0m
+2026-02-22T02:45:15.6326345Z [36;1m$csvIndexPath = Join-Path $runFolder 'CSV_INDEX.md'[0m
+2026-02-22T02:45:15.6326775Z [36;1m$csvIndexLines = New-Object System.Collections.Generic.List[string][0m
+2026-02-22T02:45:15.6327161Z [36;1m$csvIndexLines.Add('# CSV Index')[0m
+2026-02-22T02:45:15.6327437Z [36;1m$csvIndexLines.Add('')[0m
+2026-02-22T02:45:15.6327701Z [36;1m$csvIndexLines.Add("- source_run_dir: $runDir")[0m
+2026-02-22T02:45:15.6328057Z [36;1m$csvIndexLines.Add("- source_output_root: $outputRoot")[0m
+2026-02-22T02:45:15.6328373Z [36;1m$csvIndexLines.Add('')[0m
+2026-02-22T02:45:15.6328565Z [36;1m[0m
+2026-02-22T02:45:15.6328730Z [36;1mif ($publishedCsv.Count -eq 0) {[0m
+2026-02-22T02:45:15.6329118Z [36;1m  $csvIndexLines.Add('_No CSV files matched the publish patterns for this run._')[0m
+2026-02-22T02:45:15.6329529Z [36;1m} else {[0m
+2026-02-22T02:45:15.6329746Z [36;1m  foreach ($item in $publishedCsv) {[0m
+2026-02-22T02:45:15.6330105Z [36;1m    $headNote = if ($item.HeadOnly) { 'yes (500-line sample)' } else { 'no' }[0m
+2026-02-22T02:45:15.6330697Z [36;1m    $csvIndexLines.Add("- file: $($item.RelativePath) | size_bytes: $($item.SizeBytes) | head_only: $headNote")[0m
+2026-02-22T02:45:15.6331202Z [36;1m    if ($item.PreviewLines.Count -gt 0) {[0m
+2026-02-22T02:45:15.6331492Z [36;1m      $csvIndexLines.Add('  - preview:')[0m
+2026-02-22T02:45:15.6331834Z [36;1m      foreach ($line in $item.PreviewLines) {[0m
+2026-02-22T02:45:15.6332142Z [36;1m        $safeLine = [string]$line[0m
+2026-02-22T02:45:15.6332413Z [36;1m        $csvIndexLines.Add("    - $safeLine")[0m
+2026-02-22T02:45:15.6332658Z [36;1m      }[0m
+2026-02-22T02:45:15.6332808Z [36;1m    }[0m
+2026-02-22T02:45:15.6332949Z [36;1m  }[0m
+2026-02-22T02:45:15.6333095Z [36;1m}[0m
+2026-02-22T02:45:15.6333235Z [36;1m[0m
+2026-02-22T02:45:15.6333458Z [36;1mif (Test-Path (Join-Path $csvOutDir 'EVAL_REPORT.md')) {[0m
+2026-02-22T02:45:15.6333775Z [36;1m  $csvIndexLines.Add('')[0m
+2026-02-22T02:45:15.6334095Z [36;1m  $csvIndexLines.Add('- eval_report: ./csv/EVAL_REPORT.md')[0m
+2026-02-22T02:45:15.6334434Z [36;1m}[0m
+2026-02-22T02:45:15.6334668Z [36;1mif (Test-Path (Join-Path $csvOutDir 'EVAL_SUMMARY.txt')) {[0m
+2026-02-22T02:45:15.6335069Z [36;1m  $csvIndexLines.Add('- eval_summary: ./csv/EVAL_SUMMARY.txt')[0m
+2026-02-22T02:45:15.6335382Z [36;1m}[0m
+2026-02-22T02:45:15.6335512Z [36;1m[0m
+2026-02-22T02:45:15.6335800Z [36;1m$csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8[0m
+2026-02-22T02:45:15.6336255Z [36;1m[0m
+2026-02-22T02:45:15.6336504Z [36;1m$latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'[0m
+2026-02-22T02:45:15.6336969Z [36;1m$latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'[0m
+2026-02-22T02:45:15.6337263Z [36;1m$keepLatest = 10[0m
+2026-02-22T02:45:15.6337530Z [36;1mtry { $keepLatest = [int]'10' } catch { $keepLatest = 10 }[0m
+2026-02-22T02:45:15.6337868Z [36;1mif ($keepLatest -lt 1) { $keepLatest = 1 }[0m
+2026-02-22T02:45:15.6338115Z [36;1m[0m
+2026-02-22T02:45:15.6338249Z [36;1m@([0m
+2026-02-22T02:45:15.6338401Z [36;1m  '# Latest ONE_TAP report',[0m
+2026-02-22T02:45:15.6338612Z [36;1m  '',[0m
+2026-02-22T02:45:15.6338812Z [36;1m  "- folder: $runFolderName",[0m
+2026-02-22T02:45:15.6339146Z [36;1m  "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"[0m
+2026-02-22T02:45:15.6339553Z [36;1m) -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8[0m
+2026-02-22T02:45:15.6339971Z [36;1m[0m
+2026-02-22T02:45:15.6340114Z [36;1m@([0m
+2026-02-22T02:45:15.6340270Z [36;1m  '# Latest CSV index',[0m
+2026-02-22T02:45:15.6340469Z [36;1m  '',[0m
+2026-02-22T02:45:15.6340636Z [36;1m  "- folder: $runFolderName",[0m
+2026-02-22T02:45:15.6340866Z [36;1m  "- keep_latest: $keepLatest",[0m
+2026-02-22T02:45:15.6341160Z [36;1m  "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"[0m
+2026-02-22T02:45:15.6341607Z [36;1m) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8[0m
+2026-02-22T02:45:15.6341917Z [36;1m[0m
+2026-02-22T02:45:15.6342237Z [36;1m$runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:45:15.6342721Z [36;1m  Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |[0m
+2026-02-22T02:45:15.6343045Z [36;1m  Sort-Object Name -Descending[0m
+2026-02-22T02:45:15.6343257Z [36;1m[0m
+2026-02-22T02:45:15.6343515Z [36;1m$toDelete = $runFolders | Select-Object -Skip $keepLatest[0m
+2026-02-22T02:45:15.6343890Z [36;1mforeach ($d in $toDelete) {[0m
+2026-02-22T02:45:15.6344217Z [36;1m  Write-Host ("[RETENTION] delete old run folder: {0}" -f $d.FullName)[0m
+2026-02-22T02:45:15.6344714Z [36;1m  Remove-Item -Path $d.FullName -Recurse -Force -ErrorAction SilentlyContinue[0m
+2026-02-22T02:45:15.6345080Z [36;1m}[0m
+2026-02-22T02:45:15.6345222Z [36;1m[0m
+2026-02-22T02:45:15.6345548Z [36;1m"run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:15.6345963Z [36;1m[0m
+2026-02-22T02:45:15.6346179Z [36;1mgit add runs[0m
+2026-02-22T02:45:15.6346387Z [36;1mif (git diff --cached --quiet) {[0m
+2026-02-22T02:45:15.6346683Z [36;1m  Write-Host 'No diagnostics changes to commit.'[0m
+2026-02-22T02:45:15.6346958Z [36;1m  exit 0[0m
+2026-02-22T02:45:15.6347114Z [36;1m}[0m
+2026-02-22T02:45:15.6347248Z [36;1m[0m
+2026-02-22T02:45:15.6347650Z [36;1mgit commit -m "diag: add one_tap report $runFolderName"[0m
+2026-02-22T02:45:15.6347996Z [36;1mcmd /c "git push origin diag-logs"[0m
+2026-02-22T02:45:15.6348262Z [36;1m$pushRc = $LASTEXITCODE[0m
+2026-02-22T02:45:15.6348596Z [36;1mif ($pushRc -ne 0) {[0m
+2026-02-22T02:45:15.6349033Z [36;1m  Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)[0m
+2026-02-22T02:45:15.6349708Z [36;1m  Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'[0m
+2026-02-22T02:45:15.6350146Z [36;1m}[0m
+2026-02-22T02:45:15.6366919Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:15.6367410Z env:
+2026-02-22T02:45:15.6367697Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:15.6367987Z ##[endgroup]
+2026-02-22T02:45:15.9539071Z Initialized empty Git repository in C:/Users/becky/OneDrive/デスクトップ/Python/apex-trader-ai/actions-runner/_work/_temp/diag_repo/.git/
+2026-02-22T02:45:18.0218082Z Switched to a new branch 'diag-logs'
+2026-02-22T02:45:18.0218929Z branch 'diag-logs' set up to track 'origin/diag-logs'.
+2026-02-22T02:45:18.3933167Z [RETENTION] delete old run folder: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_repo\runs\20260221_180326_run22254040899_att1_cb77d37
+2026-02-22T02:45:18.3991024Z [RETENTION] delete old run folder: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_repo\runs\20260221_175735_run22253961100_att1_cb77d37
+2026-02-22T02:45:18.6225344Z [diag-logs 5150ee0] diag: add one_tap report 20260222_114518_run22269035409_att1_78098d7
+2026-02-22T02:45:18.6225955Z  29 files changed, 2521 insertions(+), 11287 deletions(-)
+2026-02-22T02:45:18.6226613Z  delete mode 100644 runs/20260221_175735_run22253961100_att1_cb77d37/ONE_TAP_ERROR_REPORT.txt
+2026-02-22T02:45:18.6227278Z  delete mode 100644 runs/20260221_175735_run22253961100_att1_cb77d37/csv/EVAL_REPORT.json
+2026-02-22T02:45:18.6228217Z  delete mode 100644 runs/20260221_175735_run22253961100_att1_cb77d37/csv/EVAL_REPORT.md
+2026-02-22T02:45:18.6228915Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/CSV_INDEX.md
+2026-02-22T02:45:18.6235307Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/ONE_TAP_ERROR_REPORT.txt
+2026-02-22T02:45:18.6236149Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/EVAL_REPORT.json
+2026-02-22T02:45:18.6236785Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/EVAL_REPORT.md
+2026-02-22T02:45:18.6237488Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepA_prices_test_SOXL.csv
+2026-02-22T02:45:18.6238418Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepA_split_summary_SOXL.csv
+2026-02-22T02:45:18.6239138Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepB_pred_close_mamba_SOXL.csv
+2026-02-22T02:45:18.6239927Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepB_pred_close_mamba_periodic_SOXL.csv
+2026-02-22T02:45:18.6240706Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepB_pred_path_mamba_SOXL.csv
+2026-02-22T02:45:18.6241457Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepB_pred_path_mamba_periodic_SOXL.csv
+2026-02-22T02:45:18.6242187Z  delete mode 100644 runs/20260221_180326_run22254040899_att1_cb77d37/csv/stepB_pred_time_all_SOXL.csv
+2026-02-22T02:45:18.6243015Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/CSV_INDEX.md (80%)
+2026-02-22T02:45:18.6243756Z  create mode 100644 runs/20260222_114518_run22269035409_att1_78098d7/ONE_TAP_ERROR_REPORT.txt
+2026-02-22T02:45:18.6244380Z  create mode 100644 runs/20260222_114518_run22269035409_att1_78098d7/csv/EVAL_REPORT.json
+2026-02-22T02:45:18.6245152Z  create mode 100644 runs/20260222_114518_run22269035409_att1_78098d7/csv/EVAL_REPORT.md
+2026-02-22T02:45:18.6245824Z  create mode 100644 runs/20260222_114518_run22269035409_att1_78098d7/csv/EVAL_SUMMARY.txt
+2026-02-22T02:45:18.6246689Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepA_prices_test_SOXL.csv (100%)
+2026-02-22T02:45:18.6247736Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepA_split_summary_SOXL.csv (100%)
+2026-02-22T02:45:18.6248816Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepB_pred_close_mamba_SOXL.csv (100%)
+2026-02-22T02:45:18.6249904Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepB_pred_close_mamba_periodic_SOXL.csv (100%)
+2026-02-22T02:45:18.6251046Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepB_pred_path_mamba_SOXL.csv (100%)
+2026-02-22T02:45:18.6252123Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepB_pred_path_mamba_periodic_SOXL.csv (100%)
+2026-02-22T02:45:18.6254376Z  rename runs/{20260221_175735_run22253961100_att1_cb77d37 => 20260222_114518_run22269035409_att1_78098d7}/csv/stepB_pred_time_all_SOXL.csv (100%)
+2026-02-22T02:45:18.6255377Z  create mode 100644 runs/20260222_114518_run22269035409_att1_78098d7/csv/stepE_daily_log_mamba_SOXL.csv
+2026-02-22T02:45:20.1410167Z To https://github.com/toki866/ApexTraderAI.git
+2026-02-22T02:45:20.1410712Z    26b8b16..5150ee0  diag-logs -> diag-logs
+
+----- FILE: actions_logs/run/21_Publish diagnostics to Issue (always).txt -----
+﻿2026-02-22T02:45:20.1817060Z ##[group]Run actions/github-script@v7
+2026-02-22T02:45:20.1817430Z with:
+2026-02-22T02:45:20.1825061Z   script: const fs = require('fs');
+const path = require('path');
+
+const owner = context.repo.owner;
+const repo = context.repo.repo;
+
+const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'ONE_TAP_ERROR_REPORT.txt');
+let report = fs.existsSync(reportPath)
+  ? fs.readFileSync(reportPath, 'utf8')
+  : '(missing ONE_TAP_ERROR_REPORT.txt)';
+
+const evalPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'eval', 'EVAL_SUMMARY.txt');
+let evalTxt = fs.existsSync(evalPath)
+  ? fs.readFileSync(evalPath, 'utf8')
+  : '(EVAL_SUMMARY.txt missing)';
+
+if (report.length > 60000) report = report.slice(-60000);
+if (evalTxt.length > 15000) evalTxt = evalTxt.slice(-15000);
+
+const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+const title = 'ApexTraderAI Diagnostics (latest)';
+const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
+const diagRunFolder = process.env.DIAG_RUN_FOLDER || 'LATEST_CSV.md';
+const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
+  ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+  : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
+const evalUrl = diagRunFolder === 'LATEST_CSV.md'
+  ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+  : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
+const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n\`\`\`text\n${report}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs eval report: ${evalUrl}\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n`;
+
+const { data: issues } = await github.rest.issues.listForRepo({
+  owner,
+  repo,
+  state: 'open',
+  per_page: 100
+});
+const existing = issues.find(i => i.title === title);
+
+if (existing) {
+  await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+} else {
+  await github.rest.issues.create({ owner, repo, title, body });
+}
+
+2026-02-22T02:45:20.1833566Z   github-token: ***
+2026-02-22T02:45:20.1833765Z   debug: false
+2026-02-22T02:45:20.1833949Z   user-agent: actions/github-script
+2026-02-22T02:45:20.1834202Z   result-encoding: json
+2026-02-22T02:45:20.1834396Z   retries: 0
+2026-02-22T02:45:20.1834641Z   retry-exempt-status-codes: 400,401,403,404,422
+2026-02-22T02:45:20.1834972Z env:
+2026-02-22T02:45:20.1835166Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:20.1835529Z   DIAG_RUN_FOLDER: 20260222_114518_run22269035409_att1_78098d7
+2026-02-22T02:45:20.1835841Z ##[endgroup]
+
+----- FILE: actions_logs/run/22_Collect diagnostics.txt -----
+﻿2026-02-22T02:45:22.1093691Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:45:22.1094218Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:45:22.1094466Z [36;1m[0m
+2026-02-22T02:45:22.1094633Z [36;1mfunction Mask-Secrets {[0m
+2026-02-22T02:45:22.1094865Z [36;1m  param([string]$Text)[0m
+2026-02-22T02:45:22.1095066Z [36;1m[0m
+2026-02-22T02:45:22.1095410Z [36;1m  if ([string]::IsNullOrEmpty($Text)) { return $Text }[0m
+2026-02-22T02:45:22.1095719Z [36;1m[0m
+2026-02-22T02:45:22.1095867Z [36;1m  $masked = $Text[0m
+2026-02-22T02:45:22.1096283Z [36;1m  $masked = [regex]::Replace($masked, 'github_pat_[A-Za-z0-9_]{20,}', 'github_pat_***MASKED***')[0m
+2026-02-22T02:45:22.1096895Z [36;1m  $masked = [regex]::Replace($masked, 'gh[pousr]_[A-Za-z0-9_]{20,}', 'gh***_***MASKED***')[0m
+2026-02-22T02:45:22.1097545Z [36;1m  $masked = [regex]::Replace($masked, '(?im)\b(token|password|secret)\b\s*[:=]\s*\S+', '$1=***MASKED***')[0m
+2026-02-22T02:45:22.1098024Z [36;1m  return $masked[0m
+2026-02-22T02:45:22.1098250Z [36;1m}[0m
+2026-02-22T02:45:22.1098399Z [36;1m[0m
+2026-02-22T02:45:22.1098569Z [36;1mfunction Get-MaskedTail {[0m
+2026-02-22T02:45:22.1098792Z [36;1m  param([0m
+2026-02-22T02:45:22.1098969Z [36;1m    [string]$Path,[0m
+2026-02-22T02:45:22.1099312Z [36;1m    [int]$Tail = 200[0m
+2026-02-22T02:45:22.1099519Z [36;1m  )[0m
+2026-02-22T02:45:22.1099671Z [36;1m[0m
+2026-02-22T02:45:22.1099925Z [36;1m  if (-not (Test-Path $Path)) { return "(not found) $Path" }[0m
+2026-02-22T02:45:22.1100503Z [36;1m  $raw = (Get-Content -Path $Path -Tail $Tail -ErrorAction SilentlyContinue) -join "`r`n"[0m
+2026-02-22T02:45:22.1100973Z [36;1m  return (Mask-Secrets -Text $raw)[0m
+2026-02-22T02:45:22.1101432Z [36;1m}[0m
+2026-02-22T02:45:22.1101585Z [36;1m[0m
+2026-02-22T02:45:22.1101802Z [36;1m$diagOut = Join-Path $env:RUNNER_TEMP 'diag_out'[0m
+2026-02-22T02:45:22.1102199Z [36;1m$null = New-Item -Path $diagOut -ItemType Directory -Force[0m
+2026-02-22T02:45:22.1102582Z [36;1m[0m
+2026-02-22T02:45:22.1102787Z [36;1m$ws = $env:GITHUB_WORKSPACE[0m
+2026-02-22T02:45:22.1103135Z [36;1m$runnerRoot = (Resolve-Path (Join-Path $ws '..\..\..')).Path[0m
+2026-02-22T02:45:22.1103533Z [36;1m$runnerDiag = Join-Path $runnerRoot '_diag'[0m
+2026-02-22T02:45:22.1103828Z [36;1m$runId = '22269035409'[0m
+2026-02-22T02:45:22.1104056Z [36;1m$runAttempt = '1'[0m
+2026-02-22T02:45:22.1104324Z [36;1m$sha = '78098d7558029783c747488a31ee224673a8e707'[0m
+2026-02-22T02:45:22.1104623Z [36;1m$branch = 'main'[0m
+2026-02-22T02:45:22.1104847Z [36;1m$repo = 'toki866/ApexTraderAI'[0m
+2026-02-22T02:45:22.1105293Z [36;1m$artifactName = "diag_full_${runId}_${runAttempt}"[0m
+2026-02-22T02:45:22.1105707Z [36;1m[0m
+2026-02-22T02:45:22.1105960Z [36;1m$latestRunnerLog = $null[0m
+2026-02-22T02:45:22.1106354Z [36;1m$latestWorkerLog = $null[0m
+2026-02-22T02:45:22.1106719Z [36;1mif (Test-Path $runnerDiag) {[0m
+2026-02-22T02:45:22.1108103Z [36;1m  $latestRunnerLog = Get-ChildItem -Path $runnerDiag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:22.1109578Z [36;1m  $latestWorkerLog = Get-ChildItem -Path $runnerDiag -Filter 'Worker_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:45:22.1110375Z [36;1m}[0m
+2026-02-22T02:45:22.1110526Z [36;1m[0m
+2026-02-22T02:45:22.1110855Z [36;1m$workflowLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:45:22.1111438Z [36;1m$runLogPath = 'C:\work\apex_work\runs\20260222_114212\logs\run_20260222_114212.log'[0m
+2026-02-22T02:45:22.1111960Z [36;1m$stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'[0m
+2026-02-22T02:45:22.1112590Z [36;1m$oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:45:22.1113053Z [36;1m[0m
+2026-02-22T02:45:22.1113596Z [36;1mif ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }[0m
+2026-02-22T02:45:22.1116144Z [36;1mif ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }[0m
+2026-02-22T02:45:22.1117146Z [36;1mif (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }[0m
+2026-02-22T02:45:22.1118172Z [36;1mif ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }[0m
+2026-02-22T02:45:22.1119291Z [36;1mif (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }[0m
+2026-02-22T02:45:22.1120246Z [36;1mGet-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {[0m
+2026-02-22T02:45:22.1120891Z [36;1m  Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force[0m
+2026-02-22T02:45:22.1121304Z [36;1m}[0m
+2026-02-22T02:45:22.1121465Z [36;1m[0m
+2026-02-22T02:45:22.1121668Z [36;1mforeach ($subDir in @('pages', 'blocks')) {[0m
+2026-02-22T02:45:22.1122072Z [36;1m  $src = Join-Path $runnerDiag $subDir[0m
+2026-02-22T02:45:22.1122378Z [36;1m  if (Test-Path $src) {[0m
+2026-02-22T02:45:22.1122789Z [36;1m    Copy-Item -Path $src -Destination (Join-Path $diagOut $subDir) -Recurse -Force[0m
+2026-02-22T02:45:22.1123205Z [36;1m  }[0m
+2026-02-22T02:45:22.1123367Z [36;1m}[0m
+2026-02-22T02:45:22.1123522Z [36;1m[0m
+2026-02-22T02:45:22.1124069Z [36;1m$runnerTailText = if ($latestRunnerLog) { Get-MaskedTail -Path $latestRunnerLog.FullName -Tail 200 } else { '(runner diag not found)' }[0m
+2026-02-22T02:45:22.1125344Z [36;1m$workflowTailText = if (Test-Path $workflowLog) { Get-MaskedTail -Path $workflowLog -Tail 200 } else { '(workflow log not found)' }[0m
+2026-02-22T02:45:22.1125941Z [36;1m[0m
+2026-02-22T02:45:22.1126175Z [36;1m$summaryPath = Join-Path $diagOut 'summary.md'[0m
+2026-02-22T02:45:22.1126475Z [36;1m$summary = @([0m
+2026-02-22T02:45:22.1126744Z [36;1m  '# Diagnostics Summary',[0m
+2026-02-22T02:45:22.1127010Z [36;1m  '',[0m
+2026-02-22T02:45:22.1127189Z [36;1m  "- repo: $repo",[0m
+2026-02-22T02:45:22.1127413Z [36;1m  "- branch: $branch",[0m
+2026-02-22T02:45:22.1127640Z [36;1m  "- sha: $sha",[0m
+2026-02-22T02:45:22.1127841Z [36;1m  "- run_id: $runId",[0m
+2026-02-22T02:45:22.1128071Z [36;1m  "- attempt: $runAttempt",[0m
+2026-02-22T02:45:22.1128347Z [36;1m  "- failing_step: $env:FAILING_STEP",[0m
+2026-02-22T02:45:22.1128643Z [36;1m  "- artifact_name: $artifactName",[0m
+2026-02-22T02:45:22.1128974Z [36;1m  '- one_tap_report: See ONE_TAP_ERROR_REPORT.txt',[0m
+2026-02-22T02:45:22.1129310Z [36;1m  '',[0m
+2026-02-22T02:45:22.1129541Z [36;1m  '## runner_diag_tail (last 200 lines)',[0m
+2026-02-22T02:45:22.1129806Z [36;1m  '```text',[0m
+2026-02-22T02:45:22.1130013Z [36;1m  $runnerTailText,[0m
+2026-02-22T02:45:22.1130232Z [36;1m  '```',[0m
+2026-02-22T02:45:22.1130394Z [36;1m  '',[0m
+2026-02-22T02:45:22.1130595Z [36;1m  '## workflow_tail (last 200 lines)',[0m
+2026-02-22T02:45:22.1130856Z [36;1m  '```text',[0m
+2026-02-22T02:45:22.1131051Z [36;1m  $workflowTailText,[0m
+2026-02-22T02:45:22.1131257Z [36;1m  '```'[0m
+2026-02-22T02:45:22.1131474Z [36;1m) -join "`r`n"[0m
+2026-02-22T02:45:22.1131758Z [36;1m$summary = Mask-Secrets -Text $summary[0m
+2026-02-22T02:45:22.1132164Z [36;1mSet-Content -Path $summaryPath -Value $summary -Encoding UTF8[0m
+2026-02-22T02:45:22.1132528Z [36;1m[0m
+2026-02-22T02:45:22.1132796Z [36;1m$runnerTailPath = Join-Path $diagOut 'runner_diag_tail.txt'[0m
+2026-02-22T02:45:22.1133304Z [36;1mSet-Content -Path $runnerTailPath -Value $runnerTailText -Encoding UTF8[0m
+2026-02-22T02:45:22.1133817Z [36;1m$workflowTailPath = Join-Path $diagOut 'workflow_tail.txt'[0m
+2026-02-22T02:45:22.1134437Z [36;1mSet-Content -Path $workflowTailPath -Value $workflowTailText -Encoding UTF8[0m
+2026-02-22T02:45:22.1135463Z [36;1m[0m
+2026-02-22T02:45:22.1135744Z [36;1m$fullZip = Join-Path $env:RUNNER_TEMP ("{0}.zip" -f $artifactName)[0m
+2026-02-22T02:45:22.1136205Z [36;1mif (Test-Path $fullZip) { Remove-Item $fullZip -Force }[0m
+2026-02-22T02:45:22.1136744Z [36;1mCompress-Archive -Path (Join-Path $diagOut '*') -DestinationPath $fullZip -Force[0m
+2026-02-22T02:45:22.1137174Z [36;1m[0m
+2026-02-22T02:45:22.1137504Z [36;1m"diag_out=$diagOut" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1138134Z [36;1m"diag_summary=$summaryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1138901Z [36;1m"diag_runner_tail=$runnerTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1139641Z [36;1m"diag_workflow_tail=$workflowTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1140314Z [36;1m"diag_zip=$fullZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1140969Z [36;1m"diag_artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append[0m
+2026-02-22T02:45:22.1159379Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:45:22.1160068Z env:
+2026-02-22T02:45:22.1160261Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:22.1160537Z   FAILING_STEP: unknown
+2026-02-22T02:45:22.1160780Z ##[endgroup]
+
+----- FILE: actions_logs/run/23_Upload full diagnostics artifact.txt -----
+﻿2026-02-22T02:45:23.4368728Z ##[group]Run actions/upload-artifact@v4
+2026-02-22T02:45:23.4369062Z with:
+2026-02-22T02:45:23.4369426Z   name: diag_full_22269035409_1
+2026-02-22T02:45:23.4369645Z   if-no-files-found: warn
+2026-02-22T02:45:23.4369843Z   retention-days: 7
+2026-02-22T02:45:23.4370316Z   path: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_full_22269035409_1.zip
+2026-02-22T02:45:23.4370824Z   compression-level: 6
+2026-02-22T02:45:23.4371011Z   overwrite: false
+2026-02-22T02:45:23.4371193Z   include-hidden-files: false
+2026-02-22T02:45:23.4371401Z env:
+2026-02-22T02:45:23.4371583Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:23.4371850Z ##[endgroup]
+2026-02-22T02:45:23.7369332Z With the provided path, there will be 1 file uploaded
+2026-02-22T02:45:23.7375735Z Artifact name is valid!
+2026-02-22T02:45:23.7378950Z Root directory input is valid!
+2026-02-22T02:45:24.3112870Z Beginning upload of artifact content to blob storage
+2026-02-22T02:45:25.3917277Z Uploaded bytes 85124
+2026-02-22T02:45:25.5835077Z Finished uploading artifact content to blob storage!
+2026-02-22T02:45:25.5839572Z SHA256 digest of uploaded artifact zip is ddb163a1ab422eba4bc98be600df509c0e7af3e8e13820e04cacc4f3e1fbfdec
+2026-02-22T02:45:25.5841468Z Finalizing artifact upload
+2026-02-22T02:45:25.8170691Z Artifact diag_full_22269035409_1.zip successfully finalized. Artifact ID 5604637938
+2026-02-22T02:45:25.8171513Z Artifact diag_full_22269035409_1 has been successfully uploaded! Final size is 85124 bytes. Artifact ID is 5604637938
+2026-02-22T02:45:25.8183711Z Artifact download URL: https://github.com/toki866/ApexTraderAI/actions/runs/22269035409/artifacts/5604637938
+
+----- FILE: actions_logs/run/24_Upload diagnostics artifact.txt -----
+﻿2026-02-22T02:45:25.8967181Z ##[group]Run actions/upload-artifact@v4
+2026-02-22T02:45:25.8967875Z with:
+2026-02-22T02:45:25.8968100Z   name: diagnostics
+2026-02-22T02:45:25.8968389Z   if-no-files-found: warn
+2026-02-22T02:45:25.8968732Z   path: _diagnostics/**/*
+2026-02-22T02:45:25.8969001Z   compression-level: 6
+2026-02-22T02:45:25.8969288Z   overwrite: false
+2026-02-22T02:45:25.8969558Z   include-hidden-files: false
+2026-02-22T02:45:25.8969881Z env:
+2026-02-22T02:45:25.8970193Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:45:25.8970750Z ##[endgroup]
+2026-02-22T02:45:26.1666436Z ##[warning]No files were found with the provided path: _diagnostics/**/*. No artifacts will be uploaded.
+
+----- FILE: actions_logs/run/25_Complete job.txt -----
+﻿2026-02-22T02:45:26.1828969Z Cleaning up orphan processes
+
+----- FILE: actions_logs/run/2_Prepare repo in C_work (no OneDrive cleanup).txt -----
+﻿2026-02-22T02:42:07.6844286Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:42:07.6844895Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:42:07.6845249Z [36;1mgit config --global core.longpaths true[0m
+2026-02-22T02:42:07.6845560Z [36;1m[0m
+2026-02-22T02:42:07.6846468Z [36;1m$repoUrl = "***github.com/toki866/ApexTraderAI.git"[0m
+2026-02-22T02:42:07.6846863Z [36;1m$cacheRoot = "C:\work\apex_repo_cache"[0m
+2026-02-22T02:42:07.6847215Z [36;1m$repoDir = Join-Path $cacheRoot "ApexTraderAI"[0m
+2026-02-22T02:42:07.6847528Z [36;1m[0m
+2026-02-22T02:42:07.6847831Z [36;1mNew-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null[0m
+2026-02-22T02:42:07.6848212Z [36;1m[0m
+2026-02-22T02:42:07.6848473Z [36;1mif (!(Test-Path (Join-Path $repoDir ".git"))) {[0m
+2026-02-22T02:42:07.6848835Z [36;1m  Write-Host "[repo] cloning to $repoDir"[0m
+2026-02-22T02:42:07.6849391Z [36;1m  if (Test-Path $repoDir) { Remove-Item -Path $repoDir -Recurse -Force -ErrorAction SilentlyContinue }[0m
+2026-02-22T02:42:07.6849978Z [36;1m  git clone $repoUrl $repoDir[0m
+2026-02-22T02:42:07.6850386Z [36;1m  if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit=$LASTEXITCODE)" }[0m
+2026-02-22T02:42:07.6850789Z [36;1m} else {[0m
+2026-02-22T02:42:07.6851064Z [36;1m  Write-Host "[repo] fetch/reset in $repoDir"[0m
+2026-02-22T02:42:07.6851622Z [36;1m  git -C $repoDir remote set-url origin $repoUrl | Out-Null[0m
+2026-02-22T02:42:07.6852012Z [36;1m  git -C $repoDir fetch --force --prune origin[0m
+2026-02-22T02:42:07.6852430Z [36;1m  if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit=$LASTEXITCODE)" }[0m
+2026-02-22T02:42:07.6852809Z [36;1m}[0m
+2026-02-22T02:42:07.6852991Z [36;1m[0m
+2026-02-22T02:42:07.6853216Z [36;1mgit -C $repoDir checkout -f $env:GITHUB_SHA[0m
+2026-02-22T02:42:07.6853685Z [36;1mif ($LASTEXITCODE -ne 0) { throw "git checkout SHA failed (exit=$LASTEXITCODE)" }[0m
+2026-02-22T02:42:07.6854153Z [36;1mgit -C $repoDir reset --hard $env:GITHUB_SHA[0m
+2026-02-22T02:42:07.6854605Z [36;1mif ($LASTEXITCODE -ne 0) { throw "git reset SHA failed (exit=$LASTEXITCODE)" }[0m
+2026-02-22T02:42:07.6855030Z [36;1mgit -C $repoDir clean -ffdx[0m
+2026-02-22T02:42:07.6855423Z [36;1mif ($LASTEXITCODE -ne 0) { throw "git clean failed (exit=$LASTEXITCODE)" }[0m
+2026-02-22T02:42:07.6855801Z [36;1m[0m
+2026-02-22T02:42:07.6856043Z [36;1mgit config --global --add safe.directory $repoDir[0m
+2026-02-22T02:42:07.6856356Z [36;1m[0m
+2026-02-22T02:42:07.6856646Z [36;1mAdd-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"[0m
+2026-02-22T02:42:07.6857120Z [36;1mWrite-Host "REPO_ROOT=$repoDir"[0m
+2026-02-22T02:42:07.6857455Z [36;1m$headShort = git -C $repoDir rev-parse --short HEAD[0m
+2026-02-22T02:42:07.6857782Z [36;1mWrite-Host "HEAD=$headShort"[0m
+2026-02-22T02:42:07.6880926Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:07.6882053Z env:
+2026-02-22T02:42:07.6883913Z   GIT_TERMINAL_PROMPT: 0
+2026-02-22T02:42:07.6884177Z ##[endgroup]
+2026-02-22T02:42:08.0247135Z [repo] fetch/reset in C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:09.7328889Z From https://github.com/toki866/ApexTraderAI
+2026-02-22T02:42:09.7329810Z  * [new branch]      codex/add-evaluation-summary-to-github-issue-zakchv -> origin/codex/add-evaluation-summary-to-github-issue-zakchv
+2026-02-22T02:42:09.7330566Z    e6b94df..26b8b16  diag-logs  -> origin/diag-logs
+2026-02-22T02:42:09.7330941Z    2a88571..78098d7  main       -> origin/main
+2026-02-22T02:42:09.8164899Z Previous HEAD position was 2a88571 Merge pull request #74 from toki866/codex/inject-stepfconfig-defaults-in-pipeline
+2026-02-22T02:42:09.8166608Z HEAD is now at 78098d7 Merge pull request #75 from toki866/codex/add-evaluation-summary-to-github-issue
+2026-02-22T02:42:09.8539285Z HEAD is now at 78098d7 Merge pull request #75 from toki866/codex/add-evaluation-summary-to-github-issue
+2026-02-22T02:42:09.8896022Z Removing ai_core/__pycache__/
+2026-02-22T02:42:09.8898466Z Removing ai_core/config/__pycache__/
+2026-02-22T02:42:09.8898940Z Removing ai_core/models/__pycache__/
+2026-02-22T02:42:09.8899537Z Removing ai_core/services/__pycache__/
+2026-02-22T02:42:09.8900216Z Removing ai_core/types/__pycache__/
+2026-02-22T02:42:09.8900744Z Removing ai_core/utils/__pycache__/
+2026-02-22T02:42:09.8901204Z Removing output/
+2026-02-22T02:42:09.8901666Z Removing temp/
+2026-02-22T02:42:09.9430959Z REPO_ROOT=C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:09.9743366Z HEAD=78098d7
+
+----- FILE: actions_logs/run/3_Initialize ONE_TAP error report.txt -----
+﻿2026-02-22T02:42:10.0120066Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:42:10.0120679Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:42:10.0121167Z [36;1m$reportDir = Join-Path $env:GITHUB_WORKSPACE 'temp'[0m
+2026-02-22T02:42:10.0121727Z [36;1m$null = New-Item -Path $reportDir -ItemType Directory -Force[0m
+2026-02-22T02:42:10.0122259Z [36;1m$reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:42:10.0136821Z [36;1m[0m
+2026-02-22T02:42:10.0137123Z [36;1m@([0m
+2026-02-22T02:42:10.0137386Z [36;1m  '=== ONE TAP ERROR REPORT ===',[0m
+2026-02-22T02:42:10.0137866Z [36;1m  ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),[0m
+2026-02-22T02:42:10.0138485Z [36;1m  ('repo=toki866/ApexTraderAI'),[0m
+2026-02-22T02:42:10.0138886Z [36;1m  ('ref=refs/heads/main'),[0m
+2026-02-22T02:42:10.0139322Z [36;1m  ('sha=78098d7558029783c747488a31ee224673a8e707'),[0m
+2026-02-22T02:42:10.0139739Z [36;1m  ('run_id=22269035409'),[0m
+2026-02-22T02:42:10.0140054Z [36;1m  ('run_attempt=1'),[0m
+2026-02-22T02:42:10.0140439Z [36;1m  ''[0m
+2026-02-22T02:42:10.0140798Z [36;1m) | Set-Content -Path $reportPath -Encoding UTF8[0m
+2026-02-22T02:42:10.0141257Z [36;1m[0m
+2026-02-22T02:42:10.0141577Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:10.0141993Z [36;1m  '[STEP] initialize_one_tap_report',[0m
+2026-02-22T02:42:10.0142369Z [36;1m  '[OK] report initialized',[0m
+2026-02-22T02:42:10.0142736Z [36;1m  ('[PATH] {0}' -f $reportPath),[0m
+2026-02-22T02:42:10.0143180Z [36;1m  ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),[0m
+2026-02-22T02:42:10.0143769Z [36;1m  ('[INFO] HEAD={0}' -f (git -C $env:REPO_ROOT rev-parse --short HEAD)),[0m
+2026-02-22T02:42:10.0144304Z [36;1m  ''[0m
+2026-02-22T02:42:10.0144518Z [36;1m)[0m
+2026-02-22T02:42:10.0174647Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:10.0175492Z env:
+2026-02-22T02:42:10.0175762Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:10.0176175Z ##[endgroup]
+
+----- FILE: actions_logs/run/4_Verify scripts directory (post-prepare).txt -----
+﻿2026-02-22T02:42:10.3727144Z ##[group]Run $ErrorActionPreference='Stop'
+2026-02-22T02:42:10.3727646Z [36;1m$ErrorActionPreference='Stop'[0m
+2026-02-22T02:42:10.3727902Z [36;1m$repoRoot = $env:REPO_ROOT[0m
+2026-02-22T02:42:10.3728139Z [36;1mSet-Location $repoRoot[0m
+2026-02-22T02:42:10.3728524Z [36;1mWrite-Host "***"[0m
+2026-02-22T02:42:10.3729609Z [36;1mWrite-Host "HEAD=$(git rev-parse --short HEAD)"[0m
+2026-02-22T02:42:10.3729945Z [36;1mWrite-Host "=== workspace listing ==="[0m
+2026-02-22T02:42:10.3730390Z [36;1mGet-ChildItem -Path $repoRoot | Select-Object Name, FullName | Format-Table -AutoSize[0m
+2026-02-22T02:42:10.3730878Z [36;1m$scriptsDir = Join-Path $repoRoot 'scripts'[0m
+2026-02-22T02:42:10.3731244Z [36;1mWrite-Host "scripts_dir=$scriptsDir"[0m
+2026-02-22T02:42:10.3731676Z [36;1mif (!(Test-Path $scriptsDir)) { throw "scripts directory not found: $scriptsDir" }[0m
+2026-02-22T02:42:10.3732319Z [36;1mGet-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize[0m
+2026-02-22T02:42:10.3749988Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:10.3750532Z env:
+2026-02-22T02:42:10.3750729Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:10.3750990Z ##[endgroup]
+2026-02-22T02:42:10.5800989Z ***
+2026-02-22T02:42:10.6103125Z HEAD=78098d7
+2026-02-22T02:42:10.6106808Z === workspace listing ===
+2026-02-22T02:42:10.6168462Z 
+2026-02-22T02:42:10.6207752Z Name                                               FullName                                                            
+2026-02-22T02:42:10.6208543Z ----                                               --------                                                            
+2026-02-22T02:42:10.6209257Z .github                                            C:\work\apex_repo_cache\ApexTraderAI\.github                        
+2026-02-22T02:42:10.6209932Z ai_core                                            C:\work\apex_repo_cache\ApexTraderAI\ai_core                        
+2026-02-22T02:42:10.6210672Z archive                                            C:\work\apex_repo_cache\ApexTraderAI\archive                        
+2026-02-22T02:42:10.6211363Z config                                             C:\work\apex_repo_cache\ApexTraderAI\config                         
+2026-02-22T02:42:10.6212026Z data                                               C:\work\apex_repo_cache\ApexTraderAI\data                           
+2026-02-22T02:42:10.6212674Z docs                                               C:\work\apex_repo_cache\ApexTraderAI\docs                           
+2026-02-22T02:42:10.6213374Z engine                                             C:\work\apex_repo_cache\ApexTraderAI\engine                         
+2026-02-22T02:42:10.6214022Z scripts                                            C:\work\apex_repo_cache\ApexTraderAI\scripts                        
+2026-02-22T02:42:10.6214702Z specs                                              C:\work\apex_repo_cache\ApexTraderAI\specs                          
+2026-02-22T02:42:10.6215350Z tools                                              C:\work\apex_repo_cache\ApexTraderAI\tools                          
+2026-02-22T02:42:10.6216031Z .gitignore                                         C:\work\apex_repo_cache\ApexTraderAI\.gitignore                     
+2026-02-22T02:42:10.6216718Z AGENTS.md                                          C:\work\apex_repo_cache\ApexTraderAI\AGENTS.md                      
+2026-02-22T02:42:10.6217421Z auto_trader.py                                     C:\work\apex_repo_cache\ApexTraderAI\auto_trader.py                 
+2026-02-22T02:42:10.6218106Z main_v0_6.py                                       C:\work\apex_repo_cache\ApexTraderAI\main_v0_6.py                   
+2026-02-22T02:42:10.6218761Z README.md                                          C:\work\apex_repo_cache\ApexTraderAI\README.md                      
+2026-02-22T02:42:10.6219460Z requirements.txt                                   C:\work\apex_repo_cache\ApexTraderAI\requirements.txt               
+2026-02-22T02:42:10.6221623Z run_stepd_prime.py                                 C:\work\apex_repo_cache\ApexTraderAI\run_stepd_prime.py             
+2026-02-22T02:42:10.6222355Z run_steps_a_f_headless.py                          C:\work\apex_repo_cache\ApexTraderAI\run_steps_a_f_headless.py      
+2026-02-22T02:42:10.6225045Z run_steps_a_f_headless_safe3_lazy_import.py        C:\work\apex_repo_cache\ApexTraderAI\run_steps_a_f_headless_safe3...
+2026-02-22T02:42:10.6231781Z run_steps_a_f_headless_safe4_force_stepb_agents.py C:\work\apex_repo_cache\ApexTraderAI\run_steps_a_f_headless_safe4...
+2026-02-22T02:42:10.6232241Z 
+2026-02-22T02:42:10.6232248Z 
+2026-02-22T02:42:10.6249667Z scripts_dir=C:\work\apex_repo_cache\ApexTraderAI\scripts
+2026-02-22T02:42:10.6303619Z 
+2026-02-22T02:42:10.6320723Z Name                                Length LastWriteTime      
+2026-02-22T02:42:10.6321185Z ----                                ------ -------------      
+2026-02-22T02:42:10.6321642Z bat_config.bat                        1658 2026/02/22 10:59:45
+2026-02-22T02:42:10.6322763Z copy_run_to_onedrive.bat              1072 2026/02/21 10:12:46
+2026-02-22T02:42:10.6323179Z doctor.bat                            1973 2026/02/21 10:12:46
+2026-02-22T02:42:10.6325251Z evaluate_run_outputs.py              17495 2026/02/22 11:42:09
+2026-02-22T02:42:10.6327708Z package_diagnostics.ps1                801 2026/02/21 10:12:46
+2026-02-22T02:42:10.6328209Z package_diagnostics_to_onedrive.ps1   3248 2026/02/21 10:51:29
+2026-02-22T02:42:10.6328676Z run_all_local_then_copy.bat           9260 2026/02/22 10:59:45
+2026-02-22T02:42:10.6328904Z 
+2026-02-22T02:42:10.6329833Z 
+
+----- FILE: actions_logs/run/5_Debug shells.txt -----
+﻿2026-02-22T02:42:10.6612841Z ##[group]Run echo RUNNER_OS=%RUNNER_OS%
+2026-02-22T02:42:10.6613307Z [36;1mecho RUNNER_OS=%RUNNER_OS%[0m
+2026-02-22T02:42:10.6613555Z [36;1mecho === powershell path ===[0m
+2026-02-22T02:42:10.6613800Z [36;1mwhere powershell >nul 2>&1[0m
+2026-02-22T02:42:10.6614035Z [36;1mif %ERRORLEVEL% EQU 0 ([0m
+2026-02-22T02:42:10.6614251Z [36;1m  where powershell[0m
+2026-02-22T02:42:10.6614449Z [36;1m) else ([0m
+2026-02-22T02:42:10.6614627Z [36;1m  echo powershell_not_found[0m
+2026-02-22T02:42:10.6614845Z [36;1m)[0m
+2026-02-22T02:42:10.6615061Z [36;1mecho === pwsh path (optional) ===[0m
+2026-02-22T02:42:10.6615315Z [36;1mwhere pwsh >nul 2>&1[0m
+2026-02-22T02:42:10.6615566Z [36;1mif %ERRORLEVEL% EQU 0 ([0m
+2026-02-22T02:42:10.6615786Z [36;1m  pwsh -v[0m
+2026-02-22T02:42:10.6615954Z [36;1m) else ([0m
+2026-02-22T02:42:10.6616132Z [36;1m  echo pwsh_not_found (OK)[0m
+2026-02-22T02:42:10.6616350Z [36;1m)[0m
+2026-02-22T02:42:10.6616491Z [36;1mexit /b 0[0m
+2026-02-22T02:42:10.6621548Z shell: C:\Windows\system32\cmd.EXE /D /E:ON /V:OFF /S /C "CALL "{0}""
+2026-02-22T02:42:10.6621884Z env:
+2026-02-22T02:42:10.6622083Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:10.6622347Z ##[endgroup]
+2026-02-22T02:42:10.6848004Z RUNNER_OS=Windows
+2026-02-22T02:42:10.6849581Z === powershell path ===
+2026-02-22T02:42:10.9354686Z C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+2026-02-22T02:42:10.9421704Z === pwsh path (optional) ===
+2026-02-22T02:42:11.1179140Z pwsh_not_found (OK
+
+----- FILE: actions_logs/run/6_Debug python environment.txt -----
+﻿2026-02-22T02:42:11.1409072Z ##[group]Run where python
+2026-02-22T02:42:11.1409372Z [36;1mwhere python[0m
+2026-02-22T02:42:11.1409564Z [36;1mpython --version[0m
+2026-02-22T02:42:11.1409786Z [36;1mecho RUNNER_TEMP=%RUNNER_TEMP%[0m
+2026-02-22T02:42:11.1410068Z [36;1mecho GITHUB_WORKSPACE=%GITHUB_WORKSPACE%[0m
+2026-02-22T02:42:11.1414314Z shell: C:\Windows\system32\cmd.EXE /D /E:ON /V:OFF /S /C "CALL "{0}""
+2026-02-22T02:42:11.1414652Z env:
+2026-02-22T02:42:11.1414837Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:11.1415115Z ##[endgroup]
+2026-02-22T02:42:11.2763207Z C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+2026-02-22T02:42:11.2867124Z Python 3.10.6
+2026-02-22T02:42:11.2879535Z RUNNER_TEMP=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp
+2026-02-22T02:42:11.2881599Z GITHUB_WORKSPACE=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI
+
+----- FILE: actions_logs/run/7_Verify required scripts.txt -----
+﻿2026-02-22T02:42:11.3025049Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:42:11.3025801Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:42:11.3026072Z [36;1mSet-Location $env:REPO_ROOT[0m
+2026-02-22T02:42:11.3026290Z [36;1m[0m
+2026-02-22T02:42:11.3026499Z [36;1m$reportDir = Join-Path $env:REPO_ROOT 'temp'[0m
+2026-02-22T02:42:11.3026878Z [36;1m$null = New-Item -Path $reportDir -ItemType Directory -Force[0m
+2026-02-22T02:42:11.3027329Z [36;1m$reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:42:11.3027707Z [36;1m[0m
+2026-02-22T02:42:11.3027924Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:11.3028265Z [36;1m  '[STEP] verify_required_scripts',[0m
+2026-02-22T02:42:11.3028556Z [36;1m  ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),[0m
+2026-02-22T02:42:11.3028911Z [36;1m  ('[INFO] GITHUB_WORKSPACE={0}' -f $env:GITHUB_WORKSPACE),[0m
+2026-02-22T02:42:11.3029620Z [36;1m  ('[INFO] ***' -f $PWD),[0m
+2026-02-22T02:42:11.3029905Z [36;1m  ''[0m
+2026-02-22T02:42:11.3030164Z [36;1m)[0m
+2026-02-22T02:42:11.3030324Z [36;1m[0m
+2026-02-22T02:42:11.3030522Z [36;1mWrite-Host '=== Verify scripts directory ==='[0m
+2026-02-22T02:42:11.3030836Z [36;1mWrite-Host "REPO_ROOT=$env:REPO_ROOT"[0m
+2026-02-22T02:42:11.3031153Z [36;1m$headShort = git rev-parse --short HEAD 2>$null[0m
+2026-02-22T02:42:11.3031475Z [36;1mif ($LASTEXITCODE -eq 0 -and $headShort) {[0m
+2026-02-22T02:42:11.3031800Z [36;1m  Write-Host ("HEAD={0}" -f $headShort.Trim())[0m
+2026-02-22T02:42:11.3032070Z [36;1m} else {[0m
+2026-02-22T02:42:11.3032437Z [36;1m  Write-Warning 'Unable to resolve HEAD via git rev-parse --short HEAD'[0m
+2026-02-22T02:42:11.3057245Z [36;1m}[0m
+2026-02-22T02:42:11.3057546Z [36;1mWrite-Host 'git ls-files scripts (best effort):'[0m
+2026-02-22T02:42:11.3057884Z [36;1mgit ls-files scripts 2>$null[0m
+2026-02-22T02:42:11.3058172Z [36;1m$scriptsDir = Join-Path $env:REPO_ROOT 'scripts'[0m
+2026-02-22T02:42:11.3058494Z [36;1mWrite-Host "scripts_dir=$scriptsDir"[0m
+2026-02-22T02:42:11.3058829Z [36;1mif (Test-Path $scriptsDir) {[0m
+2026-02-22T02:42:11.3059349Z [36;1m  Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize[0m
+2026-02-22T02:42:11.3059830Z [36;1m} else {[0m
+2026-02-22T02:42:11.3060088Z [36;1m  Write-Warning "scripts directory not found: $scriptsDir"[0m
+2026-02-22T02:42:11.3060400Z [36;1m}[0m
+2026-02-22T02:42:11.3060537Z [36;1m[0m
+2026-02-22T02:42:11.3060694Z [36;1m$expected = @([0m
+2026-02-22T02:42:11.3060994Z [36;1m  (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat'),[0m
+2026-02-22T02:42:11.3061445Z [36;1m  (Join-Path $env:REPO_ROOT 'scripts\package_diagnostics.ps1'),[0m
+2026-02-22T02:42:11.3061921Z [36;1m  (Join-Path $env:REPO_ROOT 'scripts\package_diagnostics_to_onedrive.ps1')[0m
+2026-02-22T02:42:11.3062283Z [36;1m)[0m
+2026-02-22T02:42:11.3062427Z [36;1m[0m
+2026-02-22T02:42:11.3062574Z [36;1m$missing = @()[0m
+2026-02-22T02:42:11.3062779Z [36;1mforeach ($path in $expected) {[0m
+2026-02-22T02:42:11.3063035Z [36;1m  if (Test-Path $path) {[0m
+2026-02-22T02:42:11.3063259Z [36;1m    Write-Host "[FOUND] $path"[0m
+2026-02-22T02:42:11.3063484Z [36;1m  } else {[0m
+2026-02-22T02:42:11.3063726Z [36;1m    Write-Warning "[MISSING] $path"[0m
+2026-02-22T02:42:11.3064002Z [36;1m    $missing += $path[0m
+2026-02-22T02:42:11.3064199Z [36;1m  }[0m
+2026-02-22T02:42:11.3064343Z [36;1m}[0m
+2026-02-22T02:42:11.3064480Z [36;1m[0m
+2026-02-22T02:42:11.3064633Z [36;1m$searchResults = [ordered]@{}[0m
+2026-02-22T02:42:11.3065170Z [36;1mforeach ($fileName in @('run_all_local_then_copy.bat', 'package_diagnostics.ps1', 'package_diagnostics_to_onedrive.ps1')) {[0m
+2026-02-22T02:42:11.3066113Z [36;1m  $hits = Get-ChildItem -Path $env:REPO_ROOT -Recurse -Filter $fileName -File -ErrorAction SilentlyContinue |[0m
+2026-02-22T02:42:11.3066725Z [36;1m    Select-Object -First 5 -ExpandProperty FullName[0m
+2026-02-22T02:42:11.3067157Z [36;1m  $searchResults[$fileName] = if ($hits) { $hits } else { @('(no matches)') }[0m
+2026-02-22T02:42:11.3069946Z [36;1m}[0m
+2026-02-22T02:42:11.3070097Z [36;1m[0m
+2026-02-22T02:42:11.3070295Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:11.3070581Z [36;1m  '## REQUIRED_SCRIPT_CHECK',[0m
+2026-02-22T02:42:11.3070845Z [36;1m  ('repo_root={0}' -f $env:REPO_ROOT),[0m
+2026-02-22T02:42:11.3071177Z [36;1m  ('scripts_dir_exists={0}' -f (Test-Path $scriptsDir)),[0m
+2026-02-22T02:42:11.3071513Z [36;1m  ('scripts_dir={0}' -f $scriptsDir),[0m
+2026-02-22T02:42:11.3071749Z [36;1m  '',[0m
+2026-02-22T02:42:11.3071966Z [36;1m  '### scripts_dir_listing',[0m
+2026-02-22T02:42:11.3072212Z [36;1m  $([0m
+2026-02-22T02:42:11.3072394Z [36;1m    if (Test-Path $scriptsDir) {[0m
+2026-02-22T02:42:11.3072816Z [36;1m      $listing = Get-ChildItem -Path $scriptsDir | Sort-Object Name | ForEach-Object {[0m
+2026-02-22T02:42:11.3073342Z [36;1m        '- {0} | len={1} | mtime={2}' -f $_.Name, $_.Length, $_.LastWriteTime[0m
+2026-02-22T02:42:11.3073688Z [36;1m      }[0m
+2026-02-22T02:42:11.3073908Z [36;1m      if ($listing) { $listing } else { '- (empty)' }[0m
+2026-02-22T02:42:11.3074189Z [36;1m    } else {[0m
+2026-02-22T02:42:11.3074471Z [36;1m      '- (scripts directory missing)'[0m
+2026-02-22T02:42:11.3074727Z [36;1m    }[0m
+2026-02-22T02:42:11.3074876Z [36;1m  ),[0m
+2026-02-22T02:42:11.3075018Z [36;1m  '',[0m
+2026-02-22T02:42:11.3075172Z [36;1m  '### FOUND',[0m
+2026-02-22T02:42:11.3075484Z [36;1m  ($expected | Where-Object { Test-Path $_ } | ForEach-Object { "- $_" }),[0m
+2026-02-22T02:42:11.3075847Z [36;1m  '',[0m
+2026-02-22T02:42:11.3076000Z [36;1m  '### MISSING',[0m
+2026-02-22T02:42:11.3076368Z [36;1m  ($(if ($missing.Count -gt 0) { $missing | ForEach-Object { "- $_" } } else { '- (none)' })),[0m
+2026-02-22T02:42:11.3076818Z [36;1m  '',[0m
+2026-02-22T02:42:11.3077039Z [36;1m  '### recursive_search_run_all_local_then_copy.bat',[0m
+2026-02-22T02:42:11.3077492Z [36;1m  ($searchResults['run_all_local_then_copy.bat'] | ForEach-Object { "- $_" }),[0m
+2026-02-22T02:42:11.3077899Z [36;1m  '',[0m
+2026-02-22T02:42:11.3078117Z [36;1m  '### recursive_search_package_diagnostics.ps1',[0m
+2026-02-22T02:42:11.3078532Z [36;1m  ($searchResults['package_diagnostics.ps1'] | ForEach-Object { "- $_" }),[0m
+2026-02-22T02:42:11.3078897Z [36;1m  '',[0m
+2026-02-22T02:42:11.3079146Z [36;1m  '### recursive_search_package_diagnostics_to_onedrive.ps1',[0m
+2026-02-22T02:42:11.3079700Z [36;1m  ($searchResults['package_diagnostics_to_onedrive.ps1'] | ForEach-Object { "- $_" }),[0m
+2026-02-22T02:42:11.3080117Z [36;1m  '',[0m
+2026-02-22T02:42:11.3080273Z [36;1m  '## NEXT_ACTION',[0m
+2026-02-22T02:42:11.3080591Z [36;1m  '- Open Artifact desktop-run-* and copy ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:42:11.3080924Z [36;1m)[0m
+2026-02-22T02:42:11.3081066Z [36;1m[0m
+2026-02-22T02:42:11.3081222Z [36;1mif ($missing.Count -gt 0) {[0m
+2026-02-22T02:42:11.3081564Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:11.3081921Z [36;1m    '[NG] verify_required_scripts',[0m
+2026-02-22T02:42:11.3082219Z [36;1m    ('[NG] missing_count={0}' -f $missing.Count),[0m
+2026-02-22T02:42:11.3082487Z [36;1m    ''[0m
+2026-02-22T02:42:11.3082634Z [36;1m  )[0m
+2026-02-22T02:42:11.3082781Z [36;1m} else {[0m
+2026-02-22T02:42:11.3082990Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:11.3083285Z [36;1m    '[OK] verify_required_scripts',[0m
+2026-02-22T02:42:11.3083517Z [36;1m    ''[0m
+2026-02-22T02:42:11.3083663Z [36;1m  )[0m
+2026-02-22T02:42:11.3083855Z [36;1m}[0m
+2026-02-22T02:42:11.3084023Z [36;1m[0m
+2026-02-22T02:42:11.3084210Z [36;1mif ($missing.Count -gt 0) {[0m
+2026-02-22T02:42:11.3084506Z [36;1m  Write-Host '=== Required scripts debug summary ==='[0m
+2026-02-22T02:42:11.3084839Z [36;1m  Write-Host "REPO_ROOT=$env:REPO_ROOT"[0m
+2026-02-22T02:42:11.3085121Z [36;1m  Write-Host "scriptsDir=$scriptsDir"[0m
+2026-02-22T02:42:11.3086057Z [36;1m  if (Test-Path $scriptsDir) {[0m
+2026-02-22T02:42:11.3086333Z [36;1m    Write-Host 'scriptsDir listing:'[0m
+2026-02-22T02:42:11.3086889Z [36;1m    Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize[0m
+2026-02-22T02:42:11.3087495Z [36;1m  }[0m
+2026-02-22T02:42:11.3087690Z [36;1m  foreach ($fileName in $searchResults.Keys) {[0m
+2026-02-22T02:42:11.3088007Z [36;1m    Write-Host "search($fileName):"[0m
+2026-02-22T02:42:11.3088340Z [36;1m    $searchResults[$fileName] | ForEach-Object { Write-Host "  $_" }[0m
+2026-02-22T02:42:11.3088667Z [36;1m  }[0m
+2026-02-22T02:42:11.3088980Z [36;1m  $missingNames = $missing | ForEach-Object { Split-Path $_ -Leaf }[0m
+2026-02-22T02:42:11.3089488Z [36;1m  throw ("Required scripts missing: {0}" -f (($missingNames | Sort-Object -Unique) -join ', '))[0m
+2026-02-22T02:42:11.3089889Z [36;1m}[0m
+2026-02-22T02:42:11.3107124Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:11.3107659Z env:
+2026-02-22T02:42:11.3107945Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:11.3108276Z ##[endgroup]
+2026-02-22T02:42:11.5349291Z === Verify scripts directory ===
+2026-02-22T02:42:11.5363971Z REPO_ROOT=C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:11.5699407Z HEAD=78098d7
+2026-02-22T02:42:11.5702921Z git ls-files scripts (best effort):
+2026-02-22T02:42:11.5926123Z scripts/bat_config.bat
+2026-02-22T02:42:11.5926664Z scripts/copy_run_to_onedrive.bat
+2026-02-22T02:42:11.5926936Z scripts/doctor.bat
+2026-02-22T02:42:11.5927171Z scripts/evaluate_run_outputs.py
+2026-02-22T02:42:11.5927453Z scripts/package_diagnostics.ps1
+2026-02-22T02:42:11.5927757Z scripts/package_diagnostics_to_onedrive.ps1
+2026-02-22T02:42:11.5928079Z scripts/run_all_local_then_copy.bat
+2026-02-22T02:42:11.5968922Z scripts_dir=C:\work\apex_repo_cache\ApexTraderAI\scripts
+2026-02-22T02:42:11.6055984Z 
+2026-02-22T02:42:11.6073958Z Name                                Length LastWriteTime      
+2026-02-22T02:42:11.6075177Z ----                                ------ -------------      
+2026-02-22T02:42:11.6078839Z bat_config.bat                        1658 2026/02/22 10:59:45
+2026-02-22T02:42:11.6079431Z copy_run_to_onedrive.bat              1072 2026/02/21 10:12:46
+2026-02-22T02:42:11.6083424Z doctor.bat                            1973 2026/02/21 10:12:46
+2026-02-22T02:42:11.6086043Z evaluate_run_outputs.py              17495 2026/02/22 11:42:09
+2026-02-22T02:42:11.6090465Z package_diagnostics.ps1                801 2026/02/21 10:12:46
+2026-02-22T02:42:11.6093070Z package_diagnostics_to_onedrive.ps1   3248 2026/02/21 10:51:29
+2026-02-22T02:42:11.6097030Z run_all_local_then_copy.bat           9260 2026/02/22 10:59:45
+2026-02-22T02:42:11.6097426Z 
+2026-02-22T02:42:11.6097436Z 
+2026-02-22T02:42:11.6106948Z [FOUND] C:\work\apex_repo_cache\ApexTraderAI\scripts\run_all_local_then_copy.bat
+2026-02-22T02:42:11.6111629Z [FOUND] C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics.ps1
+2026-02-22T02:42:11.6118745Z [FOUND] C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
+
+----- FILE: actions_logs/run/8_Runner connectivity and host status.txt -----
+﻿2026-02-22T02:42:11.7081089Z ##[group]Run Write-Host '=== Runner connectivity / host status ==='
+2026-02-22T02:42:11.7081635Z [36;1mWrite-Host '=== Runner connectivity / host status ==='[0m
+2026-02-22T02:42:11.7081947Z [36;1mwhoami[0m
+2026-02-22T02:42:11.7082106Z [36;1mhostname[0m
+2026-02-22T02:42:11.7082332Z [36;1mGet-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'[0m
+2026-02-22T02:42:11.7082656Z [36;1mWrite-Host "RUNNER_NAME=$env:RUNNER_NAME"[0m
+2026-02-22T02:42:11.7082948Z [36;1mWrite-Host "RUNNER_OS=$env:RUNNER_OS"[0m
+2026-02-22T02:42:11.7083258Z [36;1mWrite-Host "RUNNER_ARCH=$env:RUNNER_ARCH"[0m
+2026-02-22T02:42:11.7083607Z [36;1mWrite-Host "GITHUB_WORKFLOW=$env:GITHUB_WORKFLOW"[0m
+2026-02-22T02:42:11.7083949Z [36;1mWrite-Host "GITHUB_RUN_ID=$env:GITHUB_RUN_ID"[0m
+2026-02-22T02:42:11.7084524Z [36;1mGet-Process | Where-Object { $_.Name -like '*Runner*' } |[0m
+2026-02-22T02:42:11.7084890Z [36;1m  Select-Object Name, Id, StartTime |[0m
+2026-02-22T02:42:11.7085160Z [36;1m  Format-Table -AutoSize[0m
+2026-02-22T02:42:11.7102145Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:11.7102745Z env:
+2026-02-22T02:42:11.7102944Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:11.7103212Z ##[endgroup]
+2026-02-22T02:42:11.9350934Z === Runner connectivity / host status ===
+2026-02-22T02:42:11.9471393Z desktop-c54piia\becky
+2026-02-22T02:42:11.9628007Z DESKTOP-C54PIIA
+2026-02-22T02:42:11.9694582Z 2026-02-22 11:42:11 +09:00
+2026-02-22T02:42:11.9711219Z RUNNER_NAME=DESKTOP-C54PIIA
+2026-02-22T02:42:11.9718361Z RUNNER_OS=Windows
+2026-02-22T02:42:11.9737681Z RUNNER_ARCH=X64
+2026-02-22T02:42:11.9757151Z GITHUB_WORKFLOW=Run Desktop Pipeline
+2026-02-22T02:42:11.9775832Z GITHUB_RUN_ID=22269035409
+2026-02-22T02:42:12.0154581Z 
+2026-02-22T02:42:12.0209144Z Name               Id StartTime          
+2026-02-22T02:42:12.0209959Z ----               -- ---------          
+2026-02-22T02:42:12.0210766Z Runner.Listener  6168 2026/02/22 9:38:51 
+2026-02-22T02:42:12.0211436Z Runner.Worker     792 2026/02/22 11:42:03
+2026-02-22T02:42:12.0212348Z RunnerService   14772 2026/02/22 9:38:51 
+2026-02-22T02:42:12.0212749Z 
+2026-02-22T02:42:12.0212827Z 
+
+----- FILE: actions_logs/run/9_Run desktop BAT.txt -----
+﻿2026-02-22T02:42:12.0491397Z ##[group]Run $ErrorActionPreference = 'Stop'
+2026-02-22T02:42:12.0491846Z [36;1m$ErrorActionPreference = 'Stop'[0m
+2026-02-22T02:42:12.0492110Z [36;1mSet-Location $env:REPO_ROOT[0m
+2026-02-22T02:42:12.0492495Z [36;1m$consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'[0m
+2026-02-22T02:42:12.0493039Z [36;1m$reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'[0m
+2026-02-22T02:42:12.0493472Z [36;1m[0m
+2026-02-22T02:42:12.0493679Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:12.0493984Z [36;1m  '[STEP] run_desktop_bat',[0m
+2026-02-22T02:42:12.0494254Z [36;1m  ('[INFO] console_log={0}' -f $consoleLog)[0m
+2026-02-22T02:42:12.0494505Z [36;1m)[0m
+2026-02-22T02:42:12.0494668Z [36;1m$batCandidates = @([0m
+2026-02-22T02:42:12.0494983Z [36;1m  (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat')[0m
+2026-02-22T02:42:12.0495373Z [36;1m)[0m
+2026-02-22T02:42:12.0495695Z [36;1m$bat = $batCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1[0m
+2026-02-22T02:42:12.0496120Z [36;1m[0m
+2026-02-22T02:42:12.0496332Z [36;1mWrite-Host '=== Run desktop BAT preflight ==='[0m
+2026-02-22T02:42:12.0496747Z [36;1mWrite-Host "***"[0m
+2026-02-22T02:42:12.0496988Z [36;1mWrite-Host "REPO_ROOT=$env:REPO_ROOT"[0m
+2026-02-22T02:42:12.0497322Z [36;1mWrite-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"[0m
+2026-02-22T02:42:12.0497674Z [36;1mWrite-Host "RUNNER_TEMP=$env:RUNNER_TEMP"[0m
+2026-02-22T02:42:12.0498196Z [36;1mGet-ChildItem (Join-Path $env:REPO_ROOT 'scripts') | Select-Object Name[0m
+2026-02-22T02:42:12.0498616Z [36;1m& where.exe python 2>$null[0m
+2026-02-22T02:42:12.0498968Z [36;1mWrite-Host ("BAT candidate paths: {0}" -f ($batCandidates -join '; '))[0m
+2026-02-22T02:42:12.0499325Z [36;1m[0m
+2026-02-22T02:42:12.0499472Z [36;1mif (-not $bat) {[0m
+2026-02-22T02:42:12.0499723Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:12.0499994Z [36;1m    '[NG] run_desktop_bat',[0m
+2026-02-22T02:42:12.0500310Z [36;1m    '[NG] BAT not found',[0m
+2026-02-22T02:42:12.0500543Z [36;1m    ''[0m
+2026-02-22T02:42:12.0500699Z [36;1m  )[0m
+2026-02-22T02:42:12.0501139Z [36;1m  Write-Error "BAT not found. candidates=$($batCandidates -join '; ')"[0m
+2026-02-22T02:42:12.0501517Z [36;1m  exit 1[0m
+2026-02-22T02:42:12.0501692Z [36;1m}[0m
+2026-02-22T02:42:12.0501840Z [36;1m[0m
+2026-02-22T02:42:12.0502018Z [36;1m$bat = (Get-Item $bat).FullName[0m
+2026-02-22T02:42:12.0502348Z [36;1mWrite-Host ("Executing BAT full path: {0}" -f $bat)[0m
+2026-02-22T02:42:12.0502895Z [36;1m[0m
+2026-02-22T02:42:12.0503196Z [36;1m$null = New-Item -Path $consoleLog -ItemType File -Force[0m
+2026-02-22T02:42:12.0503693Z [36;1mAdd-Content -Path $consoleLog -Value ("[BAT_FULL_PATH]={0}" -f $bat)[0m
+2026-02-22T02:42:12.0504068Z [36;1m[0m
+2026-02-22T02:42:12.0504302Z [36;1mWrite-Host '=== Python diagnostics (before BAT) ==='[0m
+2026-02-22T02:42:12.0504762Z [36;1m& where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append[0m
+2026-02-22T02:42:12.0505251Z [36;1m& python --version 2>&1 | Tee-Object -FilePath $consoleLog -Append[0m
+2026-02-22T02:42:12.0505707Z [36;1mWrite-Host '=== PATH (before BAT) ==='[0m
+2026-02-22T02:42:12.0506009Z [36;1mWrite-Host $env:PATH[0m
+2026-02-22T02:42:12.0506337Z [36;1mAdd-Content -Path $consoleLog -Value ('[PATH] ' + $env:PATH)[0m
+2026-02-22T02:42:12.0506686Z [36;1m[0m
+2026-02-22T02:42:12.0506913Z [36;1m& $bat 2>&1 | Tee-Object -FilePath $consoleLog -Append[0m
+2026-02-22T02:42:12.0507239Z [36;1m$rc = $LASTEXITCODE[0m
+2026-02-22T02:42:12.0507458Z [36;1mWrite-Host "[RC]=$rc"[0m
+2026-02-22T02:42:12.0507772Z [36;1mAdd-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)[0m
+2026-02-22T02:42:12.0508145Z [36;1m[0m
+2026-02-22T02:42:12.0508344Z [36;1mif ($rc -ne 0) {[0m
+2026-02-22T02:42:12.0508597Z [36;1m  Add-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:12.0508889Z [36;1m    '[NG] run_desktop_bat',[0m
+2026-02-22T02:42:12.0510538Z [36;1m    ('[NG] exit_code={0}' -f $rc),[0m
+2026-02-22T02:42:12.0519621Z [36;1m    ''[0m
+2026-02-22T02:42:12.0519828Z [36;1m  )[0m
+2026-02-22T02:42:12.0520108Z [36;1m  Write-Warning "Run desktop BAT failed with rc=$rc"[0m
+2026-02-22T02:42:12.0520623Z [36;1m  $workRoot = 'C:\work\apex_work\runs'[0m
+2026-02-22T02:42:12.0520884Z [36;1m  $runDir = $null[0m
+2026-02-22T02:42:12.0521085Z [36;1m  if (Test-Path $workRoot) {[0m
+2026-02-22T02:42:12.0521630Z [36;1m    $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1[0m
+2026-02-22T02:42:12.0522179Z [36;1m  }[0m
+2026-02-22T02:42:12.0522324Z [36;1m[0m
+2026-02-22T02:42:12.0522474Z [36;1m  if ($runDir) {[0m
+2026-02-22T02:42:12.0522836Z [36;1m    $runLog = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)[0m
+2026-02-22T02:42:12.0523333Z [36;1m    Write-Host ("Latest run_dir={0}" -f $runDir.FullName)[0m
+2026-02-22T02:42:12.0523712Z [36;1m    Write-Host ("Expected run_log={0}" -f $runLog)[0m
+2026-02-22T02:42:12.0524007Z [36;1m    if (Test-Path $runLog) {[0m
+2026-02-22T02:42:12.0524292Z [36;1m      Write-Host '=== tail run_*.log (260 lines) ==='[0m
+2026-02-22T02:42:12.0524611Z [36;1m      Get-Content -Path $runLog -Tail 260[0m
+2026-02-22T02:42:12.0524876Z [36;1m    } else {[0m
+2026-02-22T02:42:12.0525152Z [36;1m      Write-Warning ("run log not found: {0}" -f $runLog)[0m
+2026-02-22T02:42:12.0525476Z [36;1m    }[0m
+2026-02-22T02:42:12.0525639Z [36;1m  } else {[0m
+2026-02-22T02:42:12.0525919Z [36;1m    Write-Warning ("No run directories found under {0}" -f $workRoot)[0m
+2026-02-22T02:42:12.0526264Z [36;1m  }[0m
+2026-02-22T02:42:12.0526409Z [36;1m  exit $rc[0m
+2026-02-22T02:42:12.0526571Z [36;1m}[0m
+2026-02-22T02:42:12.0526707Z [36;1m[0m
+2026-02-22T02:42:12.0526897Z [36;1mAdd-Content -Path $reportPath -Value @([0m
+2026-02-22T02:42:12.0527169Z [36;1m  '[OK] run_desktop_bat',[0m
+2026-02-22T02:42:12.0527402Z [36;1m  '[OK] exit_code=0',[0m
+2026-02-22T02:42:12.0527682Z [36;1m  ''[0m
+2026-02-22T02:42:12.0527856Z [36;1m)[0m
+2026-02-22T02:42:12.0527999Z [36;1m[0m
+2026-02-22T02:42:12.0528249Z [36;1mif ((Get-Item $reportPath).Length -gt 60000) {[0m
+2026-02-22T02:42:12.0528735Z [36;1m  $tail = Get-Content -Path $reportPath -Raw[0m
+2026-02-22T02:42:12.0529200Z [36;1m  $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))[0m
+2026-02-22T02:42:12.0529843Z [36;1m  Set-Content -Path $reportPath -Value $tail -Encoding UTF8[0m
+2026-02-22T02:42:12.0531363Z [36;1m}[0m
+2026-02-22T02:42:12.0531518Z [36;1m[0m
+2026-02-22T02:42:12.0531670Z [36;1mexit 0[0m
+2026-02-22T02:42:12.0550275Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+2026-02-22T02:42:12.0550988Z env:
+2026-02-22T02:42:12.0551199Z   REPO_ROOT: C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:12.0551473Z   INPUT_MODE: sim
+2026-02-22T02:42:12.0551656Z   INPUT_SYMBOLS: SOXL,SOXS
+2026-02-22T02:42:12.0551852Z   INPUT_START: 2014-01-01
+2026-02-22T02:42:12.0552039Z   INPUT_END: 2022-03-31
+2026-02-22T02:42:12.0552247Z   INPUT_TEST_START: 2022-01-03
+2026-02-22T02:42:12.0552466Z   INPUT_TRAIN_YEARS: 8
+2026-02-22T02:42:12.0552641Z   INPUT_TEST_MONTHS: 3
+2026-02-22T02:42:12.0552837Z   INPUT_COPY_TO_ONEDRIVE: true
+2026-02-22T02:42:12.0553049Z   INPUT_STEPS: A,B,C,D,DPRIME,E,F
+2026-02-22T02:42:12.0553287Z   INPUT_SKIP_STEPE: false
+2026-02-22T02:42:12.0553468Z   RUN_MODE: sim
+2026-02-22T02:42:12.0553647Z   SYMBOLS: SOXL,SOXS
+2026-02-22T02:42:12.0553809Z   SYMBOL: SOXL
+2026-02-22T02:42:12.0553973Z   STEPS: A,B,C,D,DPRIME,E,F
+2026-02-22T02:42:12.0554169Z   SKIP_STEPE: 0
+2026-02-22T02:42:12.0554329Z   DATA_START: 2014-01-01
+2026-02-22T02:42:12.0554570Z   DATA_END: 2022-03-31
+2026-02-22T02:42:12.0554766Z   TEST_START: 2022-01-03
+2026-02-22T02:42:12.0554999Z   TRAIN_YEARS: 8
+2026-02-22T02:42:12.0555160Z   TEST_MONTHS: 3
+2026-02-22T02:42:12.0555337Z   WORK_ROOT: C:\work\apex_work\runs
+2026-02-22T02:42:12.0556282Z   COPY_TO_ONEDRIVE: 1
+2026-02-22T02:42:12.0556456Z   PYTHON_EXE: python
+2026-02-22T02:42:12.0556624Z ##[endgroup]
+2026-02-22T02:42:12.3603784Z === Run desktop BAT preflight ===
+2026-02-22T02:42:12.3620367Z ***
+2026-02-22T02:42:12.3629796Z REPO_ROOT=C:\work\apex_repo_cache\ApexTraderAI
+2026-02-22T02:42:12.3634626Z GITHUB_WORKSPACE=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI
+2026-02-22T02:42:12.3639161Z RUNNER_TEMP=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp
+2026-02-22T02:42:12.3676660Z 
+2026-02-22T02:42:12.4916853Z C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+2026-02-22T02:42:12.4944819Z BAT candidate paths: C:\work\apex_repo_cache\ApexTraderAI\scripts\run_all_local_then_copy.bat
+2026-02-22T02:42:12.4993340Z Executing BAT full path: C:\work\apex_repo_cache\ApexTraderAI\scripts\run_all_local_then_copy.bat
+2026-02-22T02:42:12.5030674Z === Python diagnostics (before BAT) ===
+2026-02-22T02:42:12.6395022Z === PATH (before BAT) ===
+2026-02-22T02:42:12.6404205Z C:\Program Files\Oculus\Support\oculus-runtime;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files (x86)\Intel\Intel(R) Management Engine Components\DAL;C:\Program Files\Intel\Intel(R) Management Engine Components\DAL;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Program Files (x86)\QuickTime\QTSystem\;C:\Program Files\Git\cmd;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Users\becky\AppData\Local\Programs\Python\Python310\;C:\ffmpeg\bin\;
+2026-02-22T02:42:13.0114937Z Name                               
+2026-02-22T02:42:13.0115428Z ----                               
+2026-02-22T02:42:13.0115856Z bat_config.bat                     
+2026-02-22T02:42:13.0116356Z copy_run_to_onedrive.bat           
+2026-02-22T02:42:13.0116709Z doctor.bat                         
+2026-02-22T02:42:13.0117008Z evaluate_run_outputs.py            
+2026-02-22T02:42:13.0117450Z package_diagnostics.ps1            
+2026-02-22T02:42:13.0117855Z package_diagnostics_to_onedrive.ps1
+2026-02-22T02:42:13.0118263Z run_all_local_then_copy.bat        
+2026-02-22T02:42:13.0119303Z C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+2026-02-22T02:42:13.0119700Z Python 3.10.6
+2026-02-22T02:42:13.0120145Z [RC] 
+2026-02-22T02:42:13.0680607Z [RC] 
+2026-02-22T02:42:13.2296259Z [RC] 
+2026-02-22T02:42:13.2873889Z [RC] 
+2026-02-22T02:42:13.3301330Z [RC] 
+2026-02-22T02:42:15.4719350Z [RC] 
+2026-02-22T02:44:50.7887254Z [RC] 
+2026-02-22T02:45:00.7028352Z [RC] 
+2026-02-22T02:45:00.7470181Z [RC] 
+2026-02-22T02:45:01.5658986Z [OK] repo_snapshots already exists: "C:\Users\becky\OneDrive\ApexTraderAI\repo_snapshots"
+2026-02-22T02:45:01.7469096Z [RC] 
+2026-02-22T02:45:01.7605740Z [OK] run_id=20260222_114212
+2026-02-22T02:45:01.7606429Z [OK] local=C:\work\apex_work\runs\20260222_114212
+2026-02-22T02:45:01.7607963Z [OK] onedrive=C:\Users\becky\OneDrive\ApexTraderAI\runs\20260222_114212
+2026-02-22T02:45:01.7651739Z [RC]=0
+2026-02-22T02:45:01.7733582Z 
+2026-02-22T02:45:01.7733635Z 
+
+----- FILE: actions_logs/run/system.txt -----
+2026-02-22T02:41:59.1470000Z Evaluating run.if
+2026-02-22T02:41:59.1470000Z Evaluating: success()
+2026-02-22T02:41:59.1470000Z Result: true
+2026-02-22T02:41:59.6460000Z Requested labels: self-hosted, windows
+2026-02-22T02:41:59.6460000Z Job defined at: toki866/ApexTraderAI/.github/workflows/run_desktop_pipeline.yml@refs/heads/main
+2026-02-22T02:41:59.6460000Z Waiting for a runner to pick up this job...
+2026-02-22T02:41:59.6540000Z Job is about to start running on the runner: DESKTOP-C54PIIA
