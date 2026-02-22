@@ -322,16 +322,16 @@ def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
         # StepDPrime currently emits source=mamba for horizons 1/5/10/20.
         # Keep historical agent names for compatibility, but align load targets
         # so StepE expects existing artifacts and does not crash in headless runs.
-        {"agent": "dprime_bnf_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A"},
-        {"agent": "dprime_bnf_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B"},
-        {"agent": "dprime_bnf_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C"},
-        {"agent": "dprime_all_features_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A"},
-        {"agent": "dprime_all_features_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B"},
-        {"agent": "dprime_all_features_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C"},
-        {"agent": "dprime_mix_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "D"},
-        {"agent": "dprime_bnf_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
-        {"agent": "dprime_all_features_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
-        {"agent": "dprime_mix_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D"},
+        {"agent": "dprime_bnf_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A", "dprime_state_variant": "bnf"},
+        {"agent": "dprime_bnf_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B", "dprime_state_variant": "bnf"},
+        {"agent": "dprime_bnf_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C", "dprime_state_variant": "bnf"},
+        {"agent": "dprime_all_features_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A", "dprime_state_variant": "all_features"},
+        {"agent": "dprime_all_features_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B", "dprime_state_variant": "all_features"},
+        {"agent": "dprime_all_features_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C", "dprime_state_variant": "all_features"},
+        {"agent": "dprime_mix_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "D", "dprime_state_variant": "mix"},
+        {"agent": "dprime_bnf_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "bnf"},
+        {"agent": "dprime_all_features_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "all_features"},
+        {"agent": "dprime_mix_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "mix"},
     ]
 
 
@@ -352,6 +352,8 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.output_root = str(output_root)
         cfg.obs_profile = str(spec["obs_profile"])
         cfg.use_stepd_prime = True
+        cfg.use_dprime_state = True
+        cfg.dprime_state_variant = str(spec["dprime_state_variant"])
         cfg.dprime_sources = str(spec["dprime_sources"])
         cfg.dprime_horizons = str(spec["dprime_horizons"])
         cfg.dprime_join = "inner"
