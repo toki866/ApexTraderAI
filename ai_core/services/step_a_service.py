@@ -49,7 +49,7 @@ Compatibility
 -------------
 - Periodic column names are now **explicit** (still 44 columns total):
   per_cal_* (calendar), per_astro_* (moon/solstice), per_planet_* (retro flag/speed), per_h2_*/per_h3_* (harmonics)
-- Technical column names remain: Gap, RSI, MACD, MACD_signal
+- Technical column names remain: Gap, ATR_norm, RSI, MACD, MACD_signal
   BNF: BNF_RVOL20, BNF_VolZ20, BNF_Return1, BNF_BodyPct, BNF_RangePct,
        BNF_DivDownVolUp, BNF_EnergyFade, BNF_PanicScore
 """
@@ -614,6 +614,7 @@ class StepAService:
 
         # Technicals (causal)
         df_feat["Gap"] = self._gap(df_prices)
+        df_feat["ATR_norm"] = self._atr_norm(df_prices, period=14)
         df_feat["RSI"] = self._rsi(df_prices["Close"], period=14)
         macd, macd_sig = self._macd(df_prices["Close"], fast=12, slow=26, signal=9)
         df_feat["MACD"] = macd
@@ -757,8 +758,29 @@ class StepAService:
     # Internals: indicators
     # -------------------------
     def _gap(self, df_prices: pd.DataFrame) -> pd.Series:
-        prev_close = df_prices["Close"].shift(1)
-        return (df_prices["Open"] - prev_close).fillna(0.0)
+        open_ = pd.to_numeric(df_prices["Open"], errors="coerce").astype(float)
+        prev_close = pd.to_numeric(df_prices["Close"], errors="coerce").astype(float).shift(1)
+        gap = (open_ / prev_close.replace(0.0, math.nan)) - 1.0
+        return gap.replace([math.inf, -math.inf], math.nan).fillna(0.0)
+
+    def _atr_norm(self, df_prices: pd.DataFrame, period: int = 14) -> pd.Series:
+        high = pd.to_numeric(df_prices["High"], errors="coerce").astype(float)
+        low = pd.to_numeric(df_prices["Low"], errors="coerce").astype(float)
+        close = pd.to_numeric(df_prices["Close"], errors="coerce").astype(float)
+
+        prev_close = close.shift(1)
+        tr_components = pd.concat(
+            [
+                (high - low).abs(),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        )
+        tr = tr_components.max(axis=1)
+        atr14 = tr.rolling(window=period, min_periods=period).mean()
+        atr_norm = atr14 / prev_close.replace(0.0, math.nan)
+        return atr_norm.replace([math.inf, -math.inf], math.nan).fillna(0.0)
 
     def _rsi(self, close: pd.Series, period: int = 14) -> pd.Series:
         delta = close.diff()
