@@ -948,7 +948,8 @@ jobs:
           $stepPatternSpecs = @(
             @{ Label = 'StepA'; Base = 'stepA'; Patterns = @('*.csv') },
             @{ Label = 'StepB'; Base = 'stepB'; Patterns = @('*.csv') },
-            @{ Label = 'StepDPrime'; Base = 'stepD_prime'; Patterns = @('*.csv') },
+            @{ Label = 'DPrimeState'; Base = 'stepD_prime'; Patterns = @('stepDprime_state_*_train.csv', 'stepDprime_state_*_test.csv') },
+            @{ Label = 'DPrimeEmbeddings'; Base = 'stepD_prime'; Patterns = @('stepDprime_*_embeddings*.csv') },
             @{ Label = 'StepE'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv', 'stepE_equity_*.csv', 'stepE_summary_*.json') },
             @{ Label = 'StepF'; Base = 'stepF'; Patterns = @('stepF_equity_marl_*.csv', 'stepF_daily_log_marl_*.csv', 'stepF_summary_marl_*.json') }
           )
@@ -1101,16 +1102,37 @@ jobs:
               Add-Content -Path $oneTapDest -Encoding UTF8 -Value $warn
             }
           }
-          $stepDPrimeItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepDPrime' })
+          $dPrimeStateItems = @($publishedCsv | Where-Object { $_.Label -eq 'DPrimeState' })
+          $dPrimeEmbeddingItems = @($publishedCsv | Where-Object { $_.Label -eq 'DPrimeEmbeddings' })
           $stepFItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepF' })
 
+          if ($dPrimeStateItems.Count -eq 0) {
+            $publishWarnings.Add('[WARN] publish issue: D'' state CSV missing under output/stepD_prime/<mode>.')
+          }
+          if ($dPrimeEmbeddingItems.Count -eq 0) {
+            $publishWarnings.Add('[WARN] publish issue: D'' embeddings CSV missing under output/stepD_prime/<mode>/embeddings.')
+          }
+
           $csvIndexLines.Add('')
-          $csvIndexLines.Add('## StepD'' (stepD_prime)')
-          if ($stepDPrimeItems.Count -eq 0) {
+          $csvIndexLines.Add('## D'' (stepD_prime)')
+          if ($dPrimeStateItems.Count -eq 0 -and $dPrimeEmbeddingItems.Count -eq 0) {
             $csvIndexLines.Add('- (none found)')
           } else {
-            foreach ($item in $stepDPrimeItems) {
-              $csvIndexLines.Add("- $($item.RelativePath)")
+            if ($dPrimeStateItems.Count -gt 0) {
+              $csvIndexLines.Add('- state:')
+              foreach ($item in $dPrimeStateItems) {
+                $csvIndexLines.Add("  - $($item.RelativePath)")
+              }
+            } else {
+              $csvIndexLines.Add('- state: (none found)')
+            }
+            if ($dPrimeEmbeddingItems.Count -gt 0) {
+              $csvIndexLines.Add('- embeddings:')
+              foreach ($item in $dPrimeEmbeddingItems) {
+                $csvIndexLines.Add("  - $($item.RelativePath)")
+              }
+            } else {
+              $csvIndexLines.Add('- embeddings: (none found)')
             }
           }
 

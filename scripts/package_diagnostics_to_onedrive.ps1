@@ -94,6 +94,29 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) 
   Add-PublishSummaryWarning -SummaryPath $summaryPath -Message ("output_root unavailable: {0}" -f $OutputRoot)
 }
 
+$dPrimeModeNames = @('sim','live','display')
+$dPrimeStateFound = $false
+$dPrimeEmbeddingsFound = $false
+if (-not [string]::IsNullOrWhiteSpace($OutputRoot) -and (Test-Path $OutputRoot)) {
+  foreach ($modeName in $dPrimeModeNames) {
+    $dPrimeBase = Join-Path $OutputRoot (Join-Path 'stepD_prime' $modeName)
+    if (-not (Test-Path $dPrimeBase)) { continue }
+    $stateHits = @(Get-ChildItem -Path $dPrimeBase -File -Filter 'stepDprime_state_*_*.csv' -ErrorAction SilentlyContinue)
+    if ($stateHits.Count -gt 0) { $dPrimeStateFound = $true }
+    $embRoot = Join-Path $dPrimeBase 'embeddings'
+    if (Test-Path $embRoot) {
+      $embHits = @(Get-ChildItem -Path $embRoot -File -Recurse -Filter 'stepDprime_*_embeddings*.csv' -ErrorAction SilentlyContinue)
+      if ($embHits.Count -gt 0) { $dPrimeEmbeddingsFound = $true }
+    }
+  }
+}
+if (-not $dPrimeStateFound) {
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message "D' state CSV missing under output/stepD_prime/<mode>."
+}
+if (-not $dPrimeEmbeddingsFound) {
+  Add-PublishSummaryWarning -SummaryPath $summaryPath -Message "D' embeddings CSV missing under output/stepD_prime/<mode>/embeddings."
+}
+
 Write-Host "runnerDiag=$runnerDiag"
 Write-Host "diagDir=$DiagDir"
 
