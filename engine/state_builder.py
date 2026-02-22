@@ -23,7 +23,7 @@ class StateBuilderConfig:
         例: resolve_repo_path("output")
     envelope_agent : str
         EnvelopeイベントをどのAIエージェントのものから取るか。
-        例: "xsr", "mamba", "fed"
+        例: "mamba"
     daily_log_pattern : str
         日次ログCSVのパスパターン。
         "{symbol}" を銘柄コードで置き換える。
@@ -34,7 +34,7 @@ class StateBuilderConfig:
         None の場合は、存在するファイルを探索して見つかったものを使う（優先順: live→ops→sim→display→legacy）。
     """
     output_root: Path = resolve_repo_path("output")
-    envelope_agent: str = "xsr"
+    envelope_agent: str = "mamba"
     daily_log_pattern: str = "output/daily_log_{symbol}.csv"
     mode: Optional[str] = None
 
@@ -46,7 +46,7 @@ class StateBuilder:
     観測ベクトル s_t（24次元）
     --------------------------
     1) 3AI の ΔClose 予測（3）
-        - dPred_XSR, dPred_LSTM, dPred_FED
+        - dPred_MAMBA
     2) Envelope 幾何特徴（11）
         - DeltaP_pct, theta_norm, Top_pct, Bottom_pct, D_norm,
           DeltaP, D, L, theta_deg, Top_abs, Bottom_abs
@@ -104,7 +104,7 @@ class StateBuilder:
         row_features = self._get_row_by_date(features, d, "features")
         row_pred = self._get_row_by_date(pred, d, "predictions")
 
-        d_pred_xsr, d_pred_lstm, d_pred_fed = self._extract_dpred(row_pred)
+        d_pred_mamba = self._extract_dpred(row_pred)
         env_vec = self._extract_envelope_features(env, d)
         rsi, macd, gap_pct = self._extract_technical_features(row_features)
         open_, high, low, close, volume = self._extract_price_features(row_prices)
@@ -113,9 +113,9 @@ class StateBuilder:
         vec = np.array(
             [
                 # 3AI ΔClose
-                d_pred_xsr,
-                d_pred_lstm,
-                d_pred_fed,
+                d_pred_mamba,
+                0.0,
+                0.0,
                 # Envelope 11
                 *env_vec.tolist(),
                 # Technical 3
@@ -262,7 +262,7 @@ class StateBuilder:
         """
         StepC の予測CSVを読み込む。必要列:
         - Date
-        - Pred_Close_XSR / Pred_Close_LSTM / Pred_Close_FED（無ければ 0 として扱う）
+        - Pred_Close_MAMBA（無ければ 0 として扱う）
         さらに dPred_* を diff で生成する。
         """
         if symbol in self._pred_cache:
@@ -273,15 +273,10 @@ class StateBuilder:
         df = self._parse_date_col(df, "Date")
         df = df.sort_values("Date").reset_index(drop=True)
 
-        for col, dcol in [
-            ("Pred_Close_XSR", "dPred_XSR"),
-            ("Pred_Close_LSTM", "dPred_LSTM"),
-            ("Pred_Close_FED", "dPred_FED"),
-        ]:
-            if col in df.columns:
-                df[dcol] = df[col].diff()
-            else:
-                df[dcol] = 0.0
+        if "Pred_Close_MAMBA" in df.columns:
+            df["dPred_MAMBA"] = df["Pred_Close_MAMBA"].diff()
+        else:
+            df["dPred_MAMBA"] = 0.0
 
         self._pred_cache[symbol] = df
         return df
@@ -366,12 +361,12 @@ class StateBuilder:
     # Extractors
     # =====================================================
     @staticmethod
-    def _extract_dpred(row_pred: pd.Series) -> Tuple[float, float, float]:
+    def _extract_dpred(row_pred: pd.Series) -> float:
         def _g(col: str) -> float:
             v = row_pred.get(col, 0.0)
             return float(v) if pd.notna(v) else 0.0
 
-        return _g("dPred_XSR"), _g("dPred_LSTM"), _g("dPred_FED")
+        return _g("dPred_MAMBA")
 
     @staticmethod
     def _extract_envelope_features(df_env: pd.DataFrame, d: date) -> np.ndarray:

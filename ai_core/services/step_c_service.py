@@ -53,7 +53,7 @@ class StepCConfig:
     symbol: str
     date_range: DateRange
     calib_window_days: int = 252
-    models: List[str] = field(default_factory=lambda: ["xsr", "mamba", "fedformer"])
+    models: List[str] = field(default_factory=lambda: ["mamba"])
     lag_days: Dict[str, int] = field(default_factory=dict)
     raw_column_map: Optional[Dict[str, str]] = None
     write_legacy_root_copy: bool = False
@@ -64,9 +64,7 @@ class StepCResult(StepResult):
     """StepC（TimeRecon + ScaleCalib）の結果。"""
 
     pred_all_path: Optional[Path] = None
-    xsr_path: Optional[Path] = None
     lstm_path: Optional[Path] = None  # 互換: mamba をここに載せる
-    fed_path: Optional[Path] = None
 
 
 class StepCService:
@@ -84,7 +82,7 @@ class StepCService:
         self.app_config = app_config
         self._cached_output_root = None  # type: ignore
         self.calib_window_days = int(calib_window_days)
-        self.models = models or ["xsr", "mamba", "fedformer"]
+        self.models = models or ["mamba"]
         self.lag_days = lag_days or {}
         self.raw_column_map = raw_column_map
         self.write_legacy_root_copy = bool(write_legacy_root_copy)
@@ -289,13 +287,8 @@ class StepCService:
                 pred_all_path=out_path,
             )
 
-            if any(str(m).strip().lower() == "xsr" for m in config.models):
-                result.xsr_path = out_path
             if any(str(m).strip().lower() in ("mamba", "lstm") for m in config.models):
                 result.lstm_path = out_path
-            if any(str(m).strip().lower() in ("fed", "fedformer", "fed_former") for m in config.models):
-                result.fed_path = out_path
-
             return result
 
         except Exception as e:  # noqa: BLE001
@@ -565,12 +558,8 @@ class StepCService:
                     out[model_key] = chosen
                 continue
 
-            if mk in ("xsr",):
-                chosen = _pick(["Pred_Close_XSR", "pred_close_xsr", "pred_xsr", "xsr_pred"])
-            elif mk in ("mamba", "lstm"):
+            if mk in ("mamba", "lstm"):
                 chosen = _pick(["Pred_Close_MAMBA", "Pred_Close_LSTM", "pred_close_mamba", "pred_close_lstm", "lstm_pred"])
-            elif mk in ("fed", "fedformer", "fed_former"):
-                chosen = _pick(["Pred_Close_FED", "Pred_Close_FEDFORMER", "pred_close_fedformer", "pred_close_fed", "fed_pred"])
             else:
                 chosen = None
 
@@ -612,12 +601,8 @@ class StepCService:
     @staticmethod
     def _agent_suffix(mk: str) -> str:
         mk = (mk or "").strip().lower()
-        if mk in ("xsr",):
-            return "XSR"
         if mk in ("mamba", "lstm"):
             return "MAMBA"
-        if mk in ("fed", "fedformer", "fed_former"):
-            return "FED"
         return mk.upper() if mk else "MODEL"
 
     @staticmethod

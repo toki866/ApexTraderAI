@@ -17,7 +17,7 @@ Inputs (default paths)
     {output_root}/stepD/stepD_events_REALCLOSE_{symbol}.csv
 - Pred events per agent:
     {output_root}/stepD/stepD_events_{AGENT}_{symbol}.csv
-    where AGENT is one of: XSR, MAMBA, FED (you can pass any list via --agents)
+    where AGENT is mamba
 
 Event CSV required columns
 --------------------------
@@ -238,7 +238,7 @@ def main() -> int:
     ap.add_argument("--symbol", required=True)
 
     ap.add_argument("--real-events", default=None, help="optional explicit path to REAL events CSV")
-    ap.add_argument("--agents", default="MAMBA,FED,XSR", help="comma-separated agent names")
+    ap.add_argument("--agents", default="MAMBA", help="comma-separated agent names (mamba only)")
 
     ap.add_argument("--date-from", required=True)
     ap.add_argument("--date-to", required=True)

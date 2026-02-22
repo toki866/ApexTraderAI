@@ -10,7 +10,7 @@ from ai_core.utils.paths import ensure_dir, resolve_repo_path
 
 
 # StepE / StepF で使いたいエージェント名のデフォルト
-DEFAULT_AGENT_NAMES: tuple[str, ...] = ("xsr", "lstm", "fed")
+DEFAULT_AGENT_NAMES: tuple[str, ...] = ("mamba",)
 
 
 @dataclass

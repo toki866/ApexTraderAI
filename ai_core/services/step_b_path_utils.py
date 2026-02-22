@@ -5,7 +5,7 @@ from __future__ import annotations
 StepB 系で使う「output_root（出力先）」取得ユーティリティ。
 
 背景
-- step_b_fedformer_runner / step_b_mamba_runner に同名の
+- step_b_mamba_runner に同名の
   `_get_output_root_from_app()` が重複定義されており、
   build_global_symbols の Duplicate Symbols に出ていました。
 - ここに “正本” を 1つだけ定義し、各 runner は import して使います。

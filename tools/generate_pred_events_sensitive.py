@@ -9,7 +9,7 @@ with knobs to make the turning-point detection more/less sensitive.
 
 Why this exists
 ---------------
-Some agents (notably XSR) can produce smoother predicted series and therefore
+Some agents can produce smoother predicted series and therefore
 fewer turning points with the default StepD settings. This tool lets you
 experiment with smaller RBW (rolling window), smaller min-gap, and optional
 smoothing, and writes files in the same naming convention as StepD outputs:
@@ -35,7 +35,7 @@ I/O
 Input:
   {output_root}/stepB/stepB_pred_time_all_{symbol}.csv
     - Date
-    - Pred_Close_XSR / Pred_Close_MAMBA / Pred_Close_FED
+    - Pred_Close_MAMBA
 
 Output:
   {output_root}/stepD/stepD_events_{AGENT}_{symbol}.csv
@@ -82,13 +82,9 @@ class StepDEvent:
 
 def _pick_pred_col(agent: str) -> str:
     a = agent.upper()
-    if a == "XSR":
-        return "Pred_Close_XSR"
-    if a == "MAMBA":
+    if a in ("MAMBA", "LSTM"):
         return "Pred_Close_MAMBA"
-    if a in ("FED", "FEDFORMER"):
-        return "Pred_Close_FED"
-    raise ValueError(f"Unsupported agent '{agent}'. Use XSR / MAMBA / FED.")
+    raise ValueError(f"Unsupported agent '{agent}'. Use MAMBA.")
 
 
 def _compress_bool_runs(mask: np.ndarray) -> List[int]:
@@ -349,7 +345,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", required=True, help="output root (e.g., output)")
     ap.add_argument("--symbol", required=True, help="symbol (e.g., SOXL)")
-    ap.add_argument("--agent", required=True, help="agent: XSR / MAMBA / FED")
+    ap.add_argument("--agent", required=True, help="agent: MAMBA")
     ap.add_argument("--rbw", type=int, default=10)
     ap.add_argument("--min-gap", type=int, default=3)
     ap.add_argument("--min-move-pct", type=float, default=0.0)
