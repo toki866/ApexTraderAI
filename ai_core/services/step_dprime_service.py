@@ -39,6 +39,7 @@ from ai_core.models.transformer_summarizer import (
 )
 
 
+
 @dataclass
 class StepDPrimeConfig:
     symbol: str
@@ -127,6 +128,124 @@ def _read_prices(stepA_dir: Path, symbol: str) -> Tuple[pd.DataFrame, pd.DataFra
             raise ValueError("StepA prices CSV must include Date, Close")
         df["Date"] = pd.to_datetime(df["Date"])
     return tr, te
+
+
+def _read_optional_stepa_pair(stepA_dir: Path, symbol: str, stem: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    train_path = stepA_dir / f"{stem}_train_{symbol}.csv"
+    test_path = stepA_dir / f"{stem}_test_{symbol}.csv"
+    if not train_path.exists() or not test_path.exists():
+        return None, None
+    tr = pd.read_csv(train_path)
+    te = pd.read_csv(test_path)
+    for df in (tr, te):
+        if "Date" not in df.columns:
+            return None, None
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    return tr, te
+
+
+def _zscore_rolling(s: pd.Series, win: int) -> pd.Series:
+    m = s.rolling(win, min_periods=win).mean()
+    v = s.rolling(win, min_periods=win).std(ddof=0).replace(0, np.nan)
+    return (s - m) / v
+
+
+def _make_state_base(df_prices: pd.DataFrame) -> pd.DataFrame:
+    out = df_prices.copy().sort_values("Date").reset_index(drop=True)
+    close_prev = out["Close"].astype(float).shift(1)
+    vol_prev = out["Volume"].astype(float).shift(1)
+
+    ret_1 = close_prev.pct_change(1)
+    ret_5 = close_prev.pct_change(5)
+    ret_20 = close_prev.pct_change(20)
+
+    high = out["High"].astype(float)
+    low = out["Low"].astype(float)
+    open_ = out["Open"].astype(float)
+    close = out["Close"].astype(float)
+
+    tr = pd.concat([(high - low), (high - close_prev).abs(), (low - close_prev).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=14).mean()
+
+    rng = (high - low).replace(0, np.nan)
+    body = (close - open_).abs()
+    upper = (high - np.maximum(open_, close)).clip(lower=0)
+    lower = (np.minimum(open_, close) - low).clip(lower=0)
+
+    vol_log = np.log(vol_prev.replace(0, np.nan))
+    vol_log_ratio_20 = vol_log - np.log(vol_prev.rolling(20, min_periods=20).mean().replace(0, np.nan))
+    dev_z_25 = _zscore_rolling(close_prev, 25)
+
+    feat = pd.DataFrame({
+        "Date": out["Date"],
+        "ret_1": ret_1,
+        "ret_5": ret_5,
+        "ret_20": ret_20,
+        "range_atr": (high - low) / atr14.replace(0, np.nan),
+        "body_ratio": body / rng,
+        "upper_wick_ratio": upper / rng,
+        "lower_wick_ratio": lower / rng,
+        "gap": (open_ / close_prev.replace(0, np.nan)) - 1.0,
+        "atr_norm": atr14 / close_prev.replace(0, np.nan),
+        "vol_log_ratio_20": vol_log_ratio_20,
+        "dev_z_25": dev_z_25,
+        "bnf_score": dev_z_25 * vol_log_ratio_20,
+    })
+
+    for c in feat.columns:
+        if c == "Date":
+            continue
+        feat[c] = pd.to_numeric(feat[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return feat
+
+
+def _merge_stepa_features(state_df: pd.DataFrame, periodic_df: Optional[pd.DataFrame], tech_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    out = state_df.copy()
+    for extra in (periodic_df, tech_df):
+        if extra is None:
+            continue
+        cols = [c for c in extra.columns if c != "Date"]
+        if not cols:
+            continue
+        sub = extra[["Date"] + cols].copy()
+        out = out.merge(sub, on="Date", how="left")
+    return out
+
+
+def _write_state_csvs(stepA_dir: Path, stepD_dir: Path, symbol: str) -> List[str]:
+    pr_train, pr_test = _read_prices(stepA_dir, symbol)
+    per_train, per_test = _read_optional_stepa_pair(stepA_dir, symbol, "stepA_periodic")
+    tech_train, tech_test = _read_optional_stepa_pair(stepA_dir, symbol, "stepA_tech")
+
+    bnf_train = _make_state_base(pr_train)
+    bnf_test = _make_state_base(pr_test)
+
+    all_train = _merge_stepa_features(bnf_train, per_train, tech_train)
+    all_test = _merge_stepa_features(bnf_test, per_test, tech_test)
+
+    mix_cols = [
+        "Date", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "upper_wick_ratio", "lower_wick_ratio",
+        "gap", "atr_norm", "vol_log_ratio_20", "dev_z_25", "bnf_score",
+    ]
+    for opt in ("RSI", "RSI_14", "MACD_hist", "vol_z_20"):
+        if opt in all_train.columns or opt in all_test.columns:
+            mix_cols.append(opt)
+
+    out_files: List[str] = []
+    payload = {
+        "bnf": (bnf_train, bnf_test),
+        "all_features": (all_train, all_test),
+        "mix": (all_train[mix_cols], all_test[mix_cols]),
+    }
+    for variant, (tr_df, te_df) in payload.items():
+        for split, df in (("train", tr_df), ("test", te_df)):
+            out_path = stepD_dir / f"stepDprime_state_{variant}_{symbol}_{split}.csv"
+            df2 = df.copy()
+            if "Date" in df2.columns:
+                df2["Date"] = pd.to_datetime(df2["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            df2.to_csv(out_path, index=False)
+            out_files.append(str(out_path.as_posix()))
+    return out_files
 
 
 def _date_to_key(dt: pd.Timestamp) -> str:
@@ -472,6 +591,7 @@ class StepDPrimeService:
             "symbol": cfg.symbol,
             "output_dir": str(stepD_dir.as_posix()),
             "train_end": train_end,
+            "state_files": [],
             "models": {},
             "embeddings": {},
             "warnings": [],
@@ -479,8 +599,14 @@ class StepDPrimeService:
 
         models_dir = stepD_dir / "models"
         embeds_dir = stepD_dir / "embeddings"
+        stepD_dir.mkdir(parents=True, exist_ok=True)
         models_dir.mkdir(parents=True, exist_ok=True)
         embeds_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            results["state_files"] = _write_state_csvs(stepA_dir, stepD_dir, cfg.symbol)
+        except Exception as e:
+            results["warnings"].append(f"failed to write state CSVs: {type(e).__name__}: {e}")
 
         for source in cfg.sources:
             daily_files_by_h = {int(h): _collect_daily_pred_files(stepB_dir, cfg.symbol, source, int(h)) for h in cfg.horizons}
@@ -561,13 +687,14 @@ class StepDPrimeService:
                             embs.append(e)
                     E = np.concatenate(embs, axis=0)
 
-                    out_csv = embeds_dir / f"{model_key}_embeddings.csv"
+                    out_csv = embeds_dir / f"{model_key}_embeddings_all.csv"
                     out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
                     out_df.insert(0, "Date", dates)
-                    out_df.insert(1, "label_up", y)
-                    out_df.insert(2, "label_available", label_avail.astype(int))
-                    out_df.insert(3, "source", source)
-                    out_df.insert(4, "horizon_model", int(h))
+                    if cfg.export_labels_in_embeddings:
+                        out_df.insert(1, "label_up", y)
+                        out_df.insert(2, "label_available", label_avail.astype(int))
+                        out_df.insert(3, "source", source)
+                        out_df.insert(4, "horizon_model", int(h))
                     out_df.to_csv(out_csv, index=False)
 
                     results["models"][model_key] = {
@@ -656,13 +783,14 @@ class StepDPrimeService:
                         embs.append(e)
                 E = np.concatenate(embs, axis=0)
 
-                out_csv = embeds_dir / f"{model_key}_embeddings.csv"
+                out_csv = embeds_dir / f"{model_key}_embeddings_all.csv"
                 out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
                 out_df.insert(0, "Date", dates)
-                out_df.insert(1, "label_up", y)
-                out_df.insert(2, "label_available", label_avail.astype(int))
-                out_df.insert(3, "source", source)
-                out_df.insert(4, "horizon_model", int(h))
+                if cfg.export_labels_in_embeddings:
+                    out_df.insert(1, "label_up", y)
+                    out_df.insert(2, "label_available", label_avail.astype(int))
+                    out_df.insert(3, "source", source)
+                    out_df.insert(4, "horizon_model", int(h))
                 out_df.to_csv(out_csv, index=False)
 
                 results["models"][model_key] = {
