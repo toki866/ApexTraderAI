@@ -136,7 +136,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             report["stepB"] = {"status": "SKIP", "summary": "no stepB prediction files found", "rows": [], "files": []}
         else:
             rows: list[dict[str, Any]] = []
-            key_cols = {"pred_close_mamba", "pred_close_xsr", "pred_close_fed"}
+            key_cols = {"pred_close_mamba"}
             for fpath in files:
                 try:
                     df = _read_csv(fpath)

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 @dataclass(init=False)
 class StepBAgentResult:
-    """Result for a single StepB agent (XSR / Mamba / FEDformer).
+    """Result for a single StepB agent (Mamba).
 
     This class is intentionally *keyword-flexible* for backward/forward compatibility.
     Runners in this repo have historically evolved and may pass additional keyword args
@@ -101,7 +101,7 @@ class StepBResult:
     out_dir: str = ""
     pred_time_all_path: str = ""
 
-    # agent_results maps keys like "xsr"/"mamba"/"fedformer" to StepBAgentResult
+    # agent_results maps keys like "mamba" to StepBAgentResult
     agent_results: Dict[str, StepBAgentResult] = field(default_factory=dict)
 
     # Optional metadata

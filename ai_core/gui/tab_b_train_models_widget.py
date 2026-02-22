@@ -25,12 +25,20 @@ from PySide6.QtWidgets import (
 from ai_core.types.common import DateRange
 from ai_core.config.step_b_config import StepBConfig
 from ai_core.models.mamba_model import WaveletMambaConfig
-from ai_core.models.fedformer_model import FEDformerConfig
-from ai_core.services.step_b_service import StepBResult, StepBAgentMetrics
+from ai_core.types.step_b_types import StepBResult
 
 # tab_b_train_models_widget.py 冒頭あたり
 from backend.backend_controller import BackendController
 
+
+
+
+class FEDformerConfig:
+    """Deprecated placeholder (FEDformer removed)."""
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
 
 class TabB_TrainModelsQtWidget(QWidget):
