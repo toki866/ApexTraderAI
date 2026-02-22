@@ -13,7 +13,7 @@ if not defined PYTHON_EXE set "PYTHON_EXE=python"
 if not defined RUN_MODE set "RUN_MODE=sim"
 if not defined SYMBOLS set "SYMBOLS=SOXL,SOXS"
 if not defined SYMBOL for /f "tokens=1 delims=," %%s in ("%SYMBOLS%") do set "SYMBOL=%%s"
-if not defined STEPS set "STEPS=A,B,C,DPRIME,E,F"
+if not defined STEPS set "STEPS=A,B,C,D,DPRIME,E,F"
 if not defined COPY_TO_ONEDRIVE set "COPY_TO_ONEDRIVE=1"
 if /i "%COPY_TO_ONEDRIVE%"=="true" set "COPY_TO_ONEDRIVE=1"
 if /i "%COPY_TO_ONEDRIVE%"=="false" set "COPY_TO_ONEDRIVE=0"
@@ -110,6 +110,7 @@ if "%ENABLE_XSR%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-xsr"
 if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%ENABLE_FEDFORMER%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-fedformer"
+if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
 
 call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%" --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed

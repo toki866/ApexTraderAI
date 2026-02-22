@@ -10,7 +10,7 @@ if not defined DATA_END set "DATA_END=2022-03-31"
 if not defined TEST_START set "TEST_START=2022-01-03"
 if not defined TRAIN_YEARS set "TRAIN_YEARS=8"
 if not defined TEST_MONTHS set "TEST_MONTHS=3"
-if not defined STEPS set "STEPS=A,B,C,D,E,F"
+if not defined STEPS set "STEPS=A,B,C,D,DPRIME,E,F"
 if not defined RUN_MODE set "RUN_MODE=sim"
 
 if not defined ENABLE_ALL set "ENABLE_ALL=0"
