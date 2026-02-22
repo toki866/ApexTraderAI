@@ -267,13 +267,13 @@ def _repo_root() -> Path:
 
 def _parse_steps(s: str) -> Tuple[str, ...]:
     default_steps: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
-    canonical_order: Tuple[str, ...] = ("A", "B", "C", "D", "DPRIME", "E", "F")
+    canonical_order: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
 
     step_aliases = {
         "A": "A",
         "B": "B",
         "C": "C",
-        "D": "D",
+        "D": "DPRIME",
         "E": "E",
         "F": "F",
         "DPRIME": "DPRIME",
@@ -288,6 +288,8 @@ def _parse_steps(s: str) -> Tuple[str, ...]:
         return default_steps
 
     parts = [p.strip().upper() for p in s.split(",") if p.strip()]
+    if "D" in parts:
+        print("[headless] INFO: StepD is deprecated; treating 'D' as 'DPRIME'.")
     if any(p in ("ALL", "*") for p in parts):
         return canonical_order
 
@@ -1168,7 +1170,6 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
     mod_map = {
         "C": ("ai_core.services.step_c_service", "StepCService"),
         "DPRIME": ("ai_core.services.step_dprime_service", "StepDPrimeService"),
-        "D": ("ai_core.services.step_d_service", "StepDService"),
         "E": ("ai_core.services.step_e_service", "StepEService"),
         "F": ("ai_core.services.step_f_service", "StepFService"),
     }
@@ -1217,7 +1218,7 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
-    ap.add_argument("--steps", default="A,B,C,D,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,D,DPRIME,E,F")
+    ap.add_argument("--steps", default="A,B,C,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,DPRIME,E,F")
     ap.add_argument("--skip-stepe", dest="skip_stepe", action="store_true", help="Debug escape hatch: skip StepE explicitly.")
     ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
     ap.add_argument("--train-years", type=int, default=8)
