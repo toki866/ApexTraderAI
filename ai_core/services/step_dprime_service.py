@@ -192,6 +192,11 @@ def _make_state_base(df_prices: pd.DataFrame) -> pd.DataFrame:
         "bnf_score": dev_z_25 * vol_log_ratio_20,
     })
 
+    if "gap" in feat.columns and "Gap" not in feat.columns:
+        feat["Gap"] = feat["gap"]
+    if "atr_norm" in feat.columns and "ATR_norm" not in feat.columns:
+        feat["ATR_norm"] = feat["atr_norm"]
+
     for c in feat.columns:
         if c == "Date":
             continue
