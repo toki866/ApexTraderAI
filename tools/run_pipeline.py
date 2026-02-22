@@ -1313,6 +1313,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
 
+    if "F" in steps:
+        step_f_cfg = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
+        if step_f_cfg is None:
+            try:
+                from ai_core.services.step_f_service import StepFConfig  # lazy import
+
+                out_root = str(resolved_output_root)
+                mode = resolved_mamba_mode or args.mode or "sim"
+                step_e_daily_dir = Path(out_root) / "stepE" / str(mode)
+                daily_log_pattern = f"stepE_daily_log_*_{symbol}.csv"
+
+                unique_agents = {
+                    str(p.name)[len("stepE_daily_log_"):-len(f"_{symbol}.csv")]
+                    for p in step_e_daily_dir.glob(daily_log_pattern)
+                    if p.name.startswith("stepE_daily_log_") and p.name.endswith(f"_{symbol}.csv")
+                }
+                if not unique_agents:
+                    unique_agents = {"mamba"}
+
+                try:
+                    import torch
+
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                except Exception:
+                    device = "cpu"
+
+                cfgF = StepFConfig(
+                    output_root=out_root,
+                    agents=",".join(sorted(unique_agents)),
+                    seed=42,
+                    device=device,
+                )
+
+                if isinstance(app_config, dict):
+                    app_config["stepF"] = cfgF
+                else:
+                    setattr(app_config, "stepF", cfgF)
+
+                print(f"[headless] StepF default config injected: agents={cfgF.agents} seed={cfgF.seed} device={cfgF.device}")
+            except Exception as e:
+                print(f"[headless] WARNING: failed to inject default StepF config: {type(e).__name__}: {e}")
+
 
     print(f"[headless] repo_root={repo_root}")
     print(f"[headless] symbol={symbol}")
