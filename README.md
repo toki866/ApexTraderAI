@@ -4,6 +4,20 @@
 
 実行エントリーポイントは `tools/run_pipeline.py` に統一しています。
 
+### パイプライン標準仕様（重要）
+
+- 標準ステップは **`A,B,C,DPRIME,E,F`** です。
+- **`D` は廃止運用（Dは使わない）**で、通常のパイプラインでは使いません。
+- `DPRIME` は **「StepD上位版」** です。`DPRIME` 単独で、チャート圧縮（Phase2）と RL state 生成まで実施します。
+- `StepE` は `DPRIME` が生成した state（必要に応じて embeddings 併用）を観測入力として利用します。
+
+### 3ヶ月窓は2種類（用途が異なる）
+
+1. **固定長圧縮の3ヶ月窓**: `DPRIME` / Phase2 側で使う圧縮窓
+2. **lookback の3ヶ月窓**: `StepB` 側で使う観測窓
+
+この2つは同じ「3ヶ月」でも役割が異なるため、混同しないでください。
+
 ```bash
 python tools/run_pipeline.py --symbol SOXL --test-start 2022-01-03
 ```

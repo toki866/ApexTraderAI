@@ -5,7 +5,7 @@
 ## 1) Repository summary
 
 ### What problem this repo solves
-ApexTraderAI provides a reproducible, headless trading-research pipeline that runs Step A→F for SOXL/SOXS-oriented workflows, including data preparation, model/feature generation, RL/MARL stages, and export of run artifacts for local storage, GitHub artifacts, and OneDrive backup.
+ApexTraderAI provides a reproducible, headless trading-research pipeline that runs standard Step A→F (A,B,C,DPRIME,E,F; D is retired) for SOXL/SOXS-oriented workflows, including data preparation, model/feature generation, RL/MARL stages, and export of run artifacts for local storage, GitHub artifacts, and OneDrive backup.
 
 ### High-level architecture
 - **Pipeline orchestrator (Python):** `tools/run_pipeline.py` runs Step A–F with CLI control over symbol, date range, modes, and model toggles.
@@ -84,7 +84,7 @@ The tree below was generated from the current repository state (depth-limited).
 | `scripts/copy_run_to_onedrive.bat` | Re-copy existing local run directory to OneDrive | Manual cmd/powershell execution | OneDrive run mirror under `<runs_root>\<run_id>` |
 | `scripts/doctor.bat` | Preflight diagnostics (git/python/torch/data files) | Manual cmd/powershell execution | `doctor_<run_id>.log` in run logs folder |
 | `tools/prepare_data.py` | Download + normalize OHLCV CSVs from yfinance | `run_all_local_then_copy.bat`; manual CLI | `prices_<SYMBOL>.csv` under selected `--data-dir` |
-| `tools/run_pipeline.py` | Headless Step A→F orchestrator with mode/agent flags | `run_all_local_then_copy.bat`; manual CLI | Step outputs under `--output-root` (default `output/`) |
+| `tools/run_pipeline.py` | Headless Step A→F orchestrator (standard: A,B,C,DPRIME,E,F) with mode/agent flags | `run_all_local_then_copy.bat`; manual CLI | Step outputs under `--output-root` (default `output/`) |
 | `config/app_config.yaml` | Default app config roots and symbols | Loaded via `ai_core/config/app_config.py` | N/A (configuration source) |
 | `ai_core/services/step_a_service.py` ... `step_f_service.py` | Step implementations used by headless orchestration | `tools/run_pipeline.py` | Step-specific CSV/model outputs under `output/` subtree |
 | `ai_core/utils/paths.py` | Repo-root path resolution helpers | Imported by pipeline/config code | N/A (utility behavior) |
@@ -144,6 +144,15 @@ The tree below was generated from the current repository state (depth-limited).
 
 ---
 
+## Pipeline spec note (D retired, D-prime canonical)
+- Standard pipeline steps are **A,B,C,DPRIME,E,F**.
+- **Step D is retired** in standard operation and should not be selected for routine runs.
+- `DPRIME` is the **StepD superior version** and independently performs chart-compression (Phase2) plus RL state generation.
+- `StepE` consumes `DPRIME` state as its primary observation input (plus embeddings when required by the selected policy/model mode).
+- There are two distinct "3-month" windows:
+  1. Fixed-length compression window in `DPRIME`/Phase2
+  2. Lookback observation window in `StepB`
+
 ## 3.2 Local run (same pipeline, no GitHub Actions)
 
 ## Prerequisites
@@ -174,7 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "cmd /c scripts\run_all_l
 
 ```bat
 python tools\prepare_data.py --symbols SOXL,SOXS --start 2014-01-01 --end 2022-03-31 --force --data-dir data
-python tools\run_pipeline.py --symbol SOXL --steps A,B,C,D,E,F --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root output --data-dir data --auto-prepare-data 0 --enable-mamba
+python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root output --data-dir data --auto-prepare-data 0 --enable-mamba
 ```
 
 > Note: BAT run writes outputs to per-run `C:\work\apex_work\runs\<run_id>\...`; direct Python defaults to repo `output/` and `data/` unless overridden.
