@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Best-effort evaluator for StepA/StepE CSV outputs.
+"""Best-effort evaluator for StepA/StepB/StepE/StepF outputs.
 
-The script NEVER raises a hard failure for workflow usage:
-- Missing files/columns are reported as SKIP.
-- Process exit code is always 0.
+Design goals:
+- Never raise uncaught exceptions (workflow-safe).
+- Always exit code 0.
+- Write detailed markdown/json plus compact summary for issue posting.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+MAX_SUMMARY_LINES = 200
+MAX_SUMMARY_CHARS = 15000
+MAX_LIST_ITEMS = 12
 
 
 def _find_first(pattern: str) -> str | None:
@@ -35,81 +40,47 @@ def _parse_date(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     return out
 
 
-def _parse_key_value_summary(df: pd.DataFrame) -> dict[str, Any]:
-    if df.empty:
-        return {}
-
-    keys = ["mode", "train_start", "train_end", "test_start", "test_end", "train_days", "test_days"]
-    lower_cols = {c.lower(): c for c in df.columns}
-
-    # Table-style summary with named columns.
-    found = {k: df[lower_cols[k]].iloc[0] for k in keys if k in lower_cols}
-    if found:
-        return {k: (None if pd.isna(v) else str(v)) for k, v in found.items()}
-
-    # key/value style summary.
-    if len(df.columns) >= 2:
-        out: dict[str, Any] = {}
-        c0, c1 = df.columns[0], df.columns[1]
-        for _, row in df.iterrows():
-            k = str(row.get(c0, "")).strip().lower()
-            v = row.get(c1)
-            if k in keys:
-                out[k] = None if pd.isna(v) else str(v)
-        return out
-    return {}
+def _to_float(v: Any) -> float | None:
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if np.isnan(f):
+            return None
+        return f
+    except Exception:
+        return None
 
 
-def _detect_pred_cols(df: pd.DataFrame) -> list[str]:
-    cols: list[str] = []
-    for c in df.columns:
-        lc = c.lower()
-        if "pred_" in lc or lc.endswith("_pred") or "close_pred" in lc or "delta_close_pred" in lc:
-            if pd.api.types.is_numeric_dtype(df[c]):
-                cols.append(c)
-    return cols
+def _to_int(v: Any) -> int | None:
+    f = _to_float(v)
+    return int(f) if f is not None else None
 
 
-def _can_compare_close_scale(pred_col: str) -> bool:
-    lc = pred_col.lower()
-    if "delta" in lc:
-        return False
-    return "close" in lc or "pred_" in lc
+def _fmt(v: Any, nd: int = 4) -> str:
+    if v is None:
+        return "NA"
+    if isinstance(v, float):
+        return f"{v:.{nd}f}"
+    return str(v)
+
+
+def _status_level(s: str) -> int:
+    return {"OK": 0, "WARN": 1, "BAD": 2}.get(s, 1)
 
 
 def _calc_metrics(true_s: pd.Series, pred_s: pd.Series) -> dict[str, Any]:
     pair = pd.DataFrame({"t": pd.to_numeric(true_s, errors="coerce"), "p": pd.to_numeric(pred_s, errors="coerce")}).dropna()
     if pair.empty:
-        return {"mae": None, "rmse": None, "corr": None, "dir_acc": None, "n_eval": 0}
+        return {"mae": None, "corr": None, "n_eval": 0}
 
     err = pair["p"] - pair["t"]
-    dp = pair["p"].diff()
-    dt = pair["t"].diff()
-    valid_dir = pd.DataFrame({"dp": dp, "dt": dt}).dropna()
-    dir_acc = None
-    if not valid_dir.empty:
-        dir_acc = float((np.sign(valid_dir["dp"]) == np.sign(valid_dir["dt"])).mean())
-
     corr = pair["t"].corr(pair["p"]) if len(pair) >= 2 else None
     return {
         "mae": float(np.abs(err).mean()),
-        "rmse": float(np.sqrt(np.square(err).mean())),
         "corr": (None if pd.isna(corr) else float(corr)),
-        "dir_acc": dir_acc,
         "n_eval": int(len(pair)),
     }
-
-
-def _status(non_null_ratio: float | None, coverage_ratio: float | None, pred_cols_found: bool) -> str:
-    if not pred_cols_found:
-        return "BAD"
-    nn = non_null_ratio if non_null_ratio is not None else 0.0
-    cov = coverage_ratio if coverage_ratio is not None else 0.0
-    if nn >= 0.90 and cov >= 0.90:
-        return "OK"
-    if nn < 0.50:
-        return "BAD"
-    return "WARN"
 
 
 def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
@@ -120,14 +91,15 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "stepA": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "stepE": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "stepF": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "overall_status": "WARN",
     }
 
-    # StepA
-    prices_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
-    split_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_split_summary_{symbol}.csv"))
     stepa_prices: pd.DataFrame | None = None
 
+    # StepA
     try:
+        prices_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
         if not prices_path:
             report["stepA"] = {"status": "SKIP", "summary": "stepA_prices_test file missing", "details": {}}
         else:
@@ -135,267 +107,255 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             stepa_prices = px
             d = {
                 "path": prices_path,
-                "rows": int(len(px)),
-                "cols": int(len(px.columns)),
-                "date_start": str(px["Date"].dropna().min().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
-                "date_end": str(px["Date"].dropna().max().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
-                "date_monotonic_increasing": bool(px["Date"].is_monotonic_increasing) if "Date" in px.columns else None,
-                "date_duplicates": int(px["Date"].duplicated().sum()) if "Date" in px.columns else None,
+                "test_rows": int(len(px)),
+                "test_date_start": str(px["Date"].dropna().min().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
+                "test_date_end": str(px["Date"].dropna().max().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
+                "missing_ohlcv_count": int(
+                    sum(int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns)
+                ),
                 "ohlcv_missing": {c: int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns},
             }
             report["stepA"] = {"status": "OK", "summary": "prices_test evaluated", "details": d}
-
-        split_info: dict[str, Any] = {}
-        if split_path:
-            split_info = _parse_key_value_summary(_read_csv(split_path))
-        else:
-            split_info = {"status": "SKIP", "reason": "stepA_split_summary file missing"}
-        report["stepA"]["split_summary_path"] = split_path
-        report["stepA"]["split_summary"] = split_info
     except Exception as exc:
         report["stepA"] = {"status": "SKIP", "summary": f"exception: {exc}", "details": {"traceback": traceback.format_exc(limit=2)}}
 
     # StepB
-    split_b_path = _find_first(os.path.join(output_root, "stepB", mode, f"stepB_split_summary_{symbol}.csv"))
-    patterns = [
-        f"stepB_pred_time_all_{symbol}.csv",
-        f"stepB_pred_close_mamba_{symbol}.csv",
-        f"stepB_pred_close_mamba_periodic_{symbol}.csv",
-        f"stepB_pred_path_mamba_{symbol}.csv",
-        f"stepB_pred_path_mamba_periodic_{symbol}.csv",
-        f"stepB_pred_*_{symbol}.csv",
-    ]
+    try:
+        patterns = [
+            f"stepB_pred_time_all_{symbol}.csv",
+            f"stepB_pred_close_*_{symbol}.csv",
+            f"stepB_pred_path_*_{symbol}.csv",
+            f"stepB_pred_*_{symbol}.csv",
+        ]
+        files: list[str] = []
+        for p in patterns:
+            files.extend(glob.glob(os.path.join(output_root, "stepB", mode, p)))
+        files = sorted(set(files))
 
-    files: list[str] = []
-    for p in patterns:
-        files.extend(glob.glob(os.path.join(output_root, "stepB", mode, p)))
-    files = sorted(set(files))
+        if not files:
+            report["stepB"] = {"status": "SKIP", "summary": "no stepB prediction files found", "rows": [], "files": []}
+        else:
+            rows: list[dict[str, Any]] = []
+            key_cols = {"pred_close_mamba", "pred_close_xsr", "pred_close_fed"}
+            for fpath in files:
+                try:
+                    df = _read_csv(fpath)
+                    date_col = "Date" if "Date" in df.columns else ("Date_anchor" if "Date_anchor" in df.columns else None)
+                    if date_col:
+                        df = _parse_date(df, date_col)
 
-    if not files:
-        report["stepB"] = {
-            "status": "SKIP",
-            "summary": "no stepB prediction files found",
-            "split_summary_path": split_b_path,
-            "rows": [],
-        }
-        return report
+                    pred_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and ("pred_" in c.lower() or c.lower().endswith("_pred"))]
+                    picked = [c for c in pred_cols if c.lower() in key_cols]
+                    if not picked:
+                        picked = pred_cols[:8]
 
-    stepb_rows: list[dict[str, Any]] = []
-    for fpath in files:
-        try:
-            df = _read_csv(fpath)
-            date_col = "Date" if "Date" in df.columns else ("Date_anchor" if "Date_anchor" in df.columns else None)
-            if date_col:
-                df = _parse_date(df, date_col)
-            pred_cols = _detect_pred_cols(df)
+                    for col in picked:
+                        total_rows = len(df)
+                        nn = int(df[col].notna().sum())
+                        nn_ratio = float(nn / total_rows) if total_rows else 0.0
+                        first_valid_date = None
+                        if nn > 0 and date_col:
+                            valid_dates = df.loc[df[col].notna(), date_col].dropna()
+                            if not valid_dates.empty:
+                                first_valid_date = str(valid_dates.iloc[0].date())
 
-            if not pred_cols:
-                stepb_rows.append(
-                    {
-                        "file": os.path.basename(fpath),
-                        "pred_col": None,
-                        "rows": int(len(df)),
-                        "non_null_count": 0,
-                        "non_null_ratio": 0.0,
-                        "first_valid_date": None,
-                        "last_valid_date": None,
-                        "coverage_ratio": 0.0,
-                        "mae": None,
-                        "rmse": None,
-                        "corr": None,
-                        "dir_acc": None,
-                        "status": "BAD",
-                        "reason": "prediction columns not found",
-                    }
-                )
-                continue
+                        coverage_ratio = None
+                        true_series = None
+                        pred_series = None
+                        if stepa_prices is not None and "Date" in stepa_prices.columns and date_col:
+                            merged = stepa_prices[["Date", "Close"]].merge(
+                                df[[date_col, col]].rename(columns={date_col: "Date"}), on="Date", how="left"
+                            )
+                            coverage_ratio = float(merged[col].notna().mean()) if len(merged) else None
+                            true_series = merged["Close"]
+                            pred_series = merged[col]
+                        elif "Close_true" in df.columns:
+                            true_series = df["Close_true"]
+                            pred_series = df[col]
 
-            for col in pred_cols:
-                total_rows = len(df)
-                nn = int(df[col].notna().sum())
-                nn_ratio = float(nn / total_rows) if total_rows else 0.0
+                        mae = corr = None
+                        if true_series is not None and pred_series is not None:
+                            mm = _calc_metrics(true_series, pred_series)
+                            mae, corr = mm["mae"], mm["corr"]
 
-                first_valid = None
-                last_valid = None
-                if date_col and nn > 0:
-                    valid_dates = df.loc[df[col].notna(), date_col].dropna()
-                    if not valid_dates.empty:
-                        first_valid = str(valid_dates.iloc[0].date())
-                        last_valid = str(valid_dates.iloc[-1].date())
+                        status = "OK"
+                        if nn_ratio < 0.5:
+                            status = "BAD"
+                        elif nn_ratio < 0.9 or (coverage_ratio is not None and coverage_ratio < 0.9):
+                            status = "WARN"
 
-                coverage = None
-                merged: pd.DataFrame | None = None
-                if stepa_prices is not None and "Date" in stepa_prices.columns and date_col:
-                    left = stepa_prices[["Date"]].copy()
-                    right = df[[date_col, col]].copy().rename(columns={date_col: "Date"})
-                    merged = left.merge(right, on="Date", how="left")
-                    coverage = float(merged[col].notna().mean()) if len(merged) else None
+                        rows.append(
+                            {
+                                "file": os.path.basename(fpath),
+                                "pred_col": col,
+                                "non_null_ratio": nn_ratio,
+                                "first_valid_date": first_valid_date,
+                                "coverage_ratio_over_test": coverage_ratio,
+                                "mae": mae,
+                                "corr": corr,
+                                "status": status,
+                            }
+                        )
+                except Exception as exc:
+                    rows.append({"file": os.path.basename(fpath), "pred_col": None, "status": "SKIP", "reason": str(exc)})
 
-                mae = rmse = corr = dir_acc = None
-                if _can_compare_close_scale(col):
-                    true_s = None
-                    if "Close_true" in df.columns:
-                        true_s = df["Close_true"]
-                        pred_s = df[col]
-                    elif merged is not None and stepa_prices is not None and "Close" in stepa_prices.columns:
-                        merged_true = merged.merge(stepa_prices[["Date", "Close"]], on="Date", how="left")
-                        true_s = merged_true["Close"]
-                        pred_s = merged_true[col]
-                    else:
-                        pred_s = None
-
-                    if true_s is not None and pred_s is not None:
-                        mm = _calc_metrics(true_s, pred_s)
-                        mae, rmse, corr, dir_acc = mm["mae"], mm["rmse"], mm["corr"], mm["dir_acc"]
-
-                stepb_rows.append(
-                    {
-                        "file": os.path.basename(fpath),
-                        "pred_col": col,
-                        "rows": int(total_rows),
-                        "non_null_count": nn,
-                        "non_null_ratio": nn_ratio,
-                        "first_valid_date": first_valid,
-                        "last_valid_date": last_valid,
-                        "coverage_ratio": coverage,
-                        "mae": mae,
-                        "rmse": rmse,
-                        "corr": corr,
-                        "dir_acc": dir_acc,
-                        "status": _status(nn_ratio, coverage, True),
-                        "reason": None,
-                    }
-                )
-        except Exception as exc:
-            stepb_rows.append(
-                {
-                    "file": os.path.basename(fpath),
-                    "pred_col": None,
-                    "rows": 0,
-                    "non_null_count": 0,
-                    "non_null_ratio": None,
-                    "first_valid_date": None,
-                    "last_valid_date": None,
-                    "coverage_ratio": None,
-                    "mae": None,
-                    "rmse": None,
-                    "corr": None,
-                    "dir_acc": None,
-                    "status": "SKIP",
-                    "reason": str(exc),
-                }
-            )
-
-    overall = "OK" if any(r["status"] == "OK" for r in stepb_rows) else "WARN"
-    report["stepB"] = {
-        "status": overall,
-        "summary": "stepB files evaluated",
-        "split_summary_path": split_b_path,
-        "rows": stepb_rows,
-    }
+            stepb_status = "SKIP" if not rows else max((r.get("status", "WARN") for r in rows), key=_status_level)
+            report["stepB"] = {
+                "status": stepb_status,
+                "summary": "stepB files evaluated",
+                "rows": rows,
+                "files": [os.path.basename(p) for p in files],
+            }
+    except Exception as exc:
+        report["stepB"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
     # StepE
-    selected_mode_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
-    step_e_daily_logs = list(selected_mode_logs)
-    summary = "stepE daily logs evaluated"
-    status_on_empty = "WARN"
-    if not step_e_daily_logs:
-        step_e_daily_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", "stepE_daily_log_*.csv")))
-        if step_e_daily_logs:
-            summary = f"stepE daily logs found in other modes (requested_mode={mode})"
+    try:
+        step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
+        if not step_e_logs:
+            step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", "stepE_daily_log_*.csv")))
+        if not step_e_logs:
+            report["stepE"] = {"status": "SKIP", "summary": "stepE_daily_log missing", "rows": []}
         else:
-            summary = "no stepE daily logs found"
+            rows = []
+            for fpath in step_e_logs:
+                try:
+                    df = _read_csv(fpath)
+                    row = {
+                        "file": os.path.basename(fpath),
+                        "test_days": int(len(df)),
+                        "equity_multiple": _to_float(df["equity_multiple"].iloc[-1]) if "equity_multiple" in df.columns and len(df) else None,
+                        "max_dd": _to_float(df["max_dd"].iloc[-1]) if "max_dd" in df.columns and len(df) else None,
+                        "sharpe": _to_float(df["sharpe"].iloc[-1]) if "sharpe" in df.columns and len(df) else None,
+                        "mean_reward": _to_float(df["reward"].mean()) if "reward" in df.columns and len(df) else None,
+                        "status": "OK" if len(df) > 0 else "WARN",
+                    }
+                    rows.append(row)
+                except Exception as exc:
+                    rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
+            report["stepE"] = {
+                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
+                "summary": "stepE daily logs evaluated",
+                "rows": rows,
+            }
+    except Exception as exc:
+        report["stepE"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
-    if not step_e_daily_logs:
-        report["stepE"] = {
-            "status": status_on_empty,
-            "summary": summary,
-            "rows": [],
-        }
-    else:
-        rows: list[dict[str, Any]] = []
-        for fpath in step_e_daily_logs:
-            try:
-                df = _read_csv(fpath)
-                rows.append({
-                    "file": os.path.basename(fpath),
-                    "rows": int(len(df)),
-                    "columns": list(df.columns),
-                    "status": "OK" if len(df) > 0 else "WARN",
-                })
-            except Exception as exc:
-                rows.append({
-                    "file": os.path.basename(fpath),
-                    "rows": 0,
-                    "columns": [],
-                    "status": "SKIP",
-                    "reason": str(exc),
-                })
+    # StepF
+    try:
+        step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", mode, "stepF_equity_marl*.csv")))
+        if not step_f_logs:
+            step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", "*", "stepF_equity_marl*.csv")))
+        if not step_f_logs:
+            report["stepF"] = {"status": "SKIP", "summary": "stepF_equity_marl missing", "rows": []}
+        else:
+            rows = []
+            for fpath in step_f_logs:
+                try:
+                    df = _read_csv(fpath)
+                    row = {
+                        "file": os.path.basename(fpath),
+                        "test_days": int(len(df)),
+                        "total_return": _to_float(df["total_return"].iloc[-1]) if "total_return" in df.columns and len(df) else None,
+                        "max_drawdown": _to_float(df["max_drawdown"].iloc[-1]) if "max_drawdown" in df.columns and len(df) else None,
+                        "sharpe": _to_float(df["sharpe"].iloc[-1]) if "sharpe" in df.columns and len(df) else None,
+                        "status": "OK" if len(df) > 0 else "WARN",
+                    }
+                    rows.append(row)
+                except Exception as exc:
+                    rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
+            report["stepF"] = {
+                "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
+                "summary": "stepF equity logs evaluated",
+                "rows": rows,
+            }
+    except Exception as exc:
+        report["stepF"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
-        report["stepE"] = {
-            "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
-            "summary": summary,
-            "rows": rows,
-        }
-
+    statuses = [report["stepA"]["status"], report["stepB"]["status"], report["stepE"]["status"], report["stepF"]["status"]]
+    report["overall_status"] = "BAD" if "BAD" in statuses else ("WARN" if "WARN" in statuses or "SKIP" in statuses else "OK")
     return report
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    return "\n".join([
+        "# EVAL_REPORT",
+        "",
+        f"- output_root: `{report.get('output_root')}`",
+        f"- mode: `{report.get('mode')}`",
+        f"- symbol: `{report.get('symbol')}`",
+        f"- overall_status: **{report.get('overall_status')}**",
+        "",
+        "## Raw JSON",
+        "```json",
+        json.dumps(report, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "Best-effort mode: this evaluator writes SKIP/notes and always exits 0.",
+    ])
+
+
+def render_summary(report: dict[str, Any]) -> str:
     lines: list[str] = []
-    lines.append("# EVAL_REPORT")
-    lines.append("")
-    lines.append(f"- output_root: `{report.get('output_root')}`")
-    lines.append(f"- mode: `{report.get('mode')}`")
-    lines.append(f"- symbol: `{report.get('symbol')}`")
-    lines.append("")
+    lines.append(f"status={report.get('overall_status', 'WARN')}")
 
     stepa = report.get("stepA", {})
-    lines.append("## StepA summary")
-    lines.append(f"- status: **{stepa.get('status')}**")
-    lines.append(f"- summary: {stepa.get('summary')}")
-    d = stepa.get("details", {})
-    if d:
-        lines.append("- prices_test:")
-        for k in ["rows", "cols", "date_start", "date_end", "date_monotonic_increasing", "date_duplicates"]:
-            lines.append(f"  - {k}: {d.get(k)}")
-        if d.get("ohlcv_missing"):
-            lines.append("  - ohlcv_missing:")
-            for k, v in d["ohlcv_missing"].items():
-                lines.append(f"    - {k}: {v}")
-    lines.append(f"- split_summary_path: {stepa.get('split_summary_path')}")
-    lines.append(f"- split_summary: {json.dumps(stepa.get('split_summary', {}), ensure_ascii=False)}")
-    lines.append("")
+    ad = stepa.get("details", {})
+    lines.append("StepA:")
+    if stepa.get("status") == "SKIP":
+        lines.append(f"  SKIP: {stepa.get('summary')}")
+    else:
+        lines.append(f"  test_rows={_fmt(ad.get('test_rows'))}")
+        lines.append(f"  test_date_start={_fmt(ad.get('test_date_start'))} test_date_end={_fmt(ad.get('test_date_end'))}")
+        lines.append(f"  missing_ohlcv_count={_fmt(ad.get('missing_ohlcv_count'))}")
 
     stepb = report.get("stepB", {})
-    lines.append("## StepB file-by-file")
-    lines.append(f"- status: **{stepb.get('status')}**")
-    lines.append(f"- summary: {stepb.get('summary')}")
-    lines.append("")
-    lines.append("| file | pred_col | rows | non_null_ratio | first_valid | last_valid | coverage_ratio | MAE | corr | dir_acc | status |")
-    lines.append("|---|---|---:|---:|---|---|---:|---:|---:|---:|---|")
-    for row in stepb.get("rows", []):
-        lines.append(
-            f"| {row.get('file')} | {row.get('pred_col')} | {row.get('rows')} | {row.get('non_null_ratio')} | "
-            f"{row.get('first_valid_date')} | {row.get('last_valid_date')} | {row.get('coverage_ratio')} | "
-            f"{row.get('mae')} | {row.get('corr')} | {row.get('dir_acc')} | {row.get('status')} |"
-        )
-        if row.get("reason"):
-            lines.append(f"- note ({row.get('file')}): {row.get('reason')}")
+    lines.append("StepB:")
+    if stepb.get("status") == "SKIP":
+        lines.append(f"  SKIP: {stepb.get('summary')}")
+    else:
+        files = stepb.get("files", [])
+        show_files = files[:MAX_LIST_ITEMS]
+        lines.append(f"  prediction_files_found={len(files)}")
+        for fn in show_files:
+            lines.append(f"    - {fn}")
+        if len(files) > len(show_files):
+            lines.append(f"    ... +{len(files) - len(show_files)} more")
 
-    lines.append("")
-    step_e = report.get("stepE", {})
-    lines.append("## StepE daily logs")
-    lines.append(f"- status: **{step_e.get('status')}**")
-    lines.append(f"- summary: {step_e.get('summary')}")
-    for row in step_e.get("rows", []):
-        lines.append(f"- {row.get('file')}: rows={row.get('rows')} status={row.get('status')}")
+        for r in stepb.get("rows", [])[:MAX_LIST_ITEMS * 2]:
+            lines.append(
+                "  "
+                + f"{r.get('file')}::{r.get('pred_col')} nn_ratio={_fmt(r.get('non_null_ratio'))} "
+                + f"first_valid_date={_fmt(r.get('first_valid_date'))} coverage_ratio_over_test={_fmt(r.get('coverage_ratio_over_test'))} "
+                + f"mae={_fmt(r.get('mae'))} corr={_fmt(r.get('corr'))}"
+            )
 
-    lines.append("")
-    lines.append("Status rule: OK if non_null_ratio>=0.90 and coverage_ratio>=0.90; WARN otherwise; BAD if non_null_ratio<0.50 or pred cols missing.")
-    lines.append("Best-effort mode: this evaluator writes SKIP/notes and always exits 0.")
-    lines.append("")
-    return "\n".join(lines)
+    stepe = report.get("stepE", {})
+    lines.append("StepE:")
+    if stepe.get("status") == "SKIP":
+        lines.append(f"  SKIP: {stepe.get('summary')}")
+    else:
+        for r in stepe.get("rows", [])[:MAX_LIST_ITEMS]:
+            lines.append(
+                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
+                f"max_dd={_fmt(r.get('max_dd'))} sharpe={_fmt(r.get('sharpe'))} mean_reward={_fmt(r.get('mean_reward'))}"
+            )
+
+    stepf = report.get("stepF", {})
+    lines.append("StepF:")
+    if stepf.get("status") == "SKIP":
+        lines.append(f"  SKIP: {stepf.get('summary')}")
+    else:
+        for r in stepf.get("rows", [])[:MAX_LIST_ITEMS]:
+            lines.append(
+                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} total_return={_fmt(r.get('total_return'))} "
+                f"max_drawdown={_fmt(r.get('max_drawdown'))} sharpe={_fmt(r.get('sharpe'))}"
+            )
+
+    text = "\n".join(lines)
+    sliced = text[:MAX_SUMMARY_CHARS]
+    out_lines = sliced.splitlines()[:MAX_SUMMARY_LINES]
+    return "\n".join(out_lines)
 
 
 def main() -> None:
@@ -405,18 +365,35 @@ def main() -> None:
     ap.add_argument("--symbol", default="SOXL")
     ap.add_argument("--out-md", required=True)
     ap.add_argument("--out-json", required=True)
+    ap.add_argument("--out-summary", required=True)
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out_md)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out_summary)), exist_ok=True)
 
-    report = evaluate(args.output_root, args.mode, args.symbol)
-    md = render_markdown(report)
+    try:
+        report = evaluate(args.output_root, args.mode, args.symbol)
+        md = render_markdown(report)
+        summary = render_summary(report)
+    except Exception as exc:
+        report = {
+            "output_root": args.output_root,
+            "mode": args.mode,
+            "symbol": args.symbol,
+            "overall_status": "WARN",
+            "error": str(exc),
+            "traceback": traceback.format_exc(limit=4),
+        }
+        md = "# EVAL_REPORT\n\nEvaluator failed but continued in best-effort mode.\n\n```\n" + report["traceback"] + "\n```\n"
+        summary = f"status=WARN\nStepA:\n  SKIP: evaluator exception={exc}\nStepB:\n  SKIP: evaluator exception\nStepE:\n  SKIP: evaluator exception\nStepF:\n  SKIP: evaluator exception"
 
     with open(args.out_md, "w", encoding="utf-8") as f:
         f.write(md)
     with open(args.out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
+    with open(args.out_summary, "w", encoding="utf-8") as f:
+        f.write(summary)
 
 
 if __name__ == "__main__":
@@ -424,3 +401,4 @@ if __name__ == "__main__":
         main()
     except Exception:
         traceback.print_exc()
+    raise SystemExit(0)
