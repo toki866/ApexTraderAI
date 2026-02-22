@@ -48,9 +48,9 @@ on:
         default: true
         type: boolean
       steps:
-        description: "Pipeline steps to run (comma-separated). Default runs full A-F with D-prime."
+        description: "Pipeline steps to run (comma-separated). Standard flow is A,B,C,DPRIME,E,F. StepD is deprecated and D' (DPRIME) is used instead."
         required: true
-        default: "A,B,C,D,DPRIME,E,F"
+        default: "A,B,C,DPRIME,E,F"
         type: string
       skip_stepe:
         description: "Debug only: skip StepE (1=true, 0=false)"
