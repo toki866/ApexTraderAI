@@ -1,0 +1,11 @@
+status=WARN
+StepA:
+  test_rows=62
+  test_date_start=2022-01-03 test_date_end=2022-03-31
+  missing_ohlcv_count=0
+StepB:
+  SKIP: no stepB prediction files found
+StepE:
+  SKIP: stepE_daily_log missing
+StepF:
+  SKIP: stepF_equity_marl missing
