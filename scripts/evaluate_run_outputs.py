@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Best-effort evaluator for StepA/StepB/StepE/StepF outputs.
+"""Best-effort evaluator for StepA/StepB/D'/StepE/StepF outputs.
 
 Design goals:
 - Never raise uncaught exceptions (workflow-safe).
@@ -241,6 +241,50 @@ def _calc_diversity(pos_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+
+
+def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
+    base = os.path.join(output_root, "stepD_prime", mode)
+    state_patterns = [
+        os.path.join(base, f"stepDprime_state_*_{symbol}_train.csv"),
+        os.path.join(base, f"stepDprime_state_*_{symbol}_test.csv"),
+    ]
+    emb_patterns = [
+        os.path.join(base, "embeddings", f"stepDprime_*_{symbol}_embeddings*.csv"),
+    ]
+
+    state_files: list[str] = []
+    emb_files: list[str] = []
+    for pat in state_patterns:
+        state_files.extend(sorted(glob.glob(pat)))
+    for pat in emb_patterns:
+        emb_files.extend(sorted(glob.glob(pat)))
+
+    state_files = sorted(set(state_files))
+    emb_files = sorted(set(emb_files))
+
+    has_state = len(state_files) > 0
+    has_embeddings = len(emb_files) > 0
+    status = "OK" if has_state and has_embeddings else "WARN"
+    missing = []
+    if not has_state:
+        missing.append("state")
+    if not has_embeddings:
+        missing.append("embeddings")
+    summary = "D' state/embeddings found" if not missing else f"D' missing: {', '.join(missing)}"
+
+    return {
+        "status": status,
+        "summary": summary,
+        "details": {
+            "state_count": len(state_files),
+            "embeddings_count": len(emb_files),
+            "state_files": [os.path.basename(x) for x in state_files],
+            "embeddings_files": [os.path.basename(x) for x in emb_files],
+            "searched": state_patterns + emb_patterns,
+        },
+    }
+
 def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     report: dict[str, Any] = {
         "output_root": output_root,
@@ -248,6 +292,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "stepA": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "dprime": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepE": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "stepF": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "diversity": {"status": "SKIP", "summary": "not evaluated"},
@@ -377,6 +422,12 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     except Exception as exc:
         report["stepB"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
+    # D' (StepD prime artifacts only)
+    try:
+        report["dprime"] = _collect_dprime_artifacts(output_root=output_root, mode=mode, symbol=symbol)
+    except Exception as exc:
+        report["dprime"] = {"status": "WARN", "summary": f"exception: {exc}", "details": {}}
+
     # StepE
     try:
         step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, f"stepE_daily_log_*_{symbol}.csv")))
@@ -487,6 +538,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     statuses = [
         report["stepA"]["status"],
         report["stepB"]["status"],
+        report["dprime"]["status"],
         report["stepE"]["status"],
         report["stepF"]["status"],
         report.get("diversity", {}).get("status", "SKIP"),
@@ -504,8 +556,22 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- symbol: `{report.get('symbol')}`",
         f"- overall_status: **{report.get('overall_status')}**",
         "",
-        "## StepE agents table",
+        "## D' (stepD_prime) artifacts",
     ]
+    dprime = report.get("dprime", {})
+    ddet = dprime.get("details", {})
+    lines.extend([
+        f"- status: **{dprime.get('status', 'SKIP')}**",
+        f"- summary: {dprime.get('summary', 'NA')}",
+        f"- state_count: {_fmt(ddet.get('state_count'))}",
+        f"- embeddings_count: {_fmt(ddet.get('embeddings_count'))}",
+    ])
+
+    lines.extend([
+        "",
+        "## StepE agents table",
+    ])
+
     stepe_rows = report.get("stepE", {}).get("rows", [])
     if stepe_rows:
         lines.extend([
@@ -597,6 +663,12 @@ def render_summary(report: dict[str, Any]) -> str:
                 + f"first_valid_date={_fmt(r.get('first_valid_date'))} coverage_ratio_over_test={_fmt(r.get('coverage_ratio_over_test'))} "
                 + f"mae={_fmt(r.get('mae'))} corr={_fmt(r.get('corr'))}"
             )
+
+    dprime = report.get("dprime", {})
+    ddet = dprime.get("details", {})
+    lines.append("DPrime:")
+    lines.append(f"  status={dprime.get('status', 'SKIP')} summary={dprime.get('summary', 'NA')}")
+    lines.append(f"  state_count={_fmt(ddet.get('state_count'))} embeddings_count={_fmt(ddet.get('embeddings_count'))}")
 
     stepe = report.get("stepE", {})
     lines.append("StepE:")
