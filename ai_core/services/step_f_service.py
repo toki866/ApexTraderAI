@@ -46,7 +46,7 @@ from torch import nn
 class StepFConfig:
     output_root: str = "output"
     agents: str = ""  # comma-separated list of StepE agent names
-    seed: int = 7
+    seed: int = 42
     verbose: bool = True
 
     # training
@@ -62,7 +62,7 @@ class StepFConfig:
     pos_l2: float = 1e-3
     pos_limit: float = 1.0
 
-    device: str = "cpu"
+    device: str = "auto"
 
 
 class GateNet(nn.Module):
@@ -125,8 +125,11 @@ class StepFService:
         pos_df = None
         for a in agents:
             df = self._load_stepE_daily_log(out_root, mode, symbol, a)
-            df = df[["Date", "Position"]].copy()
-            df = df.rename(columns={"Position": f"pos_{a}"})
+            pos_col = "Position" if "Position" in df.columns else ("pos" if "pos" in df.columns else None)
+            if pos_col is None:
+                raise ValueError(f"StepE daily log for {a} missing Position/pos column")
+            df = df[["Date", pos_col]].copy()
+            df = df.rename(columns={pos_col: f"pos_{a}"})
             pos_df = df if pos_df is None else pos_df.merge(df, on="Date", how="outer")
 
         assert pos_df is not None
@@ -147,9 +150,13 @@ class StepFService:
             raise RuntimeError(f"Test rows too small for StepF: {len(df_test)}")
 
         # tensors
-        device = torch.device(cfg.device)
-        torch.manual_seed(int(cfg.seed))
-        np.random.seed(int(cfg.seed))
+        seed = int(42 if getattr(cfg, "seed", None) is None else cfg.seed)
+        device_name = str(getattr(cfg, "device", "auto") or "auto").strip().lower()
+        if device_name in ("", "none", "auto"):
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device_name)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
 
         X_train = torch.tensor(df_train[[f"pos_{a}" for a in agents]].to_numpy(dtype=np.float32), device=device)
         X_test = torch.tensor(df_test[[f"pos_{a}" for a in agents]].to_numpy(dtype=np.float32), device=device)

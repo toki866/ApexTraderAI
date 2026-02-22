@@ -31,15 +31,31 @@ class StepBService:
 
     def _load_stepa_df(self, symbol: str, run_mode: str, kind: str) -> pd.DataFrame:
         out_root = Path(getattr(getattr(self.app_config, "data", None), "output_root", getattr(self.app_config, "output_root", "output")))
-        cands = [
-            out_root / "stepA" / run_mode / f"stepA_{kind}_{symbol}.csv",
-            out_root / "stepA" / f"stepA_{kind}_{symbol}.csv",
-            out_root / f"stepA_{kind}_{symbol}.csv",
-        ]
-        for p in cands:
-            if p.exists() and p.stat().st_size > 0:
-                return pd.read_csv(p)
-        raise FileNotFoundError(f"Missing StepA {kind} CSV for {symbol}: {cands}")
+        mode_dir = out_root / "stepA" / run_mode
+
+        if run_mode in ("sim", "live"):
+            train_p = mode_dir / f"stepA_{kind}_train_{symbol}.csv"
+            test_p = mode_dir / f"stepA_{kind}_test_{symbol}.csv"
+            if not train_p.exists() or train_p.stat().st_size <= 0:
+                raise FileNotFoundError(f"Missing StepA train {kind} CSV for {symbol}: {train_p}")
+            if not test_p.exists() or test_p.stat().st_size <= 0:
+                raise FileNotFoundError(f"Missing StepA test {kind} CSV for {symbol}: {test_p}")
+
+            tr = pd.read_csv(train_p)
+            te = pd.read_csv(test_p)
+            if "Date" in tr.columns:
+                tr["Date"] = pd.to_datetime(tr["Date"], errors="coerce")
+            if "Date" in te.columns:
+                te["Date"] = pd.to_datetime(te["Date"], errors="coerce")
+            out = pd.concat([tr, te], axis=0, ignore_index=True)
+            if "Date" in out.columns:
+                out = out.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+            return out.reset_index(drop=True)
+
+        display_p = mode_dir / f"stepA_{kind}_{symbol}.csv"
+        if display_p.exists() and display_p.stat().st_size > 0:
+            return pd.read_csv(display_p)
+        raise FileNotFoundError(f"Missing StepA {kind} CSV for {symbol}: {display_p}")
 
     def _write_pred_time_all(self, symbol: str, run_mode: str, mamba_result) -> Path:
         stepb_dir = self._out_dir(run_mode)
@@ -93,7 +109,9 @@ class StepBService:
         symbol = cfg_all.symbol
         run_mode = self._resolve_run_mode(cfg_all)
         prices_df = self._load_stepa_df(symbol, run_mode, "prices")
-        features_df = self._load_stepa_df(symbol, run_mode, "features")
+        tech_df = self._load_stepa_df(symbol, run_mode, "tech")
+        periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
+        features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
 
         mamba_res = run_stepB_mamba(
             app_config=self.app_config,

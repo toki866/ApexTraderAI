@@ -56,7 +56,7 @@ class StepEConfig:
     agent: str
     output_root: str = "output"
     obs_profile: str = "A"  # A/B/C/D
-    seed: int = 42
+    seed: Optional[int] = 42
     verbose: bool = True
 
     # Trading
@@ -79,7 +79,7 @@ class StepEConfig:
     weight_decay: float = 1e-4
     pos_l2: float = 1e-3
     smooth_abs_eps: float = 1e-6
-    device: str = "cpu"
+    device: str = "auto"
 
 
 # ---------------------------
@@ -158,8 +158,11 @@ class StepEService:
         out_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
 
+        cfg.seed = 42 if getattr(cfg, "seed", None) is None else int(cfg.seed)
+        cfg.device = str(getattr(cfg, "device", "auto") or "auto")
+
         if cfg.verbose:
-            print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed}")
+            print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed} device={cfg.device}")
 
         # Load & merge inputs (train+test)
         df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
@@ -221,7 +224,10 @@ class StepEService:
         X_test_s = (X_test - mu) / sd
 
         # Train policy (diffPG)
-        device = torch.device(cfg.device)
+        device_name = str(cfg.device).strip().lower()
+        if device_name in ("", "none", "auto"):
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device_name)
         torch.manual_seed(int(cfg.seed))
         np.random.seed(int(cfg.seed))
 
