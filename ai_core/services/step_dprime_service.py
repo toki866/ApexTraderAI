@@ -359,6 +359,35 @@ def _shift_calendar_date(calendar_keys: List[str], calendar_idx: Dict[str, int],
     return calendar_keys[j]
 
 
+def _expand_embeddings_to_calendar(
+    out_df: pd.DataFrame,
+    calendar_keys: List[str],
+    model_key: str,
+    verbose: bool,
+) -> pd.DataFrame:
+    before_rows = int(len(out_df))
+    df_full = pd.DataFrame({"Date": calendar_keys})
+    out_df_exp = df_full.merge(out_df, on="Date", how="left")
+
+    emb_cols = [c for c in out_df_exp.columns if c.startswith("emb_")]
+    if emb_cols:
+        out_df_exp[emb_cols] = out_df_exp[emb_cols].fillna(0.0)
+
+    if "label_available" in out_df_exp.columns:
+        out_df_exp["label_available"] = pd.to_numeric(out_df_exp["label_available"], errors="coerce").fillna(0).astype(int)
+    if "horizon_model" in out_df_exp.columns:
+        out_df_exp["horizon_model"] = pd.to_numeric(out_df_exp["horizon_model"], errors="coerce").fillna(0).astype(int)
+
+    after_rows = int(len(out_df_exp))
+    filled_rows = max(0, after_rows - before_rows)
+    if verbose:
+        print(
+            f"[StepDPrime] expanded embeddings_all: model_key={model_key} "
+            f"before={before_rows} after={after_rows} filled={filled_rows}"
+        )
+    return out_df_exp
+
+
 def _build_sequences_from_pred_close(
     df: pd.DataFrame,
     source: str,
@@ -695,7 +724,13 @@ class StepDPrimeService:
                         out_df.insert(2, "label_available", label_avail.astype(int))
                         out_df.insert(3, "source", source)
                         out_df.insert(4, "horizon_model", int(h))
-                    out_df.to_csv(out_csv, index=False)
+                    out_df_exp = _expand_embeddings_to_calendar(
+                        out_df=out_df,
+                        calendar_keys=calendar_keys,
+                        model_key=model_key,
+                        verbose=cfg.verbose,
+                    )
+                    out_df_exp.to_csv(out_csv, index=False)
 
                     results["models"][model_key] = {
                         "source": source,
@@ -791,7 +826,13 @@ class StepDPrimeService:
                     out_df.insert(2, "label_available", label_avail.astype(int))
                     out_df.insert(3, "source", source)
                     out_df.insert(4, "horizon_model", int(h))
-                out_df.to_csv(out_csv, index=False)
+                out_df_exp = _expand_embeddings_to_calendar(
+                    out_df=out_df,
+                    calendar_keys=calendar_keys,
+                    model_key=model_key,
+                    verbose=cfg.verbose,
+                )
+                out_df_exp.to_csv(out_csv, index=False)
 
                 results["models"][model_key] = {
                     "source": source,
