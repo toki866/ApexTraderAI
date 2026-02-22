@@ -1,7 +1,7 @@
 ﻿# CSV Index
 
-- source_run_dir: C:\work\apex_work\runs\20260221_164217
-- source_output_root: C:\work\apex_work\runs\20260221_164217\output
+- source_run_dir: C:\work\apex_work\runs\20260222_111436
+- source_output_root: C:\work\apex_work\runs\20260222_111436\output
 
 - file: ./csv/stepA_prices_test_SOXL.csv | size_bytes: 5601 | head_only: no
   - preview:
@@ -31,3 +31,9 @@
   - preview:
     - Date,Pred_Close_XSR,Pred_Close_MAMBA,Pred_Close_FED
     - 2014-01-03,,,
+- file: ./csv/stepE_daily_log_mamba_SOXL.csv | size_bytes: 206990 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.5350069403648376,-0.010654494166374207,0.9893455058336258,0.5350069403648376,1
+
+- eval_report: ./csv/EVAL_REPORT.md
