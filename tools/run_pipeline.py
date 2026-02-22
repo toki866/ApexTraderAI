@@ -1044,6 +1044,21 @@ def _run_stepB(app_config, symbol: str, date_range, enable_xsr: bool, enable_mam
     return fn(cfg)
 
 
+def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
+    from ai_core.services.step_dprime_service import StepDPrimeService, StepDPrimeConfig
+
+    out_root = str(getattr(app_config, "output_root", "output"))
+    cfg = StepDPrimeConfig(
+        symbol=symbol,
+        mode=(mode or "sim"),
+        output_root=out_root,
+        seed=42,
+        device="auto",
+    )
+    svc = StepDPrimeService()
+    return svc.run(cfg)
+
+
 def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, prev_results: Dict[str, Any]):
     mod_map = {
         "C": ("ai_core.services.step_c_service", "StepCService"),
@@ -1299,13 +1314,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as e:
                 print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
 
-        for step in ("C", "DPRIME", "D", "E", "F"):
+        if "C" in steps:
+            print("[StepC] start")
+            results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+            print("[StepC] done")
+
+        if "DPRIME" in steps:
+            print("[StepDPrime] start")
+            results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+            print("[StepDPrime] done")
+
+        for step in ("D", "E", "F"):
             if step not in steps:
                 continue
-            step_name = "StepDPrime" if step == "DPRIME" else f"Step{step}"
-            print(f"[{step_name}] start")
+            print(f"[Step{step}] start")
             results[f"step{step}_result"] = _run_step_generic(step, app_config, symbol, date_range, results)
-            print(f"[{step_name}] done")
+            print(f"[Step{step}] done")
 
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
