@@ -65,6 +65,8 @@ class StepEConfig:
 
     # StepD' (Prime embeddings)
     use_stepd_prime: bool = False
+    use_dprime_state: bool = False
+    dprime_state_variant: str = ""  # bnf / all_features / mix
     dprime_sources: str = ""      # e.g. "bnf" or "bnf,all_features"
     dprime_horizons: str = "1"    # e.g. "1" or "1,2,3"
     dprime_join: str = "concat"   # concat only (for now)
@@ -211,6 +213,8 @@ class StepEService:
         obs_cols = [c for c in obs_cols if c in df_all.columns]
         if not obs_cols:
             raise RuntimeError("No observation columns selected.")
+        if cfg.verbose:
+            print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
 
         # Prepare tensors
         X_train, yret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
@@ -382,17 +386,27 @@ class StepEService:
 
     def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
-        df = df_prices.copy()
+
+        if cfg.use_dprime_state:
+            df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            df = df_state.merge(
+                df_prices[["Date", "Open", "High", "Low", "Close", "Volume"]],
+                on="Date",
+                how="left",
+            )
+        else:
+            df = df_prices.copy()
         used_manifest: dict[str, object] = {}
 
-        # merge periodic and tech if available
-        for stem in ["stepA_periodic", "stepA_tech"]:
-            p_train = out_root / "stepA" / mode / f"{stem}_train_{symbol}.csv"
-            p_test = out_root / "stepA" / mode / f"{stem}_test_{symbol}.csv"
-            if p_train.exists() and p_test.exists():
-                dft = pd.concat([pd.read_csv(p_train), pd.read_csv(p_test)], axis=0, ignore_index=True)
-                dft["Date"] = pd.to_datetime(dft["Date"], errors="coerce")
-                df = df.merge(dft, on="Date", how="left")
+        if not cfg.use_dprime_state:
+            # merge periodic and tech if available
+            for stem in ["stepA_periodic", "stepA_tech"]:
+                p_train = out_root / "stepA" / mode / f"{stem}_train_{symbol}.csv"
+                p_test = out_root / "stepA" / mode / f"{stem}_test_{symbol}.csv"
+                if p_train.exists() and p_test.exists():
+                    dft = pd.concat([pd.read_csv(p_train), pd.read_csv(p_test)], axis=0, ignore_index=True)
+                    dft["Date"] = pd.to_datetime(dft["Date"], errors="coerce")
+                    df = df.merge(dft, on="Date", how="left")
 
         # Ensure core features exist (Gap, ATR_norm, oc_ret)
         df = self._ensure_core_features(df)
@@ -435,6 +449,21 @@ class StepEService:
             raise FileNotFoundError(f"Missing StepA prices: {p_tr} / {p_te}")
         df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        return df.sort_values("Date").reset_index(drop=True)
+
+    def _load_stepD_prime_state(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+        variant = str(cfg.dprime_state_variant or "").strip()
+        if not variant:
+            raise ValueError("dprime_state_variant is empty while use_dprime_state=True")
+
+        base = out_root / "stepD_prime" / mode
+        p_tr = base / f"stepDprime_state_{variant}_{symbol}_train.csv"
+        p_te = base / f"stepDprime_state_{variant}_{symbol}_test.csv"
+        if not (p_tr.exists() and p_te.exists()):
+            raise FileNotFoundError(f"Missing StepD' state CSVs: {p_tr} / {p_te}")
+
+        df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
         return df.sort_values("Date").reset_index(drop=True)
 
     def _ensure_core_features(self, df: pd.DataFrame) -> pd.DataFrame:
