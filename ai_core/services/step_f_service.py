@@ -64,12 +64,18 @@ class StepFConfig:
 
     device: str = "auto"
 
+    # optional context (StepDPrime state)
+    use_context: bool = False
+    context_variant: str = "mix"  # bnf/all_features/mix
+    context_profile: str = "minimal"  # minimal / all
+
 
 class GateNet(nn.Module):
-    def __init__(self, n_agents: int, hidden_dim: int = 64):
+    def __init__(self, n_agents: int, in_dim: int, hidden_dim: int = 64):
         super().__init__()
+        self.n_agents = int(n_agents)
         self.net = nn.Sequential(
-            nn.Linear(n_agents, hidden_dim),
+            nn.Linear(in_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
@@ -135,6 +141,17 @@ class StepFService:
         assert pos_df is not None
         df_all = df_prices.merge(pos_df, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
 
+        context_cols: List[str] = []
+        if bool(getattr(cfg, "use_context", False)):
+            df_ctx = self._load_stepd_prime_context(out_root, mode, symbol, variant=str(getattr(cfg, "context_variant", "mix") or "mix"))
+            if not df_ctx.empty:
+                df_all = df_all.merge(df_ctx, on="Date", how="left")
+                context_cols = self._select_context_columns(df_all, profile=str(getattr(cfg, "context_profile", "minimal") or "minimal"))
+                for c in context_cols:
+                    df_all[c] = pd.to_numeric(df_all[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
+
+        feature_cols = [f"pos_{a}" for a in agents] + context_cols
+
         # ensure no missing
         for a in agents:
             c = f"pos_{a}"
@@ -158,13 +175,13 @@ class StepFService:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        X_train = torch.tensor(df_train[[f"pos_{a}" for a in agents]].to_numpy(dtype=np.float32), device=device)
-        X_test = torch.tensor(df_test[[f"pos_{a}" for a in agents]].to_numpy(dtype=np.float32), device=device)
+        X_train = torch.tensor(df_train[feature_cols].to_numpy(dtype=np.float32), device=device)
+        X_test = torch.tensor(df_test[feature_cols].to_numpy(dtype=np.float32), device=device)
 
         r_train = torch.tensor(df_train["cc_ret_next"].to_numpy(dtype=np.float32), device=device)
         r_test = torch.tensor(df_test["cc_ret_next"].to_numpy(dtype=np.float32), device=device)
 
-        gate = GateNet(n_agents=len(agents), hidden_dim=int(cfg.hidden_dim)).to(device)
+        gate = GateNet(n_agents=len(agents), in_dim=len(feature_cols), hidden_dim=int(cfg.hidden_dim)).to(device)
         opt = torch.optim.AdamW(gate.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
 
         best = float("inf")
@@ -271,6 +288,8 @@ class StepFService:
             "test_end": str(test_end.date()),
             "rows_train": int(len(df_train)),
             "rows_test": int(len(df_test)),
+            "n_context": int(len(context_cols)),
+            "context_columns": context_cols,
             **metrics,
         }
         summ_path = out_dir / f"stepF_summary_marl_{symbol}.json"
@@ -321,6 +340,48 @@ class StepFService:
 
         out = pd.DataFrame({"Date": df["Date"], "Position": pos.astype(float)})
         return out.sort_values("Date").reset_index(drop=True)
+
+    def _load_stepd_prime_context(self, out_root: Path, mode: str, symbol: str, variant: str) -> pd.DataFrame:
+        base = out_root / "stepD_prime" / mode
+        paths = [
+            base / f"stepDprime_state_{variant}_{symbol}_train.csv",
+            base / f"stepDprime_state_{variant}_{symbol}_test.csv",
+        ]
+        frames: List[pd.DataFrame] = []
+        for p in paths:
+            if not p.exists():
+                continue
+            df = pd.read_csv(p)
+            if "Date" not in df.columns:
+                continue
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            frames.append(df)
+
+        if not frames:
+            return pd.DataFrame(columns=["Date"])
+
+        out = pd.concat(frames, axis=0, ignore_index=True)
+        out = out.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+        return out.reset_index(drop=True)
+
+    def _select_context_columns(self, df: pd.DataFrame, profile: str) -> List[str]:
+        minimal_candidates = [
+            "gap", "Gap", "atr_norm", "ATR_norm", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio",
+            "vol_log_ratio_20", "dev_z_25", "bnf_score", "RSI", "MACD_hist",
+        ]
+        reserved = {"Date", "Open", "High", "Low", "Close", "Volume", "oc_ret", "cc_ret_next", "Split"}
+
+        p = str(profile or "minimal").strip().lower()
+        if p == "all":
+            out = []
+            for c in df.columns:
+                if c in reserved or c.startswith("pos_"):
+                    continue
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    out.append(c)
+            return out
+
+        return [c for c in minimal_candidates if c in df.columns]
 
     # -----------------------
     # Metrics
