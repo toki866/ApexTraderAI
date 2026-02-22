@@ -123,9 +123,10 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     try:
         patterns = [
             f"stepB_pred_time_all_{symbol}.csv",
-            f"stepB_pred_close_*_{symbol}.csv",
-            f"stepB_pred_path_*_{symbol}.csv",
-            f"stepB_pred_*_{symbol}.csv",
+            f"stepB_pred_close_mamba_{symbol}.csv",
+            f"stepB_pred_path_mamba_{symbol}.csv",
+            f"stepB_pred_close_wavelet_mamba_{symbol}.csv",
+            f"stepB_pred_path_wavelet_mamba_{symbol}.csv",
         ]
         files: list[str] = []
         for p in patterns:
@@ -137,6 +138,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         else:
             rows: list[dict[str, Any]] = []
             key_cols = {"pred_close_mamba"}
+            ignore_tokens = ("xsr", "fed")
             for fpath in files:
                 try:
                     df = _read_csv(fpath)
@@ -144,10 +146,17 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                     if date_col:
                         df = _parse_date(df, date_col)
 
-                    pred_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and ("pred_" in c.lower() or c.lower().endswith("_pred"))]
+                    pred_cols = [
+                        c
+                        for c in df.columns
+                        if pd.api.types.is_numeric_dtype(df[c])
+                        and ("pred_" in c.lower() or c.lower().endswith("_pred"))
+                        and not any(token in c.lower() for token in ignore_tokens)
+                    ]
                     picked = [c for c in pred_cols if c.lower() in key_cols]
                     if not picked:
-                        picked = pred_cols[:8]
+                        # StepB phase-1: evaluate only MAMBA-like prediction columns.
+                        picked = [c for c in pred_cols if "mamba" in c.lower()]
 
                     for col in picked:
                         total_rows = len(df)
