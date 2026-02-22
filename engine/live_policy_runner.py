@@ -31,21 +31,19 @@ class LivePolicyConfig:
         LivePolicyConfig(
             symbol="SOXL",
             mode="single",
-            policy_path=str(resolve_repo_path("output/policies/policy_stepE_XSR_SOXL.npz")),
-            agent_names=["xsr"],
+            policy_path=str(resolve_repo_path("output/policies/policy_stepE_MAMBA_SOXL.npz")),
+            agent_names=["mamba"],
         )
 
     2) MARL（marl）の例:
         LivePolicyConfig(
             symbol="SOXL",
             mode="marl",
-            agent_names=["xsr", "mamba", "fed"],
+            agent_names=["mamba"],
             policy_paths={
-                "xsr":   str(resolve_repo_path("output/policies/policy_stepE_XSR_SOXL.npz")),
                 "mamba": str(resolve_repo_path("output/policies/policy_stepE_MAMBA_SOXL.npz")),
-                "fed":   str(resolve_repo_path("output/policies/policy_stepE_FED_SOXL.npz")),
             },
-            marl_weights={"xsr": 0.5, "mamba": 0.3, "fed": 0.2},
+            marl_weights={"mamba": 1.0},
         )
 
     3) Regime Router（router）の例:

@@ -58,8 +58,8 @@ def parse_date(value: str) -> date:
 
 def parse_policy_map(value: str) -> Dict[str, Path]:
     """
-    "xsr=path/to/xsr.npz;mamba=path/to/mamba.npz" のような文字列を
-    { "xsr": Path(...), "mamba": Path(...) } 辞書に変換する。
+    "mamba=path/to/mamba.npz" のような文字列を
+    { "mamba": Path(...) } 辞書に変換する。
     """
     result: Dict[str, Path] = {}
     if not value:
@@ -87,8 +87,8 @@ def parse_policy_map(value: str) -> Dict[str, Path]:
 
 def parse_weights_map(value: str) -> Dict[str, float]:
     """
-    "xsr=0.5;mamba=0.3;fed=0.2" のような文字列を
-    { "xsr": 0.5, "mamba": 0.3, "fed": 0.2 } に変換する。
+    "mamba=1.0" のような文字列を
+    { "mamba": 1.0 } に変換する。
     """
     result: Dict[str, float] = {}
     if not value:
@@ -171,8 +171,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--agent-name",
         type=str,
-        default="xsr",
-        help="Agent name used in single mode (default: xsr).",
+        default="mamba",
+        help="Agent name used in single mode (default: mamba).",
     )
     parser.add_argument(
         "--policy-map",
@@ -180,7 +180,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Policy map for MARL or advanced usage in single mode. "
-            'Format: "xsr=path/to/xsr.npz;mamba=path/to/mamba.npz;fed=path/to/fed.npz"'
+            'Format: "mamba=path/to/mamba.npz"'
         ),
     )
     parser.add_argument(
@@ -189,7 +189,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Weights for MARL mode. "
-            'Format: "xsr=0.5;mamba=0.3;fed=0.2". '
+            'Format: "mamba=1.0". '
             "If omitted in marl mode, equal weights will be used."
         ),
     )

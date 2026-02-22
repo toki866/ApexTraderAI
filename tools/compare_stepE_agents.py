@@ -18,7 +18,7 @@ StepE の出力（主に daily_log）を、2エージェント間で同一期間
 
 使い方例:
   python tools/compare_stepE_agents.py --output-root output --symbol SOXL \
-    --agent-a mamba --agent-b fed --date-from 2022-01-03 --date-to 2022-03-31 --show-diffs 50
+    --agent-a mamba --agent-b mamba --date-from 2022-01-03 --date-to 2022-03-31 --show-diffs 50
 """
 
 from __future__ import annotations
@@ -34,12 +34,8 @@ import pandas as pd
 
 def agent_tag(agent: str) -> str:
     a = (agent or "").strip().lower()
-    if a in ("xsr",):
-        return "XSR"
     if a in ("mamba", "wavelet_mamba", "wav_mamba"):
         return "MAMBA"
-    if a in ("fed", "fedformer"):
-        return "FED"
     return a.upper()
 
 

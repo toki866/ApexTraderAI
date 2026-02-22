@@ -9,11 +9,7 @@ from typing import Optional
 
 from ai_core.types.common import DateRange
 from ai_core.config.step_b_config import StepBConfig
-from ai_core.config.step_b_config import (
-    XSRTrainConfig,
-    WaveletMambaTrainConfig,
-    FEDformerTrainConfig,
-)
+from ai_core.config.step_b_config import WaveletMambaTrainConfig
 from ai_core.services.step_b_service import StepBResult, StepBAgentResult
 from backend.backend_controller import BackendController
 
@@ -177,12 +173,8 @@ class TabB_TrainModelsWidget(ttk.Frame):
         stepb_config = StepBConfig(
             symbol=symbol,
             date_range=date_range,
-            train_xsr=self.chk_xsr_var.get(),
             train_wavelet_mamba=self.chk_mamba_var.get(),
-            train_fedformer=self.chk_fed_var.get(),
-            xsr_config=XSRTrainConfig(),                # 必要ならウィジェットから値を拾って埋める
             wavelet_mamba_config=WaveletMambaTrainConfig(),
-            fedformer_config=FEDformerTrainConfig(),
         )
 
         self._set_running(True)

@@ -5,10 +5,8 @@ Compatibility shim for training config classes.
 
 Background
 ----------
-Some code paths expect to import these names from ``ai_core.config.train_config``:
-- XSRTrainConfig
+Some code paths expect to import this name from ``ai_core.config.train_config``:
 - WaveletMambaTrainConfig
-- FEDformerTrainConfig
 
 If your project defines these elsewhere (e.g. ``ai_core.types.step_b_types``),
 this module re-exports them when possible. Otherwise it provides permissive
@@ -44,16 +42,10 @@ def _mk_fallback(name: str):
 
 try:
     from ai_core.types.step_b_types import (  # type: ignore
-        XSRTrainConfig as _XSRTrainConfig,
         WaveletMambaTrainConfig as _WaveletMambaTrainConfig,
-        FEDformerTrainConfig as _FEDformerTrainConfig,
     )
 
-    XSRTrainConfig = _XSRTrainConfig
     WaveletMambaTrainConfig = _WaveletMambaTrainConfig
-    FEDformerTrainConfig = _FEDformerTrainConfig
 
 except Exception:
-    XSRTrainConfig = _mk_fallback("XSRTrainConfig")
     WaveletMambaTrainConfig = _mk_fallback("WaveletMambaTrainConfig")
-    FEDformerTrainConfig = _mk_fallback("FEDformerTrainConfig")

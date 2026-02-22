@@ -134,9 +134,7 @@ class RLMARLConfig(RLSingleConfig):
     max_epochs: int = 50
 
     initial_weights: Dict[str, float] = field(default_factory=lambda: {
-        "xsr": 1.0,
-        "lstm": 0.0,
-        "fed": 0.0,
+        "mamba": 1.0,
     })
 
     def to_dict(self) -> Dict[str, Any]:

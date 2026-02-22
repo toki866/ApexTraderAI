@@ -108,9 +108,6 @@ class StepDService:
         rbw_default = self._get_env_rbw_default20()
 
         agents = self._detect_agents(df)
-        if "xsr" not in agents:
-            agents = ["xsr"] + agents
-
         print(f"[StepD] mode={mode} source={used_source} rows={len(df)} cols={len(df.columns)} rbw={rbw_default}")
 
         results: Dict[str, Any] = {
@@ -403,29 +400,21 @@ class StepDService:
     # ---------- Agent / column selection ----------
     def _detect_agents(self, df: pd.DataFrame) -> List[str]:
         if df is None or len(df) == 0:
-            return ["xsr", "mamba", "mamba_periodic", "fed"]
+            return ["mamba", "mamba_periodic"]
         cols = [str(c).lower() for c in df.columns]
         agents: List[str] = []
-        if any("xsr" in c for c in cols):
-            agents.append("xsr")
         if any("mamba_periodic" in c for c in cols):
             agents.append("mamba_periodic")
         if any(("mamba" in c and "mamba_periodic" not in c) or "lstm" in c for c in cols):
             agents.append("mamba")
-        if any("fed" in c for c in cols):
-            agents.append("fed")
-        return agents or ["xsr", "mamba", "mamba_periodic", "fed"]
+        return agents or ["mamba", "mamba_periodic"]
 
     def _agent_suffix(self, agent: str) -> str:
         a = (agent or "").strip().lower()
-        if a == "xsr":
-            return "XSR"
         if a in {"mamba", "lstm"}:
             return "MAMBA"
         if a in {"mamba_periodic", "periodic", "mamba-periodic"}:
             return "MAMBA_PERIODIC"
-        if a in {"fed", "fedformer"}:
-            return "FED"
         return a.upper() if a else "MODEL"
 
     def _pick_pred_cols(self, df: pd.DataFrame, agent: str) -> Dict[int, str]:
