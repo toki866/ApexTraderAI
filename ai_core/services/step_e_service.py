@@ -56,7 +56,7 @@ class StepEConfig:
     agent: str
     output_root: str = "output"
     obs_profile: str = "A"  # A/B/C/D
-    seed: int = 7
+    seed: int = 42
     verbose: bool = True
 
     # Trading
@@ -159,7 +159,7 @@ class StepEService:
         model_dir.mkdir(parents=True, exist_ok=True)
 
         if cfg.verbose:
-            print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime}")
+            print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed}")
 
         # Load & merge inputs (train+test)
         df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)

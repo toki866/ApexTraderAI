@@ -266,8 +266,8 @@ def _repo_root() -> Path:
 
 
 def _parse_steps(s: str) -> Tuple[str, ...]:
-    default_steps: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
-    canonical_order: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "D", "E", "F")
+    default_steps: Tuple[str, ...] = ("A", "B", "C", "D", "DPRIME", "E", "F")
+    canonical_order: Tuple[str, ...] = ("A", "B", "C", "D", "DPRIME", "E", "F")
 
     step_aliases = {
         "A": "A",
@@ -1108,7 +1108,8 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
-    ap.add_argument("--steps", default="A,B,C,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,DPRIME,E,F")
+    ap.add_argument("--steps", default="A,B,C,D,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,D,DPRIME,E,F")
+    ap.add_argument("--skip-stepe", dest="skip_stepe", action="store_true", help="Debug escape hatch: skip StepE explicitly.")
     ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
     ap.add_argument("--train-years", type=int, default=8)
     ap.add_argument("--test-months", type=int, default=3)
@@ -1154,6 +1155,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     symbol = args.symbol or _env_get("AUTODEBUG_SYMBOL", "AUTO_DEBUG_SYMBOL") or "SOXL"
     steps = _parse_steps(args.steps)
+    skip_stepe_env = str(_env_get("SKIP_STEPE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    skip_stepe = bool(args.skip_stepe or skip_stepe_env)
+    if skip_stepe and "E" in steps:
+        steps = tuple(step for step in steps if step != "E")
 
     # StepB agent enabling (best-effort).
     if args.enable_all:
@@ -1314,6 +1319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if future_end:
         print(f"[headless] future_end={future_end}")
     print(f"[headless] steps={','.join(steps)}")
+    print(f"[headless] skip_stepe={int(skip_stepe)}")
     print(f"[headless] auto_prepare_data={int(auto_prepare_data)} data_start={data_start} data_end={data_end}")
     if args.mamba_lookback is not None:
         print(f"[headless] mamba_lookback={args.mamba_lookback}")
@@ -1357,7 +1363,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if step not in steps:
                 continue
             print(f"[Step{step}] start")
-            results[f"step{step}_result"] = _run_step_generic(step, app_config, symbol, date_range, results)
+            step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+            results[f"step{step}_result"] = step_result
+            if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
+                reason = step_result.get("reason", "unknown")
+                raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
             print(f"[Step{step}] done")
 
         print("[headless] ALL DONE")

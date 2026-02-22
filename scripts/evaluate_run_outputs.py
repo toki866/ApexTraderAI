@@ -295,11 +295,21 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     }
 
     # StepE
-    step_e_daily_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
+    selected_mode_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, "stepE_daily_log_*.csv")))
+    step_e_daily_logs = list(selected_mode_logs)
+    summary = "stepE daily logs evaluated"
+    status_on_empty = "WARN"
+    if not step_e_daily_logs:
+        step_e_daily_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", "stepE_daily_log_*.csv")))
+        if step_e_daily_logs:
+            summary = f"stepE daily logs found in other modes (requested_mode={mode})"
+        else:
+            summary = "no stepE daily logs found"
+
     if not step_e_daily_logs:
         report["stepE"] = {
-            "status": "SKIP",
-            "summary": "no stepE daily logs found",
+            "status": status_on_empty,
+            "summary": summary,
             "rows": [],
         }
     else:
@@ -324,7 +334,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
         report["stepE"] = {
             "status": "OK" if any(r.get("status") == "OK" for r in rows) else "WARN",
-            "summary": "stepE daily logs evaluated",
+            "summary": summary,
             "rows": rows,
         }
 

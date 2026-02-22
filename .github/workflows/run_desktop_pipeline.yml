@@ -50,8 +50,13 @@ on:
       steps:
         description: "Pipeline steps to run (comma-separated). Default runs full A-F with D-prime."
         required: true
-        default: "A,B,C,DPRIME,E,F"
+        default: "A,B,C,D,DPRIME,E,F"
         type: string
+      skip_stepe:
+        description: "Debug only: skip StepE (1=true, 0=false)"
+        required: true
+        default: false
+        type: boolean
       diag_keep_latest:
         description: "How many latest diag-logs runs to keep (older runs deleted from diag-logs branch)"
         required: true
@@ -339,10 +344,12 @@ jobs:
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
           INPUT_STEPS: ${{ inputs.steps }}
+          INPUT_SKIP_STEPE: ${{ inputs.skip_stepe }}
           RUN_MODE: ${{ inputs.mode }}
           SYMBOLS: ${{ inputs.symbols }}
           SYMBOL: SOXL
           STEPS: ${{ inputs.steps }}
+          SKIP_STEPE: ${{ inputs.skip_stepe && '1' || '0' }}
           DATA_START: ${{ inputs.start }}
           DATA_END: ${{ inputs.end }}
           TEST_START: ${{ inputs.test_start }}
