@@ -316,6 +316,22 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 )
 
 
+def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
+    """Return deterministic StepE expert specs for the official 10-agent set."""
+    return [
+        {"agent": "dprime_bnf_h01", "dprime_sources": "bnf", "dprime_horizons": "1", "obs_profile": "A"},
+        {"agent": "dprime_bnf_h02", "dprime_sources": "bnf", "dprime_horizons": "2", "obs_profile": "B"},
+        {"agent": "dprime_bnf_h03", "dprime_sources": "bnf", "dprime_horizons": "3", "obs_profile": "C"},
+        {"agent": "dprime_all_features_h01", "dprime_sources": "all_features", "dprime_horizons": "1", "obs_profile": "A"},
+        {"agent": "dprime_all_features_h02", "dprime_sources": "all_features", "dprime_horizons": "2", "obs_profile": "B"},
+        {"agent": "dprime_all_features_h03", "dprime_sources": "all_features", "dprime_horizons": "3", "obs_profile": "C"},
+        {"agent": "dprime_mix_h01", "dprime_sources": "bnf,all_features", "dprime_horizons": "1", "obs_profile": "D"},
+        {"agent": "dprime_bnf_3scale", "dprime_sources": "bnf", "dprime_horizons": "1,2,3", "obs_profile": "D"},
+        {"agent": "dprime_all_features_3scale", "dprime_sources": "all_features", "dprime_horizons": "1,2,3", "obs_profile": "D"},
+        {"agent": "dprime_mix_3scale", "dprime_sources": "bnf,all_features", "dprime_horizons": "1,2,3", "obs_profile": "D"},
+    ]
+
+
 def _device_auto() -> str:
     try:
         import torch
@@ -328,11 +344,15 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
     from ai_core.services.step_e_service import StepEConfig
 
     cfg_list = []
-    for agent_name in _OFFICIAL_STEPE_AGENTS:
-        cfg = StepEConfig(agent=str(agent_name))
+    for idx, spec in enumerate(_official_stepe_agent_specs()):
+        cfg = StepEConfig(agent=str(spec["agent"]))
         cfg.output_root = str(output_root)
-        cfg.obs_profile = "DPRIME"
-        cfg.seed = 42
+        cfg.obs_profile = str(spec["obs_profile"])
+        cfg.use_stepd_prime = True
+        cfg.dprime_sources = str(spec["dprime_sources"])
+        cfg.dprime_horizons = str(spec["dprime_horizons"])
+        cfg.dprime_join = "inner"
+        cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.epochs = 200
         cfg.patience = min(int(getattr(cfg, "patience", 15)), 10)
@@ -1351,7 +1371,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not current_step_e_cfgs:
             try:
                 _inject_default_stepe_configs(app_config, resolved_output_root)
-                print(f"[headless] StepE default config injected: agents={','.join(_OFFICIAL_STEPE_AGENTS)} seed=42 device=auto")
+                print(f"[headless] StepE default config injected: agents={','.join(_OFFICIAL_STEPE_AGENTS)} seed=42+idx device=auto")
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
 
