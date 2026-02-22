@@ -5,6 +5,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Add-OneTapWarning {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Message
+  )
+
+  try {
+    $workspace = $env:GITHUB_WORKSPACE
+    if ([string]::IsNullOrWhiteSpace($workspace)) { return }
+    $workspaceTemp = Join-Path $workspace 'temp'
+    $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
+    $reportPath = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
+    Add-Content -Path $reportPath -Encoding UTF8 -Value ("[WARN] publish skipped: {0}" -f $Message)
+  } catch {
+    Write-Warning ("Unable to append ONE_TAP warning: {0}" -f $_.Exception.Message)
+  }
+}
+
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $runId = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { 'local' }
 $attempt = if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { '0' }
@@ -27,15 +45,17 @@ Write-Host "diagDir=$DiagDir"
 
 $zipName = "diag_${runId}_${attempt}_${timestamp}.zip"
 $zipPath = Join-Path $DiagDir $zipName
-$zipSources = @()
+$zipSources = New-Object System.Collections.Generic.List[string]
+$sourceItems = @{}
 if (Test-Path $runnerDiag) {
-  $zipSources += (Join-Path $runnerDiag '*')
+  $runnerDiagWildcard = Join-Path $runnerDiag '*'
+  $sourceItems[$runnerDiagWildcard] = $true
 }
 
 $workspaceTemp = Join-Path $ws 'temp'
 $oneTapReport = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
 if (Test-Path $oneTapReport) {
-  $zipSources += $oneTapReport
+  $sourceItems[$oneTapReport] = $true
 }
 
 $consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
@@ -43,9 +63,20 @@ if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
   $consoleLogCandidates += (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
 }
 $consoleLogCandidates = $consoleLogCandidates | Where-Object { $_ -and (Test-Path $_) }
-$zipSources += $consoleLogCandidates
+foreach ($candidate in $consoleLogCandidates) {
+  if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+    $sourceItems[$candidate] = $true
+  }
+}
+
+foreach ($key in $sourceItems.Keys) {
+  if (-not [string]::IsNullOrWhiteSpace($key) -and (Test-Path $key)) {
+    $zipSources.Add($key)
+  }
+}
 
 if ($zipSources.Count -eq 0) {
+  Add-OneTapWarning -Message 'runner _diag and known logs were unavailable; packaging placeholder only.'
   $placeholder = Join-Path $workspaceTemp 'diag_placeholder.txt'
   $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
   @(
@@ -59,6 +90,7 @@ try {
   Compress-Archive -Path $zipSources -DestinationPath $zipPath -Force -ErrorAction Stop
 } catch {
   Write-Warning "Primary diagnostics archive failed: $($_.Exception.Message)"
+  Add-OneTapWarning -Message ("Primary diagnostics archive failed: {0}" -f $_.Exception.Message)
   $placeholder = Join-Path $workspaceTemp 'diag_zip_fallback_notice.txt'
   @(
     '[WARN] Primary diagnostics archive failed; created fallback package only.',
@@ -85,6 +117,7 @@ try {
 }
 
 if (!(Test-Path $zipPath)) {
+  Add-OneTapWarning -Message ("zip not created: {0}" -f $zipPath)
   throw "zip not created: $zipPath"
 }
 Write-Host "zipPath=$zipPath"
