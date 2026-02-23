@@ -266,16 +266,26 @@ jobs:
 
           if ('${{ steps.mode_gate.outputs.should_run }}' -ne 'true') {
             Add-Content -Path $reportPath -Value @(
-              '[NG] mode_gate',
+              '[SKIP] mode_gate',
               ('[INFO] reason=${{ steps.mode_gate.outputs.reason }}'),
               ''
             )
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:REPO_ROOT)) {
+          $modeGateShouldRun = '${{ steps.mode_gate.outputs.should_run }}'
+          $prepRepoOutcome = '${{ steps.prep_repo.outcome }}'
+
+          if ($modeGateShouldRun -ne 'true' -and $prepRepoOutcome -eq 'skipped') {
+            Add-Content -Path $reportPath -Value @(
+              '[SKIP] repo_prepare',
+              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
+              '[INFO] repo prepare intentionally skipped because mode is filtered by inputs',
+              ''
+            )
+          } elseif ([string]::IsNullOrWhiteSpace($env:REPO_ROOT)) {
             Add-Content -Path $reportPath -Value @(
               '[NG] repo_prepare_failed',
-              ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
+              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
               ('[INFO] PREP_REPO_ERROR={0}' -f $env:PREP_REPO_ERROR),
               ''
             )
@@ -1841,7 +1851,7 @@ jobs:
           path: _diagnostics/**/*
 
       - name: Fail run if repo prepare failed
-        if: ${{ always() && steps.prep_repo.outcome != 'success' }}
+        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome != 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
