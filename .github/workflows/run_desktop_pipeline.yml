@@ -1306,8 +1306,102 @@ jobs:
               ? fs.readFileSync(evalPath, 'utf8')
               : '(EVAL_SUMMARY.txt missing)';
 
-            if (report.length > 60000) report = report.slice(-60000);
-            if (evalTxt.length > 15000) evalTxt = evalTxt.slice(-15000);
+            function findFirstFileByName(rootDir, targetName) {
+              const stack = [rootDir];
+              while (stack.length > 0) {
+                const cur = stack.pop();
+                if (!cur || !fs.existsSync(cur)) continue;
+                let entries = [];
+                try {
+                  entries = fs.readdirSync(cur, { withFileTypes: true });
+                } catch {
+                  continue;
+                }
+                for (const entry of entries) {
+                  const full = path.join(cur, entry.name);
+                  if (entry.isDirectory()) {
+                    stack.push(full);
+                    continue;
+                  }
+                  if (entry.isFile() && entry.name.toLowerCase() === targetName.toLowerCase()) {
+                    return full;
+                  }
+                }
+              }
+              return null;
+            }
+
+            function csvToRows(csvText) {
+              const lines = String(csvText || '')
+                .replace(/^\uFEFF/, '')
+                .split(/\r?\n/)
+                .filter(line => line.trim().length > 0);
+              if (lines.length === 0) return [];
+              const parseLine = (line) => {
+                const out = [];
+                let cur = '';
+                let q = false;
+                for (let i = 0; i < line.length; i++) {
+                  const ch = line[i];
+                  if (ch === '"') {
+                    if (q && line[i + 1] === '"') {
+                      cur += '"';
+                      i++;
+                    } else {
+                      q = !q;
+                    }
+                  } else if (ch === ',' && !q) {
+                    out.push(cur);
+                    cur = '';
+                  } else {
+                    cur += ch;
+                  }
+                }
+                out.push(cur);
+                return out;
+              };
+              return lines.map(parseLine);
+            }
+
+            function markdownEscape(s) {
+              return String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+            }
+
+            function rowsToMarkdownTable(rows, bodyLimit) {
+              if (!rows || rows.length === 0) return '(no data)';
+              const headers = rows[0];
+              const bodyRows = rows.slice(1, 1 + bodyLimit);
+              if (headers.length === 0) return '(no data)';
+              const lineHeader = `| ${headers.map(markdownEscape).join(' | ')} |`;
+              const lineSep = `| ${headers.map(() => '---').join(' | ')} |`;
+              const lineRows = bodyRows.map(r => {
+                const padded = [...r];
+                while (padded.length < headers.length) padded.push('');
+                return `| ${padded.slice(0, headers.length).map(markdownEscape).join(' | ')} |`;
+              });
+              return [lineHeader, lineSep, ...lineRows].join('\n');
+            }
+
+            let stepETableMd = '(EVAL_TABLE_stepE.csv missing)';
+            let stepFTableMd = '(EVAL_TABLE_stepF.csv missing)';
+            try {
+              const stepEPath = findFirstFileByName(process.env.GITHUB_WORKSPACE, 'EVAL_TABLE_stepE.csv');
+              if (stepEPath && fs.existsSync(stepEPath)) {
+                const rows = csvToRows(fs.readFileSync(stepEPath, 'utf8'));
+                stepETableMd = rowsToMarkdownTable(rows, 10);
+              }
+
+              const stepFPath = findFirstFileByName(process.env.GITHUB_WORKSPACE, 'EVAL_TABLE_stepF.csv');
+              if (stepFPath && fs.existsSync(stepFPath)) {
+                const rows = csvToRows(fs.readFileSync(stepFPath, 'utf8'));
+                stepFTableMd = rowsToMarkdownTable(rows, 1);
+              }
+            } catch (e) {
+              stepETableMd = `(failed to render StepE table: ${e && e.message ? e.message : String(e)})`;
+              stepFTableMd = '(failed to render StepF table)';
+            }
+
+            if (evalTxt.length > 12000) evalTxt = evalTxt.slice(-12000);
 
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const title = 'ApexTraderAI Diagnostics (latest)';
@@ -1320,7 +1414,16 @@ jobs:
               ? 'runs/LATEST_CSV.md'
               : `runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
             const evalUrl = `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/${evalPathInBranch}`;
-            const body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const maxIssueBody = 60000;
+            if (body.length > maxIssueBody) {
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const suffix = `\n\`\`\`\n`;
+              const reserve = fixedPrefix.length + suffix.length;
+              const allowedReportLen = Math.max(0, maxIssueBody - reserve);
+              report = report.slice(-allowedReportLen);
+              body = `${fixedPrefix}${report}${suffix}`;
+            }
 
             const { data: issues } = await github.rest.issues.listForRepo({
               owner,
