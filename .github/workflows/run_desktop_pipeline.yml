@@ -1023,6 +1023,7 @@ jobs:
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
           $null = New-Item -Path $artifactRoot -ItemType Directory -Force
+          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
           $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
 
@@ -1084,6 +1085,7 @@ jobs:
           )
 
           $stagedRunLog = Get-ChildItem -Path $artifactRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'run_all_local_then_copy_console.log' } |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
           if ($stagedRunLog) {
@@ -1096,6 +1098,8 @@ jobs:
             }
           }
 
+          $zipInputs = $zipInputs | Sort-Object -Unique
+
           if ($zipInputs.Count -eq 0) {
             $fallbackLog = Join-Path $artifactRoot 'actions_logs_missing.txt'
             @(
@@ -1105,19 +1109,25 @@ jobs:
             $zipInputs += $fallbackLog
           }
 
-          Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
-          Write-Host "Created logs archive: $actionsLogsZip"
+          try {
+            Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
+            Write-Host "Created logs archive: $actionsLogsZip"
+          } catch {
+            $err = $_ | Out-String
+            Write-Warning "Compress-Archive failed: $err"
+            Set-Content -Path (Join-Path $artifactRoot 'actions_logs_zip_failed.txt') -Value $err -Encoding UTF8
+          }
 
-          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Staged artifacts under: $artifactRoot"
 
       - name: Upload run artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+          path: ${{ steps.stage_artifacts.outputs.artifact_path }}
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
