@@ -19,18 +19,8 @@ on:
         required: true
         default: "SOXL,SOXS"
         type: string
-      start:
-        description: "Data start date (YYYY-MM-DD)"
-        required: true
-        default: "2014-01-01"
-        type: string
-      end:
-        description: "Data end date (YYYY-MM-DD)"
-        required: true
-        default: "2022-03-31"
-        type: string
-      test_start:
-        description: "Test start date (YYYY-MM-DD); snapped to previous available trading date (floor), never to a future date"
+      test_start_date:
+        description: "Test start date (YYYY-MM-DD); data fetch start/end are auto-computed from this + train_years/test_months"
         required: true
         default: "2022-01-03"
         type: string
@@ -587,6 +577,45 @@ jobs:
           "steps_source=$stepsSource" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "effective_skip_stepe=$effectiveSkipStepEStr" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Compute derived date window (data_start/data_end)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testStart = [datetime]::Parse("${{ inputs.test_start_date }}")
+          $trainYears = [int]"${{ inputs.train_years }}"
+          $testMonths = [int]"${{ inputs.test_months }}"
+
+          $trainStart = $testStart.AddYears(-$trainYears)
+          $dataStart = $trainStart.AddDays(-7)
+          $testEnd = $testStart.AddMonths($testMonths)
+          $dataEnd = $testEnd.AddDays(7)
+
+          $dataStartStr = $dataStart.ToString('yyyy-MM-dd')
+          $dataEndStr = $dataEnd.ToString('yyyy-MM-dd')
+          $testStartStr = $testStart.ToString('yyyy-MM-dd')
+
+          "DATA_START_DATE=$dataStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_END_DATE=$dataEndStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_START=$dataStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_END=$dataEndStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TEST_START=$testStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Computed DATA_START_DATE=$dataStartStr"
+          Write-Host "Computed DATA_END_DATE=$dataEndStr"
+          Write-Host "Using TEST_START=$testStartStr"
+
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $reportPath) {
+            Add-Content -Path $reportPath -Value @(
+              '[STEP] compute_derived_date_window',
+              ('[INFO] test_start_date={0}' -f $testStartStr),
+              ('[INFO] data_start_date={0}' -f $dataStartStr),
+              ('[INFO] data_end_date={0}' -f $dataEndStr),
+              ''
+            )
+          }
+
       - name: Run desktop BAT
         id: run_bat
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -594,9 +623,7 @@ jobs:
         env:
           INPUT_MODE: ${{ env.MODE }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
-          INPUT_START: ${{ inputs.start }}
-          INPUT_END: ${{ inputs.end }}
-          INPUT_TEST_START: ${{ inputs.test_start }}
+          INPUT_TEST_START: ${{ inputs.test_start_date }}
           INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
@@ -607,9 +634,7 @@ jobs:
           SYMBOL: SOXL
           STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
           SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          DATA_START: ${{ inputs.start }}
-          DATA_END: ${{ inputs.end }}
-          TEST_START: ${{ inputs.test_start }}
+          TEST_START: ${{ inputs.test_start_date }}
           TRAIN_YEARS: ${{ inputs.train_years }}
           TEST_MONTHS: ${{ inputs.test_months }}
           WORK_ROOT: C:\work\apex_work\runs
@@ -2288,6 +2313,45 @@ jobs:
           "steps_source=$stepsSource" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "effective_skip_stepe=$effectiveSkipStepEStr" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Compute derived date window (data_start/data_end)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testStart = [datetime]::Parse("${{ inputs.test_start_date }}")
+          $trainYears = [int]"${{ inputs.train_years }}"
+          $testMonths = [int]"${{ inputs.test_months }}"
+
+          $trainStart = $testStart.AddYears(-$trainYears)
+          $dataStart = $trainStart.AddDays(-7)
+          $testEnd = $testStart.AddMonths($testMonths)
+          $dataEnd = $testEnd.AddDays(7)
+
+          $dataStartStr = $dataStart.ToString('yyyy-MM-dd')
+          $dataEndStr = $dataEnd.ToString('yyyy-MM-dd')
+          $testStartStr = $testStart.ToString('yyyy-MM-dd')
+
+          "DATA_START_DATE=$dataStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_END_DATE=$dataEndStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_START=$dataStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DATA_END=$dataEndStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TEST_START=$testStartStr" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Computed DATA_START_DATE=$dataStartStr"
+          Write-Host "Computed DATA_END_DATE=$dataEndStr"
+          Write-Host "Using TEST_START=$testStartStr"
+
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $reportPath) {
+            Add-Content -Path $reportPath -Value @(
+              '[STEP] compute_derived_date_window',
+              ('[INFO] test_start_date={0}' -f $testStartStr),
+              ('[INFO] data_start_date={0}' -f $dataStartStr),
+              ('[INFO] data_end_date={0}' -f $dataEndStr),
+              ''
+            )
+          }
+
       - name: Run desktop BAT
         id: run_bat
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -2295,9 +2359,7 @@ jobs:
         env:
           INPUT_MODE: ${{ env.MODE }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
-          INPUT_START: ${{ inputs.start }}
-          INPUT_END: ${{ inputs.end }}
-          INPUT_TEST_START: ${{ inputs.test_start }}
+          INPUT_TEST_START: ${{ inputs.test_start_date }}
           INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
@@ -2308,9 +2370,7 @@ jobs:
           SYMBOL: SOXL
           STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
           SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          DATA_START: ${{ inputs.start }}
-          DATA_END: ${{ inputs.end }}
-          TEST_START: ${{ inputs.test_start }}
+          TEST_START: ${{ inputs.test_start_date }}
           TRAIN_YEARS: ${{ inputs.train_years }}
           TEST_MONTHS: ${{ inputs.test_months }}
           WORK_ROOT: C:\work\apex_work\runs
