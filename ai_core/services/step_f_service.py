@@ -196,6 +196,9 @@ class StepFService:
             return torch.sqrt(x * x + float(cfg.smooth_abs_eps))
 
         def _rollout(g: GateNet, X_: torch.Tensor, r_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            n_agents = int(g.n_agents)
+            if X_.ndim != 2 or X_.shape[1] < n_agents:
+                raise RuntimeError(f"StepF invalid X shape={X_.shape}, n_agents={n_agents}")
             T = X_.shape[0]
             pos_prev = torch.zeros((), device=X_.device)
             pos_list = []
@@ -205,7 +208,8 @@ class StepFService:
             for t in range(T):
                 logits = g(X_[t])
                 w = torch.softmax(logits, dim=0)  # (N,)
-                pos_t = torch.sum(w * X_[t])  # combine agent positions
+                pos_vec = X_[t][:n_agents]
+                pos_t = torch.sum(w * pos_vec)
                 pos_t = torch.clamp(pos_t, -float(cfg.pos_limit), float(cfg.pos_limit))
                 cost = cost_k * _smooth_abs(pos_t - pos_prev)
                 ret_net = pos_t * r_[t] - cost - float(cfg.pos_l2) * (pos_t * pos_t)
