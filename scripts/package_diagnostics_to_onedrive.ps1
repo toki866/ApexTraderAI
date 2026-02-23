@@ -129,12 +129,24 @@ $zipPath = Join-Path $DiagDir $zipName
 $zipSources = New-Object System.Collections.Generic.List[string]
 $sourceItems = @{}
 if ($null -eq $sourceItems) { $sourceItems = @{} }
-if (Test-Path $runnerDiag) {
-  $runnerDiagWildcard = Join-Path $runnerDiag '*'
-  $sourceItems[$runnerDiagWildcard] = $true
-}
 
 $workspaceTemp = Join-Path $ws 'temp'
+$null = New-Item -Path $workspaceTemp -ItemType Directory -Force
+$diagSnapshotRoot = Join-Path $workspaceTemp 'runner_diag_snapshot'
+$diagSnapshot = Join-Path $diagSnapshotRoot ("diag_{0}_{1}_{2}" -f $runId, $attempt, $timestamp)
+if (Test-Path $runnerDiag) {
+  $null = New-Item -Path $diagSnapshot -ItemType Directory -Force
+  & robocopy "$runnerDiag" "$diagSnapshot" /E /Z /R:2 /W:1 /XD blocks /NFL /NDL /NJH /NJS | Out-Null
+  $diagSnapshotRc = $LASTEXITCODE
+  Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] runner_diag_snapshot_rc={0}" -f $diagSnapshotRc)
+
+  $diagSnapshotItems = @(Get-ChildItem -Path $diagSnapshot -File -Recurse -ErrorAction SilentlyContinue)
+  if ($diagSnapshotItems.Count -gt 0) {
+    $diagSnapshotWildcard = Join-Path $diagSnapshot '*'
+    $sourceItems[$diagSnapshotWildcard] = $true
+  }
+}
+
 $oneTapReport = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
 if (Test-Path $oneTapReport) {
   $sourceItems[$oneTapReport] = $true
