@@ -1,4 +1,4 @@
-name: Run Desktop Pipeline
+name: Run Desktop Pipeline (Manual Dispatch Only)
 
 on:
   workflow_dispatch:
