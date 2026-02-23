@@ -1,0 +1,27 @@
+status=WARN
+StepA:
+  test_rows=62
+  test_date_start=2022-01-03 test_date_end=2022-03-31
+  missing_ohlcv_count=0
+StepB:
+  SKIP: no stepB prediction files found
+DPrime:
+  status=WARN summary=D' missing: state, embeddings
+  state_count=0 embeddings_count=0
+StepE:
+  SKIP: stepE_daily_log missing
+StepF:
+  SKIP: stepF_equity_marl missing
+Diversity:
+  status=SKIP max_corr=NA max_match_ratio=NA pairs_over_0_9999=NA/NA identical_all_agents=NA
+  summary=not evaluated
+PLOTS:
+  equity_stepE_topN.png exists=yes
+  equity_stepF.png exists=yes
+  bar_stepE_return.png exists=yes
+  scatter_stepE_dd_vs_ret.png exists=yes
+  note=PLOT StepE topN: stepE_daily_log files were not found
+  note=PLOT StepF equity: stepF_equity_marl file not found
+  note=PLOT StepE return bar: no numeric StepE rows
+  note=PLOT StepE scatter: no numeric StepE DD/return pairs
+  note=StepF_vs_best_StepE: 比較に必要な equity_multiple が不足
