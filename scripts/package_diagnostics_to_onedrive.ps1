@@ -66,6 +66,8 @@ $summaryPath = Join-Path $DiagDir 'diag_publish_summary.txt'
   ('attempt={0}' -f $attempt)
 ) | Set-Content -Path $summaryPath -Encoding UTF8
 
+$outputRootSource = 'input_parameter'
+
 if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path $RunDir)) {
   $runsRoot = 'C:\work\apex_work\runs'
   if (Test-Path $runsRoot) {
@@ -78,14 +80,16 @@ if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path $RunDir)) {
   }
 }
 
-if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) {
   if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
     $OutputRoot = Join-Path $RunDir 'output'
+    $outputRootSource = 'run_dir_fallback'
   }
 }
 
 Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] run_dir={0}" -f $RunDir)
 Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] output_root={0}" -f $OutputRoot)
+Add-Content -Path $summaryPath -Encoding UTF8 -Value ("[PUBLISH] output_root_source={0}" -f $outputRootSource)
 
 if ([string]::IsNullOrWhiteSpace($RunDir)) {
   Add-PublishSummaryWarning -SummaryPath $summaryPath -Message 'run_dir unresolved; falling back to diagnostics-only packaging.'
