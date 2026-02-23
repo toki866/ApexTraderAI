@@ -118,13 +118,11 @@ permissions:
   issues: write
 
 jobs:
-  run:
+  run_sim:
+    if: ${{ inputs.run_sim }}
+    env:
+      MODE: sim
     runs-on: [self-hosted, windows]
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        mode: [sim, live]
     steps:
       - name: Decide whether selected mode should run
         id: mode_gate
@@ -132,7 +130,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $mode = '${{ matrix.mode }}'.Trim().ToLowerInvariant()
+          $mode = '${{ env.MODE }}'.Trim().ToLowerInvariant()
           $runSimRaw = '${{ inputs.run_sim }}'.Trim().ToLowerInvariant()
           $runLiveRaw = '${{ inputs.run_live }}'.Trim().ToLowerInvariant()
 
@@ -648,7 +646,7 @@ jobs:
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          INPUT_MODE: ${{ matrix.mode }}
+          INPUT_MODE: ${{ env.MODE }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
           INPUT_START: ${{ inputs.start }}
           INPUT_END: ${{ inputs.end }}
@@ -658,7 +656,7 @@ jobs:
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
           INPUT_STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
           INPUT_SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          RUN_MODE: ${{ matrix.mode }}
+          RUN_MODE: ${{ env.MODE }}
           SYMBOLS: ${{ inputs.symbols }}
           SYMBOL: SOXL
           STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
@@ -1171,7 +1169,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-run-${{ matrix.mode }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
+          name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
@@ -1202,7 +1200,7 @@ jobs:
             $symbol = ($symbols -split ',')[0].Trim()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
           }
-          $mode = '${{ matrix.mode }}'
+          $mode = '${{ env.MODE }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
@@ -1240,7 +1238,7 @@ jobs:
 
           $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
           $shortSha = ('${{ github.sha }}').Substring(0, 7)
-          $runFolderName = "${timestamp}_${{ matrix.mode }}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
+          $runFolderName = "${timestamp}_${{ env.MODE }}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
           $runFolder = Join-Path $runsDir $runFolderName
           $null = New-Item -Path $runFolder -ItemType Directory -Force
           $csvOutDir = Join-Path $runFolder 'csv'
@@ -1765,7 +1763,1753 @@ jobs:
           $sha = '${{ github.sha }}'
           $branch = '${{ github.ref_name }}'
           $repo = '${{ github.repository }}'
-          $artifactName = "diag_full_${{ matrix.mode }}_${runId}_${runAttempt}"
+          $artifactName = "diag_full_${{ env.MODE }}_${runId}_${runAttempt}"
+
+          $latestRunnerLog = $null
+          $latestWorkerLog = $null
+          if (Test-Path $runnerDiag) {
+            $latestRunnerLog = Get-ChildItem -Path $runnerDiag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            $latestWorkerLog = Get-ChildItem -Path $runnerDiag -Filter 'Worker_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
+
+          $workflowLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $runLogPath = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          $stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'
+          $oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          if ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }
+          if ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }
+          if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
+          if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
+          if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
+          Get-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force
+          }
+
+          foreach ($subDir in @('pages', 'blocks')) {
+            $src = Join-Path $runnerDiag $subDir
+            if (Test-Path $src) {
+              Copy-Item -Path $src -Destination (Join-Path $diagOut $subDir) -Recurse -Force
+            }
+          }
+
+          $runnerTailText = if ($latestRunnerLog) { Get-MaskedTail -Path $latestRunnerLog.FullName -Tail 200 } else { '(runner diag not found)' }
+          $workflowTailText = if (Test-Path $workflowLog) { Get-MaskedTail -Path $workflowLog -Tail 200 } else { '(workflow log not found)' }
+
+          $summaryPath = Join-Path $diagOut 'summary.md'
+          $summary = @(
+            '# Diagnostics Summary',
+            '',
+            "- repo: $repo",
+            "- branch: $branch",
+            "- sha: $sha",
+            "- run_id: $runId",
+            "- attempt: $runAttempt",
+            "- failing_step: $env:FAILING_STEP",
+            "- artifact_name: $artifactName",
+            '- one_tap_report: See ONE_TAP_ERROR_REPORT.txt',
+            '',
+            '## runner_diag_tail (last 200 lines)',
+            '```text',
+            $runnerTailText,
+            '```',
+            '',
+            '## workflow_tail (last 200 lines)',
+            '```text',
+            $workflowTailText,
+            '```'
+          ) -join "`r`n"
+          $summary = Mask-Secrets -Text $summary
+          Set-Content -Path $summaryPath -Value $summary -Encoding UTF8
+
+          $runnerTailPath = Join-Path $diagOut 'runner_diag_tail.txt'
+          Set-Content -Path $runnerTailPath -Value $runnerTailText -Encoding UTF8
+          $workflowTailPath = Join-Path $diagOut 'workflow_tail.txt'
+          Set-Content -Path $workflowTailPath -Value $workflowTailText -Encoding UTF8
+
+          $fullZip = Join-Path $env:RUNNER_TEMP ("{0}.zip" -f $artifactName)
+          if (Test-Path $fullZip) { Remove-Item $fullZip -Force }
+          Compress-Archive -Path (Join-Path $diagOut '*') -DestinationPath $fullZip -Force
+
+          "diag_out=$diagOut" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_summary=$summaryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_runner_tail=$runnerTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_workflow_tail=$workflowTailPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_zip=$fullZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "diag_artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload full diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect_diag.outputs.diag_artifact_name }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: ${{ steps.collect_diag.outputs.diag_zip }}
+
+
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          if-no-files-found: warn
+          path: _diagnostics/**/*
+
+      - name: Fail run if repo prepare failed
+        # Do not fail filtered matrix legs (e.g. live when run_live=false).
+        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome == 'failure' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
+          exit 1
+
+  run_live:
+    if: ${{ inputs.run_live }}
+    env:
+      MODE: live
+    runs-on: [self-hosted, windows]
+    steps:
+      - name: Decide whether selected mode should run
+        id: mode_gate
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $mode = '${{ env.MODE }}'.Trim().ToLowerInvariant()
+          $runSimRaw = '${{ inputs.run_sim }}'.Trim().ToLowerInvariant()
+          $runLiveRaw = '${{ inputs.run_live }}'.Trim().ToLowerInvariant()
+
+          $runSim = ($runSimRaw -eq 'true' -or $runSimRaw -eq '1')
+          $runLive = ($runLiveRaw -eq 'true' -or $runLiveRaw -eq '1')
+
+          $shouldRun = $false
+          if ($mode -eq 'sim') { $shouldRun = $runSim }
+          elseif ($mode -eq 'live') { $shouldRun = $runLive }
+
+          $reason = if ($shouldRun) {
+            "mode $mode enabled by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
+          } else {
+            "mode $mode skipped by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
+          }
+
+          Write-Host "[MODE_GATE] $reason"
+          "should_run=$($shouldRun.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "reason=$reason" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Finish cleanly when mode filtered
+        if: ${{ steps.mode_gate.outputs.should_run != 'true' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          Write-Host 'Mode filtered by inputs; job should succeed.'
+
+      - name: Prepare repo in C:\work (no OneDrive cleanup)
+        id: prep_repo
+        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --global core.longpaths true
+
+          $repoUrl = "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          $cacheRoot = "C:\work\apex_repo_cache"
+          $repoDir = Join-Path $cacheRoot "ApexTraderAI"
+
+          New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
+
+          function Invoke-GitStrict {
+            param([string]$Command)
+            Write-Host ">>> git $Command"
+            & cmd /c "git $Command"
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "git $Command failed (exit=$exitCode)"
+            }
+          }
+
+          function Sync-Repo {
+            param([string]$TargetRepoDir)
+            if (!(Test-Path (Join-Path $TargetRepoDir '.git'))) {
+              Write-Host "[repo] cloning to $TargetRepoDir"
+              if (Test-Path $TargetRepoDir) {
+                Remove-Item -Path $TargetRepoDir -Recurse -Force
+              }
+              Invoke-GitStrict "clone $repoUrl `"$TargetRepoDir`""
+            } else {
+              Write-Host "[repo] fetch/reset in $TargetRepoDir"
+              Invoke-GitStrict "-C `"$TargetRepoDir`" remote set-url origin $repoUrl"
+              Invoke-GitStrict "-C `"$TargetRepoDir`" fetch --force --prune origin"
+            }
+
+            Invoke-GitStrict "-C `"$TargetRepoDir`" checkout -f $env:GITHUB_SHA"
+            Invoke-GitStrict "-C `"$TargetRepoDir`" reset --hard $env:GITHUB_SHA"
+            Invoke-GitStrict "-C `"$TargetRepoDir`" clean -ffdx"
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
+
+          try {
+            Sync-Repo -TargetRepoDir $repoDir
+          } catch {
+            $prepError = $_.Exception.Message
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $prepError)
+            Write-Warning "[repo] initial prepare failed: $prepError"
+
+            try {
+              if (Test-Path $repoDir) {
+                Write-Host "[repo] removing $repoDir before retry"
+                Remove-Item -Path $repoDir -Recurse -Force -ErrorAction Stop
+              }
+            } catch {
+              Write-Warning "[repo] failed to remove repoDir due to lock: $($_.Exception.Message)"
+              $repoDir = Join-Path $cacheRoot ("ApexTraderAI_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
+              Write-Warning "[repo] switching to fallback repoDir=$repoDir"
+            }
+
+            try {
+              Sync-Repo -TargetRepoDir $repoDir
+            } catch {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $_.Exception.Message)
+              throw
+            }
+          }
+
+          git config --global --add safe.directory $repoDir
+          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"
+          Write-Host "REPO_ROOT=$repoDir"
+          $headShort = (& cmd /c "git -C `"$repoDir`" rev-parse --short HEAD").Trim()
+          Write-Host "HEAD=$headShort"
+
+      - name: Initialize ONE_TAP error report
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+          $reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'
+
+          @(
+            '=== ONE TAP ERROR REPORT ===',
+            ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+            ('repo=${{ github.repository }}'),
+            ('ref=${{ github.ref }}'),
+            ('sha=${{ github.sha }}'),
+            ('run_id=${{ github.run_id }}'),
+            ('run_attempt=${{ github.run_attempt }}'),
+            ''
+          ) | Set-Content -Path $reportPath -Encoding UTF8
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] initialize_one_tap_report',
+            '[OK] report initialized',
+            ('[PATH] {0}' -f $reportPath),
+            ('[INFO] mode_gate_should_run=${{ steps.mode_gate.outputs.should_run }}'),
+            ('[INFO] mode_gate_reason=${{ steps.mode_gate.outputs.reason }}'),
+            ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
+            ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ''
+          )
+
+          if ('${{ steps.mode_gate.outputs.should_run }}' -ne 'true') {
+            Add-Content -Path $reportPath -Value @(
+              '[SKIP] mode_gate',
+              ('[INFO] reason=${{ steps.mode_gate.outputs.reason }}'),
+              ''
+            )
+          }
+
+          $modeGateShouldRun = '${{ steps.mode_gate.outputs.should_run }}'
+          $prepRepoOutcome = '${{ steps.prep_repo.outcome }}'
+
+          if ($modeGateShouldRun -ne 'true') {
+            Add-Content -Path $reportPath -Value @(
+              '[SKIP] repo_prepare',
+              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
+              '[INFO] repo prepare intentionally skipped because mode is filtered by inputs',
+              '[OK] filtered matrix mode is treated as success',
+              ''
+            )
+          } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -eq 'failure') {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] repo_prepare_failed',
+              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
+              ('[INFO] PREP_REPO_ERROR={0}' -f $env:PREP_REPO_ERROR),
+              ''
+            )
+          } else {
+            $headShort = ''
+            try {
+              $headShort = (& cmd /c "git -C `"$env:REPO_ROOT`" rev-parse --short HEAD").Trim()
+            } catch {
+              $headShort = "(unavailable: $($_.Exception.Message))"
+            }
+            Add-Content -Path $reportPath -Value @(
+              ('[INFO] HEAD={0}' -f $headShort),
+              ''
+            )
+          }
+
+      - name: GPU / CUDA diagnostics
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $reportExists = Test-Path $reportPath
+
+          if (-not $reportExists) {
+            Write-Warning "ONE_TAP report not found at $reportPath; diagnostics will be logged to console only."
+          }
+
+          $torchInfo = @(
+            'torch (unavailable)',
+            'cuda_available False',
+            'gpu CPU'
+          ) -join [Environment]::NewLine
+
+          try {
+            $torchInfo = (& python -c "import torch; print('torch',torch.__version__); print('cuda_available',torch.cuda.is_available()); print('gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')" 2>&1 | Out-String).Trim()
+          } catch {
+            Write-Warning "torch diagnostics failed: $($_.Exception.Message)"
+          }
+
+          Write-Host '=== GPU / CUDA diagnostics :: torch ==='
+          Write-Host $torchInfo
+
+          $smiExe1 = 'nvidia-smi'
+          $smiExe2 = 'C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe'
+          $smiExe = $null
+          $smiText = '(nvidia-smi not available)'
+
+          try {
+            $smiText = (& $smiExe1 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0) { $smiExe = $smiExe1 }
+          } catch {
+            Write-Warning "nvidia-smi default path failed: $($_.Exception.Message)"
+          }
+
+          if (-not $smiExe) {
+            try {
+              $smiText = (& $smiExe2 2>&1 | Out-String).Trim()
+              if ($LASTEXITCODE -eq 0) { $smiExe = $smiExe2 }
+            } catch {
+              Write-Warning "nvidia-smi fallback path failed: $($_.Exception.Message)"
+              $smiText = '(nvidia-smi not available)'
+            }
+          }
+
+          $smiQueryText = '(nvidia-smi query unavailable)'
+          if ($smiExe) {
+            try {
+              $smiQueryText = (& $smiExe --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used --format=csv 2>&1 | Out-String).Trim()
+            } catch {
+              Write-Warning "nvidia-smi query failed: $($_.Exception.Message)"
+            }
+          }
+
+          Write-Host '=== GPU / CUDA diagnostics :: nvidia-smi (full) ==='
+          Write-Host $smiText
+          Write-Host '=== GPU / CUDA diagnostics :: nvidia-smi query ==='
+          Write-Host $smiQueryText
+
+          if ($reportExists) {
+            try {
+              Add-Content -Path $reportPath -Value @(
+                '## GPU_DIAGNOSTICS',
+                $torchInfo,
+                $smiQueryText,
+                ''
+              )
+            } catch {
+              Write-Warning "Unable to append GPU diagnostics to report: $($_.Exception.Message)"
+            }
+          }
+
+          exit 0
+
+      - name: Verify scripts directory (post-prepare)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Stop'
+          $repoRoot = $env:REPO_ROOT
+          Set-Location $repoRoot
+          Write-Host "PWD=$PWD"
+          Write-Host "HEAD=$(git rev-parse --short HEAD)"
+          Write-Host "=== workspace listing ==="
+          Get-ChildItem -Path $repoRoot | Select-Object Name, FullName | Format-Table -AutoSize
+          $scriptsDir = Join-Path $repoRoot 'scripts'
+          Write-Host "scripts_dir=$scriptsDir"
+          if (!(Test-Path $scriptsDir)) { throw "scripts directory not found: $scriptsDir" }
+          Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+
+      - name: Debug shells
+        continue-on-error: true
+        shell: cmd
+        run: |
+          echo RUNNER_OS=%RUNNER_OS%
+          echo === powershell path ===
+          where powershell >nul 2>&1
+          if %ERRORLEVEL% EQU 0 (
+            where powershell
+          ) else (
+            echo powershell_not_found
+          )
+          echo === pwsh path (optional) ===
+          where pwsh >nul 2>&1
+          if %ERRORLEVEL% EQU 0 (
+            pwsh -v
+          ) else (
+            echo pwsh_not_found (OK)
+          )
+          exit /b 0
+
+      - name: Debug python environment
+        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
+        shell: cmd
+        run: |
+          where python
+          python --version
+          echo RUNNER_TEMP=%RUNNER_TEMP%
+          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
+
+      - name: Verify required scripts
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:REPO_ROOT
+
+          $reportDir = Join-Path $env:REPO_ROOT 'temp'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+          $reportPath = Join-Path $reportDir 'ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] verify_required_scripts',
+            ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ('[INFO] GITHUB_WORKSPACE={0}' -f $env:GITHUB_WORKSPACE),
+            ('[INFO] PWD={0}' -f $PWD),
+            ''
+          )
+
+          Write-Host '=== Verify scripts directory ==='
+          Write-Host "REPO_ROOT=$env:REPO_ROOT"
+          $headShort = git rev-parse --short HEAD 2>$null
+          if ($LASTEXITCODE -eq 0 -and $headShort) {
+            Write-Host ("HEAD={0}" -f $headShort.Trim())
+          } else {
+            Write-Warning 'Unable to resolve HEAD via git rev-parse --short HEAD'
+          }
+          Write-Host 'git ls-files scripts (best effort):'
+          git ls-files scripts 2>$null
+          $scriptsDir = Join-Path $env:REPO_ROOT 'scripts'
+          Write-Host "scripts_dir=$scriptsDir"
+          if (Test-Path $scriptsDir) {
+            Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+          } else {
+            Write-Warning "scripts directory not found: $scriptsDir"
+          }
+
+          $expected = @(
+            (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat'),
+            (Join-Path $env:REPO_ROOT 'scripts\package_diagnostics.ps1'),
+            (Join-Path $env:REPO_ROOT 'scripts\package_diagnostics_to_onedrive.ps1')
+          )
+
+          $missing = @()
+          foreach ($path in $expected) {
+            if (Test-Path $path) {
+              Write-Host "[FOUND] $path"
+            } else {
+              Write-Warning "[MISSING] $path"
+              $missing += $path
+            }
+          }
+
+          $searchResults = [ordered]@{}
+          foreach ($fileName in @('run_all_local_then_copy.bat', 'package_diagnostics.ps1', 'package_diagnostics_to_onedrive.ps1')) {
+            $hits = Get-ChildItem -Path $env:REPO_ROOT -Recurse -Filter $fileName -File -ErrorAction SilentlyContinue |
+              Select-Object -First 5 -ExpandProperty FullName
+            $searchResults[$fileName] = if ($hits) { $hits } else { @('(no matches)') }
+          }
+
+          Add-Content -Path $reportPath -Value @(
+            '## REQUIRED_SCRIPT_CHECK',
+            ('repo_root={0}' -f $env:REPO_ROOT),
+            ('scripts_dir_exists={0}' -f (Test-Path $scriptsDir)),
+            ('scripts_dir={0}' -f $scriptsDir),
+            '',
+            '### scripts_dir_listing',
+            $(
+              if (Test-Path $scriptsDir) {
+                $listing = Get-ChildItem -Path $scriptsDir | Sort-Object Name | ForEach-Object {
+                  '- {0} | len={1} | mtime={2}' -f $_.Name, $_.Length, $_.LastWriteTime
+                }
+                if ($listing) { $listing } else { '- (empty)' }
+              } else {
+                '- (scripts directory missing)'
+              }
+            ),
+            '',
+            '### FOUND',
+            ($expected | Where-Object { Test-Path $_ } | ForEach-Object { "- $_" }),
+            '',
+            '### MISSING',
+            ($(if ($missing.Count -gt 0) { $missing | ForEach-Object { "- $_" } } else { '- (none)' })),
+            '',
+            '### recursive_search_run_all_local_then_copy.bat',
+            ($searchResults['run_all_local_then_copy.bat'] | ForEach-Object { "- $_" }),
+            '',
+            '### recursive_search_package_diagnostics.ps1',
+            ($searchResults['package_diagnostics.ps1'] | ForEach-Object { "- $_" }),
+            '',
+            '### recursive_search_package_diagnostics_to_onedrive.ps1',
+            ($searchResults['package_diagnostics_to_onedrive.ps1'] | ForEach-Object { "- $_" }),
+            '',
+            '## NEXT_ACTION',
+            '- Open Artifact desktop-run-* and copy ONE_TAP_ERROR_REPORT.txt'
+          )
+
+          if ($missing.Count -gt 0) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] verify_required_scripts',
+              ('[NG] missing_count={0}' -f $missing.Count),
+              ''
+            )
+          } else {
+            Add-Content -Path $reportPath -Value @(
+              '[OK] verify_required_scripts',
+              ''
+            )
+          }
+
+          if ($missing.Count -gt 0) {
+            Write-Host '=== Required scripts debug summary ==='
+            Write-Host "REPO_ROOT=$env:REPO_ROOT"
+            Write-Host "scriptsDir=$scriptsDir"
+            if (Test-Path $scriptsDir) {
+              Write-Host 'scriptsDir listing:'
+              Get-ChildItem -Path $scriptsDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+            }
+            foreach ($fileName in $searchResults.Keys) {
+              Write-Host "search($fileName):"
+              $searchResults[$fileName] | ForEach-Object { Write-Host "  $_" }
+            }
+            $missingNames = $missing | ForEach-Object { Split-Path $_ -Leaf }
+            throw ("Required scripts missing: {0}" -f (($missingNames | Sort-Object -Unique) -join ', '))
+          }
+
+      - name: Runner connectivity and host status
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          Write-Host '=== Runner connectivity / host status ==='
+          whoami
+          hostname
+          Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "GITHUB_WORKFLOW=$env:GITHUB_WORKFLOW"
+          Write-Host "GITHUB_RUN_ID=$env:GITHUB_RUN_ID"
+          Get-Process | Where-Object { $_.Name -like '*Runner*' } |
+            Select-Object Name, Id, StartTime |
+            Format-Table -AutoSize
+
+      - name: Compute steps for desktop BAT
+        id: compute_steps
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          $manualSteps = '${{ inputs.steps }}'.Trim()
+          $resumeFrom = '${{ inputs.resume_from }}'.Trim()
+
+          $runStepA = ('${{ inputs.run_stepA }}' -eq 'true')
+          $runStepB = ('${{ inputs.run_stepB }}' -eq 'true')
+          $runStepC = ('${{ inputs.run_stepC }}' -eq 'true')
+          $runStepDPrime = ('${{ inputs.run_stepDPRIME }}' -eq 'true')
+          $runStepE = ('${{ inputs.run_stepE }}' -eq 'true')
+          $runStepF = ('${{ inputs.run_stepF }}' -eq 'true')
+          $skipStepEInput = ('${{ inputs.skip_stepe }}' -eq 'true')
+          $effectiveSkipStepE = $skipStepEInput -or (-not $runStepE)
+
+          $allSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
+          $computedSteps = @()
+          $stepsSource = ''
+
+          if ($manualSteps -ne '') {
+            $stepsSource = 'manual'
+            $computedSteps = $manualSteps.Split(',') | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ -ne '' }
+          } elseif ($resumeFrom -ne '' -and $resumeFrom -ne 'none') {
+            $stepsSource = 'resume_from'
+            $resumeUpper = $resumeFrom.ToUpperInvariant()
+            $startIndex = [Array]::IndexOf($allSteps, $resumeUpper)
+            if ($startIndex -lt 0) {
+              throw "Invalid resume_from value: $resumeFrom"
+            }
+            $computedSteps = $allSteps[$startIndex..($allSteps.Count - 1)]
+          } else {
+            $stepsSource = 'toggle'
+            if ($runStepA) { $computedSteps += 'A' }
+            if ($runStepB) { $computedSteps += 'B' }
+            if ($runStepC) { $computedSteps += 'C' }
+            if ($runStepDPrime) { $computedSteps += 'DPRIME' }
+            if ($runStepE) { $computedSteps += 'E' }
+            if ($runStepF) { $computedSteps += 'F' }
+          }
+
+          if ($effectiveSkipStepE) {
+            $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
+          }
+
+          $computedStepsString = ($computedSteps -join ',')
+          $effectiveSkipStepEStr = if ($effectiveSkipStepE) { '1' } else { '0' }
+
+          Write-Host "[INFO] computed_steps=$computedStepsString"
+          Write-Host "[INFO] steps_source=$stepsSource"
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] compute_steps',
+            ('[INFO] computed_steps={0}' -f $computedStepsString),
+            ('[INFO] steps_source={0}' -f $stepsSource),
+            ('[INFO] effective_skip_stepe={0}' -f $effectiveSkipStepEStr),
+            ''
+          )
+
+          "computed_steps=$computedStepsString" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "steps_source=$stepsSource" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "effective_skip_stepe=$effectiveSkipStepEStr" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Run desktop BAT
+        id: run_bat
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          INPUT_MODE: ${{ env.MODE }}
+          INPUT_SYMBOLS: ${{ inputs.symbols }}
+          INPUT_START: ${{ inputs.start }}
+          INPUT_END: ${{ inputs.end }}
+          INPUT_TEST_START: ${{ inputs.test_start }}
+          INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
+          INPUT_TEST_MONTHS: ${{ inputs.test_months }}
+          INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
+          INPUT_STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
+          INPUT_SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
+          RUN_MODE: ${{ env.MODE }}
+          SYMBOLS: ${{ inputs.symbols }}
+          SYMBOL: SOXL
+          STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
+          SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
+          DATA_START: ${{ inputs.start }}
+          DATA_END: ${{ inputs.end }}
+          TEST_START: ${{ inputs.test_start }}
+          TRAIN_YEARS: ${{ inputs.train_years }}
+          TEST_MONTHS: ${{ inputs.test_months }}
+          WORK_ROOT: C:\work\apex_work\runs
+          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
+          PYTHON_EXE: python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:REPO_ROOT
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] run_desktop_bat',
+            ('[INFO] console_log={0}' -f $consoleLog)
+          )
+          $batCandidates = @(
+            (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat')
+          )
+          $bat = $batCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          Write-Host '=== Run desktop BAT preflight ==='
+          Write-Host "PWD=$PWD"
+          Write-Host "REPO_ROOT=$env:REPO_ROOT"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Get-ChildItem (Join-Path $env:REPO_ROOT 'scripts') | Select-Object Name
+          & where.exe python 2>$null
+          Write-Host ("BAT candidate paths: {0}" -f ($batCandidates -join '; '))
+
+          if (-not $bat) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] run_desktop_bat',
+              '[NG] BAT not found',
+              ''
+            )
+            Write-Error "BAT not found. candidates=$($batCandidates -join '; ')"
+            exit 1
+          }
+
+          $bat = (Get-Item $bat).FullName
+          Write-Host ("Executing BAT full path: {0}" -f $bat)
+
+          $null = New-Item -Path $consoleLog -ItemType File -Force
+          Add-Content -Path $consoleLog -Value ("[BAT_FULL_PATH]={0}" -f $bat)
+
+          Write-Host '=== Python diagnostics (before BAT) ==='
+          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append
+          & python --version 2>&1 | Tee-Object -FilePath $consoleLog -Append
+          Write-Host '=== PATH (before BAT) ==='
+          Write-Host $env:PATH
+          Add-Content -Path $consoleLog -Value ('[PATH] ' + $env:PATH)
+
+          & $bat 2>&1 | Tee-Object -FilePath $consoleLog -Append
+          $rc = $LASTEXITCODE
+          Write-Host "[RC]=$rc"
+          Add-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)
+
+          if ($rc -ne 0) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] run_desktop_bat',
+              ('[NG] exit_code={0}' -f $rc),
+              ''
+            )
+            Write-Warning "Run desktop BAT failed with rc=$rc"
+            $workRoot = 'C:\work\apex_work\runs'
+            $runDir = $null
+            if (Test-Path $workRoot) {
+              $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            }
+
+            if ($runDir) {
+              $runLog = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
+              Write-Host ("Latest run_dir={0}" -f $runDir.FullName)
+              Write-Host ("Expected run_log={0}" -f $runLog)
+              if (Test-Path $runLog) {
+                Write-Host '=== tail run_*.log (260 lines) ==='
+                Get-Content -Path $runLog -Tail 260
+              } else {
+                Write-Warning ("run log not found: {0}" -f $runLog)
+              }
+            } else {
+              Write-Warning ("No run directories found under {0}" -f $workRoot)
+            }
+            exit $rc
+          }
+
+          Add-Content -Path $reportPath -Value @(
+            '[OK] run_desktop_bat',
+            '[OK] exit_code=0',
+            ''
+          )
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+          }
+
+          exit 0
+
+      - name: Stage console log in workspace
+        if: always()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $workspaceTemp = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $workspaceTemp -ItemType Directory -Force
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $workspaceConsoleLog = Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'
+          if (Test-Path $consoleLog) {
+            Copy-Item -Path $consoleLog -Destination $workspaceConsoleLog -Force
+            Write-Host "Staged console log: $workspaceConsoleLog"
+          } else {
+            Write-Warning "Console log not found at: $consoleLog"
+            @(
+              '[WARN] Console log was not generated by BAT execution.',
+              '[WARN] Never finish a workflow run without leaving a readable log artifact.',
+              ('[WARN] generated_at={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path $workspaceConsoleLog -Encoding UTF8
+            Write-Host "Created fallback console log: $workspaceConsoleLog"
+          }
+
+      - name: Append error tails to ONE_TAP (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $report = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (!(Test-Path $report)) {
+            New-Item -Path (Split-Path $report -Parent) -ItemType Directory -Force | Out-Null
+            '[WARN] ONE_TAP report missing; created.' | Set-Content -Path $report -Encoding UTF8
+          }
+
+          Add-Content $report ""
+          Add-Content $report "[STEP] append_error_tails"
+          Add-Content $report ("timestamp={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+
+          # python env snapshot (to compare with local)
+          Add-Content $report "---- python_env ----"
+          try { (& where.exe python 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& python --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& python -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+
+          # console log tail
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          Add-Content $report ("[INFO] console_log={0}" -f $consoleLog)
+          if (Test-Path $consoleLog) {
+            Add-Content $report "---- console_log_tail (last 350 lines) ----"
+            (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+          } else {
+            Add-Content $report "[WARN] console log not found"
+          }
+
+          # run_*.log tail (best effort)
+          $workRoot = 'C:\work\apex_work\runs'
+          $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
+          if ($latestRunDir) {
+            Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)
+            $latestRunLog = Get-ChildItem -Path (Join-Path $latestRunDir.FullName 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latestRunLog) {
+              Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)
+              Add-Content $report "---- run_log_tail (last 350 lines) ----"
+              (Get-Content $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+            } else {
+              Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"
+            }
+          } else {
+            Add-Content $report "[WARN] no run_dir found under work_root"
+          }
+
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Package diagnostics to OneDrive (always)
+        if: always()
+        id: package_diag
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagScript = Join-Path $env:REPO_ROOT 'scripts\package_diagnostics_to_onedrive.ps1'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] package_diagnostics_to_onedrive',
+            ('[INFO] diag_script={0}' -f $diagScript)
+          )
+          Write-Host "Diagnostics script path: $diagScript"
+
+          $diagDirCandidates = @()
+          if ($env:OneDrive) {
+            $diagDirCandidates += (Join-Path $env:OneDrive 'ApexTraderAI\diagnostics')
+          }
+          if ($env:USERPROFILE) {
+            $diagDirCandidates += (Join-Path $env:USERPROFILE 'OneDrive\ApexTraderAI\diagnostics')
+          }
+          $diagDirCandidates += (Join-Path $env:RUNNER_TEMP 'ApexTraderAI\diagnostics')
+
+          $selectedDiagDir = $null
+          foreach ($candidate in $diagDirCandidates) {
+            try {
+              $null = New-Item -Path $candidate -ItemType Directory -Force -ErrorAction Stop
+              $selectedDiagDir = $candidate
+              break
+            } catch {
+              Write-Warning "Diagnostics dir candidate unavailable: $candidate ($($_.Exception.Message))"
+            }
+          }
+
+          if (-not $selectedDiagDir) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] package_diagnostics_to_onedrive',
+              '[NG] selected diagnostics dir unavailable',
+              ''
+            )
+            throw 'Unable to resolve diagnostics output directory from OneDrive/USERPROFILE/RUNNER_TEMP candidates.'
+          }
+
+          Write-Host "Selected diagnostics output dir: $selectedDiagDir"
+          "diag_dir=$selectedDiagDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          $runDirForPackage = ''
+          $outputRootForPackage = ''
+          $runsRoot = 'C:\work\apex_work\runs'
+          if (Test-Path $runsRoot) {
+            $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+            if ($latestRun) {
+              $runDirForPackage = $latestRun.FullName
+              $outputRootForPackage = Join-Path $runDirForPackage 'output'
+            }
+          }
+          Add-Content -Path $reportPath -Value @(
+            ('[PUBLISH] run_dir={0}' -f $runDirForPackage),
+            ('[PUBLISH] output_root={0}' -f $outputRootForPackage)
+          )
+
+          if (Test-Path $diagScript) {
+            powershell -NoProfile -ExecutionPolicy Bypass -File $diagScript -DiagDir "$selectedDiagDir" -RunDir "$runDirForPackage" -OutputRoot "$outputRootForPackage"
+            if ($LASTEXITCODE -ne 0) {
+              Add-Content -Path $reportPath -Value @(
+                '[NG] package_diagnostics_to_onedrive',
+                ('[NG] exit_code={0}' -f $LASTEXITCODE),
+                ''
+              )
+              Write-Error "Diagnostics script exited with code $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+            Add-Content -Path $reportPath -Value @(
+              '[OK] package_diagnostics_to_onedrive',
+              ('[OK] diag_dir={0}' -f $selectedDiagDir),
+              ''
+            )
+          } else {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] package_diagnostics_to_onedrive',
+              '[NG] diagnostics script not found',
+              ''
+            )
+            Write-Error "Diagnostics script not found: $diagScript"
+            exit 1
+          }
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+          }
+
+      - name: Verify diagnostics directory content
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagDir = '${{ steps.package_diag.outputs.diag_dir }}'
+          if (-not $diagDir) {
+            $diagDir = Join-Path $env:RUNNER_TEMP 'ApexTraderAI\diagnostics'
+          }
+          Write-Host '=== diagnostics dir listing ==='
+          if (Test-Path $diagDir) {
+            dir $diagDir
+          } else {
+            Write-Warning "Diagnostics directory not found: $diagDir"
+          }
+
+          $latestZip = Get-ChildItem -Path $diagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $latestZip) {
+            Write-Warning "diag zip missing in $diagDir"
+            Write-Host 'Hint: package diagnostics step uses OneDrive -> USERPROFILE\\OneDrive -> RUNNER_TEMP fallback. Check step logs for selected path and creation errors.'
+            exit 0
+          }
+
+          Write-Host "latestDiagZip=$($latestZip.FullName)"
+
+      - name: Tail latest run log on failure
+        if: failure()
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $workRoot = 'C:\work\apex_work\runs'
+          $latestRunLog = Get-ChildItem -Path (Join-Path $workRoot '*\logs\run_*.log') -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if ($latestRunLog) {
+            Write-Host ("=== latest run log: {0} ===" -f $latestRunLog.FullName)
+            Write-Host '=== tail run_*.log (200 lines) ==='
+            Get-Content -Path $latestRunLog.FullName -Tail 200
+          } else {
+            Write-Warning ("No run_*.log found under {0}" -f $workRoot)
+          }
+
+      - name: Resolve latest run artifacts
+        if: always()
+        id: resolve_artifacts
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $workRoot = 'C:\work\apex_work\runs'
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] resolve_latest_run_artifacts',
+            ('[INFO] work_root={0}' -f $workRoot)
+          )
+
+          $runId = ''
+          if (Test-Path $consoleLog) {
+            $runIdLine = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
+            if ($runIdLine) {
+              $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
+            }
+          }
+
+          $runDir = $null
+          if ($runId) {
+            $candidateDir = Join-Path $workRoot $runId
+            if (Test-Path $candidateDir) {
+              $runDir = Get-Item $candidateDir
+            }
+          }
+
+          if (-not $runDir -and (Test-Path $workRoot)) {
+            $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($runDir -and -not $runId) {
+              $runId = $runDir.Name
+            }
+          }
+
+          if ($runId) {
+            "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Resolved run_id=$runId"
+          } else {
+            Add-Content -Path $reportPath -Value '[NG] resolve_latest_run_artifacts run_id unresolved'
+            Write-Warning 'Failed to resolve run_id from console log and latest run folder.'
+          }
+
+          if ($runDir) {
+            $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
+            $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
+            $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
+            $outputRoot = Join-Path $runDir.FullName 'output'
+            "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "run_dir=$($runDir.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "output_root=$outputRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Resolved run directory: $($runDir.FullName)"
+          }
+
+          if ($runDir) {
+            Add-Content -Path $reportPath -Value @(
+              '[OK] resolve_latest_run_artifacts',
+              ('[OK] run_dir={0}' -f $runDir.FullName),
+              ('[OK] run_id={0}' -f $runId),
+              ''
+            )
+          }
+
+          if ((Get-Item $reportPath).Length -gt 60000) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+          }
+
+      - name: Trim ONE_TAP report size
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $maxBytes = 60000
+          if ((Test-Path $reportPath) -and ((Get-Item $reportPath).Length -gt $maxBytes)) {
+            $tail = Get-Content -Path $reportPath -Raw
+            $tail = $tail.Substring([Math]::Max(0, $tail.Length - $maxBytes))
+            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+          }
+
+      - name: Stage run artifacts
+        if: always()
+        id: stage_artifacts
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
+          $null = New-Item -Path $artifactRoot -ItemType Directory -Force
+          $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
+          $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
+
+          $reportSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $reportDest = Join-Path $artifactRoot 'ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $reportSource) {
+            Copy-Item -Path $reportSource -Destination $reportDest -Force
+          } else {
+            @(
+              '[WARN] ONE_TAP_ERROR_REPORT.txt was missing at stage time.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path $reportDest -Encoding UTF8
+          }
+
+          $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
+          if (Test-Path $consoleLog) {
+            Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
+          }
+
+          $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ((-not $runLog) -or (-not (Test-Path $runLog))) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if ($runDir -and (Test-Path $runDir)) {
+              $latestRunLog = Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestRunLog) {
+                $runLog = $latestRunLog.FullName
+              }
+            }
+          }
+
+          if ($runLog -and (Test-Path $runLog)) {
+            $runLogName = Split-Path -Path $runLog -Leaf
+            Copy-Item -Path $runLog -Destination (Join-Path $artifactRoot $runLogName) -Force
+            Copy-Item -Path $runLog -Destination (Join-Path $workspaceLogRoot $runLogName) -Force
+            Write-Host "Staged run log: $runLog"
+          } else {
+            Write-Warning 'Run log was not found for artifact staging. Uploading console log artifact only.'
+            @(
+              '[WARN] run_*.log was not found. Artifact includes console log only.',
+              '[WARN] Never finish a workflow run without leaving a readable log artifact.',
+              ('[WARN] generated_at={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path (Join-Path $artifactRoot 'missing_run_log_warning.txt') -Encoding UTF8
+          }
+
+          $zipPath = '${{ steps.resolve_artifacts.outputs.zip_path }}'
+          if ($zipPath -and (Test-Path $zipPath)) {
+            Copy-Item -Path $zipPath -Destination (Join-Path $artifactRoot (Split-Path -Path $zipPath -Leaf)) -Force
+          }
+
+          $actionsLogsZip = Join-Path $artifactRoot 'actions_logs.zip'
+          if (Test-Path $actionsLogsZip) {
+            Remove-Item -Path $actionsLogsZip -Force
+          }
+
+          $zipInputs = @()
+          $zipCandidates = @(
+            (Join-Path $artifactRoot 'ONE_TAP_ERROR_REPORT.txt'),
+            (Join-Path $artifactRoot 'run_all_local_then_copy_console.log')
+          )
+
+          $stagedRunLog = Get-ChildItem -Path $artifactRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($stagedRunLog) {
+            $zipCandidates += $stagedRunLog.FullName
+          }
+
+          foreach ($candidate in $zipCandidates) {
+            if ($candidate -and (Test-Path $candidate)) {
+              $zipInputs += $candidate
+            }
+          }
+
+          if ($zipInputs.Count -eq 0) {
+            $fallbackLog = Join-Path $artifactRoot 'actions_logs_missing.txt'
+            @(
+              '[WARN] No log files were available to zip.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+            ) | Set-Content -Path $fallbackLog -Encoding UTF8
+            $zipInputs += $fallbackLog
+          }
+
+          Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
+          Write-Host "Created logs archive: $actionsLogsZip"
+
+          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Staged artifacts under: $artifactRoot"
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
+          if-no-files-found: warn
+          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+
+      - name: Evaluate outputs (StepA/StepE best-effort) and write report
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+
+          $workRoot='C:\work\apex_work\runs'
+          $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+          if (-not $latest) { Write-Host "[WARN] no run_dir"; exit 0 }
+
+          $outputRoot=Join-Path $latest.FullName 'output'
+          if (-not (Test-Path $outputRoot)) { Write-Host "[WARN] no output_root"; exit 0 }
+
+          $repDir=Join-Path $env:GITHUB_WORKSPACE 'temp\eval'
+          New-Item $repDir -ItemType Directory -Force | Out-Null
+          $md=Join-Path $repDir 'EVAL_REPORT.md'
+          $js=Join-Path $repDir 'EVAL_REPORT.json'
+          $summary=Join-Path $repDir 'EVAL_SUMMARY.txt'
+
+          $symbols = '${{ inputs.symbols }}'
+          $symbol = 'SOXL'
+          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
+            $symbol = ($symbols -split ',')[0].Trim()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+          }
+          $mode = '${{ env.MODE }}'
+          if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
+
+          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
+          exit 0
+
+
+      - name: Publish ONE_TAP report to diag-logs branch
+        id: publish_diag_logs
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
+          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
+          $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          Set-Location $diagRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          cmd /c "git fetch origin diag-logs --depth 1 1>nul 2>nul"
+          $fetchRc = $LASTEXITCODE
+          if ($fetchRc -eq 0) {
+            git checkout -B diag-logs origin/diag-logs
+          } else {
+            git checkout --orphan diag-logs
+          }
+
+          $runsDir = Join-Path $diagRepo 'runs'
+          $null = New-Item -Path $runsDir -ItemType Directory -Force
+
+          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $shortSha = ('${{ github.sha }}').Substring(0, 7)
+          $runFolderName = "${timestamp}_${{ env.MODE }}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
+          $runFolder = Join-Path $runsDir $runFolderName
+          $null = New-Item -Path $runFolder -ItemType Directory -Force
+          $csvOutDir = Join-Path $runFolder 'csv'
+          $null = New-Item -Path $csvOutDir -ItemType Directory -Force
+
+          $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
+          if (Test-Path $oneTapSource) {
+            Copy-Item -Path $oneTapSource -Destination $oneTapDest -Force
+          } else {
+            @(
+              '[WARN] ONE_TAP_ERROR_REPORT.txt was not found in workspace temp.',
+              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')),
+              ('repo=${{ github.repository }}'),
+              ('run_id=${{ github.run_id }}'),
+              ('run_attempt=${{ github.run_attempt }}')
+            ) | Set-Content -Path $oneTapDest -Encoding UTF8
+          }
+
+          $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
+          if (Test-Path $evalMdSource) {
+            Copy-Item -Path $evalMdSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.md') -Force
+          }
+          $evalJsonSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'
+          if (Test-Path $evalJsonSource) {
+            Copy-Item -Path $evalJsonSource -Destination (Join-Path $csvOutDir 'EVAL_REPORT.json') -Force
+          }
+          $evalSummarySource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'
+          if (Test-Path $evalSummarySource) {
+            Copy-Item -Path $evalSummarySource -Destination (Join-Path $csvOutDir 'EVAL_SUMMARY.txt') -Force
+          }
+
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          $outputRootSource = 'workflow_output'
+          if ([string]::IsNullOrWhiteSpace($runDir) -or -not (Test-Path $runDir)) {
+            $runsRoot = 'C:\work\apex_work\runs'
+            if (Test-Path $runsRoot) {
+              $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+              if ($latestRun) {
+                $runDir = $latestRun.FullName
+              }
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+              $outputRootSource = 'run_dir_fallback'
+            }
+          }
+
+          $maxCsvBytes = 5MB
+          $headLines = 500
+          $publishedCsv = New-Object System.Collections.Generic.List[object]
+          $publishWarnings = New-Object System.Collections.Generic.List[string]
+          $allMatchedCandidates = New-Object System.Collections.Generic.List[object]
+          $searchedPatterns = New-Object System.Collections.Generic.List[string]
+          $seenSourcePaths = @{}
+
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $publishWarnings.Add('[WARN] publish issue: source output_root is empty.')
+          } elseif (-not (Test-Path $outputRoot)) {
+            $publishWarnings.Add("[WARN] publish issue: output_root not found: $outputRoot")
+          }
+
+          $specs = @(
+            @{ Label = 'StepA'; RelativeGlob = 'stepA/<mode>/**/*.csv'; Base = 'stepA'; Patterns = @('*.csv') },
+            @{ Label = 'StepB'; RelativeGlob = 'stepB/<mode>/**/*.csv'; Base = 'stepB'; Patterns = @('*.csv') },
+            @{ Label = 'StepDPrime'; RelativeGlob = 'stepD_prime/<mode>/**/*.csv'; Base = 'stepD_prime'; Patterns = @('*.csv') },
+            @{ Label = 'StepE'; RelativeGlob = 'stepE/<mode>/**/stepE_daily_log_*.csv'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv') },
+            @{ Label = 'StepF'; RelativeGlob = 'stepF/<mode>/**/stepF_*.* (csv/json)'; Base = 'stepF'; Patterns = @('stepF_*.csv','stepF_*.json') }
+          )
+          $modeNames = @('sim', 'live', 'display')
+
+          if (-not [string]::IsNullOrWhiteSpace($outputRoot) -and (Test-Path $outputRoot)) {
+            Add-Content -Path $oneTapDest -Encoding UTF8 -Value @(
+              ('[PUBLISH] run_dir={0}' -f $runDir),
+              ('[PUBLISH] output_root={0}' -f $outputRoot),
+              ('[PUBLISH] output_root_source={0}' -f $outputRootSource)
+            )
+
+            foreach ($spec in $specs) {
+              foreach ($mode in $modeNames) {
+                $modeRoot = Join-Path $outputRoot (Join-Path $spec.Base $mode)
+                foreach ($pat in $spec.Patterns) {
+                  $searchedPatterns.Add(("{0}/{1}/**/{2}" -f $spec.Base, $mode, $pat))
+                }
+                if (-not (Test-Path $modeRoot)) { continue }
+
+                foreach ($pat in $spec.Patterns) {
+                  $hits = @(Get-ChildItem -Path $modeRoot -File -Recurse -Filter $pat -ErrorAction SilentlyContinue)
+                  foreach ($hit in $hits) {
+                    if ($null -eq $hit -or [string]::IsNullOrWhiteSpace($hit.FullName)) {
+                      $publishWarnings.Add("[WARN] publish issue: null file hit for pattern $pat under $modeRoot")
+                      continue
+                    }
+                    if ($seenSourcePaths[$hit.FullName]) { continue }
+                    $seenSourcePaths[$hit.FullName] = $true
+                    $allMatchedCandidates.Add([PSCustomObject]@{ File = $hit; Label = [string]$spec.Label; Pattern = [string]$spec.RelativeGlob })
+                  }
+                }
+              }
+            }
+
+            if ($allMatchedCandidates.Count -eq 0) {
+              $publishWarnings.Add('[WARN] publish issue: no files matched target step/mode patterns.')
+            }
+
+            foreach ($entry in ($allMatchedCandidates | Sort-Object { $_.File.FullName })) {
+              if ($null -eq $entry -or $null -eq $entry.File) {
+                $publishWarnings.Add('[WARN] publish issue: source entry was null.')
+                continue
+              }
+
+              $src = $entry.File
+              $relativePath = $src.FullName
+              if ($relativePath.StartsWith($outputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $relativePath = $relativePath.Substring($outputRoot.Length).TrimStart('\', '/')
+              }
+              $safeRelative = ($relativePath -replace '[\/]', '__')
+              if ([string]::IsNullOrWhiteSpace($safeRelative)) {
+                $safeRelative = $src.Name
+              }
+
+              $destName = $safeRelative
+              $headOnly = $false
+              $headNote = ''
+
+              if ($src.Extension -ieq '.csv' -and $src.Length -gt $maxCsvBytes) {
+                $destName = '{0}__HEAD.csv' -f ([System.IO.Path]::GetFileNameWithoutExtension($safeRelative))
+                Get-Content -Path $src.FullName -TotalCount $headLines -ErrorAction SilentlyContinue |
+                  Set-Content -Path (Join-Path $csvOutDir $destName) -Encoding UTF8
+                $headOnly = $true
+                $headNote = "replaced with __HEAD.csv (first $headLines lines)"
+              } else {
+                Copy-Item -Path $src.FullName -Destination (Join-Path $csvOutDir $destName) -Force
+              }
+
+              $destPath = Join-Path $csvOutDir $destName
+              if (Test-Path $destPath) {
+                $publishedCsv.Add([PSCustomObject]@{
+                  Name = $destName
+                  RelativePath = "./csv/$destName"
+                  SizeBytes = (Get-Item -Path $destPath).Length
+                  HeadOnly = $headOnly
+                  HeadNote = $headNote
+                  Label = [string]$entry.Label
+                  SourcePath = $src.FullName
+                  SourcePattern = [string]$entry.Pattern
+                })
+              } else {
+                $publishWarnings.Add("[WARN] publish issue: failed to publish file: $($src.FullName)")
+              }
+            }
+          }
+
+          $evalSpecs = @(
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_SUMMARY.txt'); Name = 'EVAL_SUMMARY.txt'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_SUMMARY.txt' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_REPORT.md'); Name = 'EVAL_REPORT.md'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_REPORT.md' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_REPORT.json' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepA.csv'); Name = 'EVAL_TABLE_stepA.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepA.csv' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepE.csv'); Name = 'EVAL_TABLE_stepE.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepE.csv' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepF.csv'); Name = 'EVAL_TABLE_stepF.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepF.csv' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'); Name = 'EVAL_SUMMARY.txt'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_SUMMARY.txt' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'); Name = 'EVAL_REPORT.md'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_REPORT.md' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_REPORT.json' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepA.csv'); Name = 'EVAL_TABLE_stepA.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepA.csv' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepE.csv'); Name = 'EVAL_TABLE_stepE.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepE.csv' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepF.csv'); Name = 'EVAL_TABLE_stepF.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepF.csv' }
+          )
+          foreach ($evalSpec in $evalSpecs) {
+            if (-not (Test-Path $evalSpec.Source)) { continue }
+            $evalDest = Join-Path $csvOutDir $evalSpec.Name
+            if (Test-Path $evalDest) { continue }
+            Copy-Item -Path $evalSpec.Source -Destination $evalDest -Force
+            if (Test-Path $evalDest) {
+              $publishedCsv.Add([PSCustomObject]@{
+                Name = $evalSpec.Name
+                RelativePath = "./csv/$($evalSpec.Name)"
+                SizeBytes = (Get-Item -Path $evalDest).Length
+                HeadOnly = $false
+                HeadNote = ''
+                Label = 'Eval'
+                SourcePath = $evalSpec.Source
+                SourcePattern = $evalSpec.Pattern
+              })
+            }
+          }
+
+          $csvIndexPath = Join-Path $runFolder 'CSV_INDEX.md'
+          $csvIndexLines = New-Object System.Collections.Generic.List[string]
+          $csvIndexLines.Add('# CSV Index')
+          $csvIndexLines.Add('')
+          $csvIndexLines.Add("- run_folder: $runFolderName")
+          $csvIndexLines.Add("- source_run_dir: $runDir")
+          $csvIndexLines.Add("- source_output_root: $outputRoot")
+          $csvIndexLines.Add("- output_root_source: $outputRootSource")
+          $csvIndexLines.Add("- found_count: $($allMatchedCandidates.Count)")
+          $csvIndexLines.Add("- published_count: $($publishedCsv.Count)")
+          $csvIndexLines.Add('')
+          $csvIndexLines.Add('## Used globs')
+          foreach ($spec in $specs) {
+            $csvIndexLines.Add(("- {0} :: {1}" -f $spec.Label, $spec.RelativeGlob))
+          }
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_SUMMARY.txt')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.md')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.json')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepA.csv')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepE.csv')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepF.csv')
+          $csvIndexLines.Add('')
+
+          if ($publishedCsv.Count -eq 0) {
+            $csvIndexLines.Add('_No files were published for this run._')
+          } else {
+            $csvIndexLines.Add('## Published files')
+            foreach ($item in $publishedCsv) {
+              $headNote = if ($item.HeadOnly) { $item.HeadNote } else { 'original file copied' }
+              $csvIndexLines.Add("- [$($item.Name)]($($item.RelativePath)) | label=$($item.Label) | bytes=$($item.SizeBytes) | source_pattern=$($item.SourcePattern) | head_policy=$headNote")
+            }
+          }
+
+          if ($searchedPatterns.Count -gt 0) {
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('## Expanded search paths')
+            foreach ($pat in $searchedPatterns) {
+              $csvIndexLines.Add("- $pat")
+            }
+          }
+
+          if ($publishWarnings.Count -gt 0) {
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('## Warnings')
+            foreach ($warn in $publishWarnings) {
+              $csvIndexLines.Add("- $warn")
+            }
+          }
+
+          $stepAItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepA' })
+          $stepBItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepB' })
+          $stepDPrimeItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepDPrime' })
+          $stepEItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepE' })
+          $stepFItems = @($publishedCsv | Where-Object { $_.Label -eq 'StepF' })
+
+          foreach ($stepPair in @(
+            @{ Name='StepA'; Count=$stepAItems.Count },
+            @{ Name='StepB'; Count=$stepBItems.Count },
+            @{ Name='StepDPrime'; Count=$stepDPrimeItems.Count },
+            @{ Name='StepE'; Count=$stepEItems.Count },
+            @{ Name='StepF'; Count=$stepFItems.Count }
+          )) {
+            if ($stepPair.Count -eq 0) {
+              $publishWarnings.Add("[WARN] publish issue: $($stepPair.Name) files missing in diag publish output.")
+            }
+          }
+
+          if ($publishWarnings.Count -gt 0) {
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('## Final warnings')
+            foreach ($warn in $publishWarnings) {
+              $csvIndexLines.Add("- $warn")
+            }
+          }
+
+          if ($publishWarnings.Count -gt 0) {
+            Add-Content -Path $oneTapDest -Encoding UTF8 -Value @('', '## publish_diag_logs warnings')
+            foreach ($warn in $publishWarnings) {
+              Add-Content -Path $oneTapDest -Encoding UTF8 -Value $warn
+            }
+          }
+
+          if (Test-Path (Join-Path $csvOutDir 'EVAL_REPORT.md')) {
+            $csvIndexLines.Add('')
+            $csvIndexLines.Add('- eval_report: ./csv/EVAL_REPORT.md')
+          }
+          if (Test-Path (Join-Path $csvOutDir 'EVAL_SUMMARY.txt')) {
+            $csvIndexLines.Add('- eval_summary: ./csv/EVAL_SUMMARY.txt')
+          }
+
+          $csvIndexLines -join "`r`n" | Set-Content -Path $csvIndexPath -Encoding UTF8
+
+          $latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'
+          $latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'
+          $keepLatest = 10
+          try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
+          if ($keepLatest -lt 1) { $keepLatest = 1 }
+
+          @(
+            '# Latest ONE_TAP report',
+            '',
+            "- folder: $runFolderName",
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+          ) -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
+
+          @(
+            '# Latest CSV index',
+            '',
+            "- folder: $runFolderName",
+            "- keep_latest: $keepLatest",
+            "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
+          ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
+
+          $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
+            Sort-Object Name -Descending
+
+          $toDelete = $runFolders | Select-Object -Skip $keepLatest
+          foreach ($d in $toDelete) {
+            Write-Host ("[RETENTION] delete old run folder: {0}" -f $d.FullName)
+            Remove-Item -Path $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          "run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          git add runs
+          if (git diff --cached --quiet) {
+            Write-Host 'No diagnostics changes to commit.'
+            exit 0
+          }
+
+          git commit -m "diag: add one_tap report $runFolderName"
+          cmd /c "git push origin diag-logs"
+          $pushRc = $LASTEXITCODE
+          if ($pushRc -ne 0) {
+            Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)
+            Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
+          }
+
+      - name: Publish diagnostics to Issue #50 (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          DIAG_RUN_FOLDER: ${{ steps.publish_diag_logs.outputs.run_folder }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'ONE_TAP_ERROR_REPORT.txt');
+            let report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8')
+              : '(missing ONE_TAP_ERROR_REPORT.txt)';
+
+            const evalPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'eval', 'EVAL_SUMMARY.txt');
+            let evalTxt = fs.existsSync(evalPath)
+              ? fs.readFileSync(evalPath, 'utf8')
+              : '(EVAL_SUMMARY.txt missing)';
+
+            function findFirstFileByName(rootDir, targetName) {
+              const stack = [rootDir];
+              while (stack.length > 0) {
+                const cur = stack.pop();
+                if (!cur || !fs.existsSync(cur)) continue;
+                let entries = [];
+                try {
+                  entries = fs.readdirSync(cur, { withFileTypes: true });
+                } catch {
+                  continue;
+                }
+                for (const entry of entries) {
+                  const full = path.join(cur, entry.name);
+                  if (entry.isDirectory()) {
+                    stack.push(full);
+                    continue;
+                  }
+                  if (entry.isFile() && entry.name.toLowerCase() === targetName.toLowerCase()) {
+                    return full;
+                  }
+                }
+              }
+              return null;
+            }
+
+            function csvToRows(csvText) {
+              const lines = String(csvText || '')
+                .replace(/^\uFEFF/, '')
+                .split(/\r?\n/)
+                .filter(line => line.trim().length > 0);
+              if (lines.length === 0) return [];
+              const parseLine = (line) => {
+                const out = [];
+                let cur = '';
+                let q = false;
+                for (let i = 0; i < line.length; i++) {
+                  const ch = line[i];
+                  if (ch === '"') {
+                    if (q && line[i + 1] === '"') {
+                      cur += '"';
+                      i++;
+                    } else {
+                      q = !q;
+                    }
+                  } else if (ch === ',' && !q) {
+                    out.push(cur);
+                    cur = '';
+                  } else {
+                    cur += ch;
+                  }
+                }
+                out.push(cur);
+                return out;
+              };
+              return lines.map(parseLine);
+            }
+
+            function markdownEscape(s) {
+              return String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+            }
+
+            function rowsToMarkdownTable(rows, bodyLimit) {
+              if (!rows || rows.length === 0) return '(no data)';
+              const headers = rows[0];
+              const bodyRows = rows.slice(1, 1 + bodyLimit);
+              if (headers.length === 0) return '(no data)';
+              const lineHeader = `| ${headers.map(markdownEscape).join(' | ')} |`;
+              const lineSep = `| ${headers.map(() => '---').join(' | ')} |`;
+              const lineRows = bodyRows.map(r => {
+                const padded = [...r];
+                while (padded.length < headers.length) padded.push('');
+                return `| ${padded.slice(0, headers.length).map(markdownEscape).join(' | ')} |`;
+              });
+              return [lineHeader, lineSep, ...lineRows].join('\n');
+            }
+
+            let stepETableMd = '(EVAL_TABLE_stepE.csv missing)';
+            let stepFTableMd = '(EVAL_TABLE_stepF.csv missing)';
+            try {
+              const stepEPath = findFirstFileByName(process.env.GITHUB_WORKSPACE, 'EVAL_TABLE_stepE.csv');
+              if (stepEPath && fs.existsSync(stepEPath)) {
+                const rows = csvToRows(fs.readFileSync(stepEPath, 'utf8'));
+                stepETableMd = rowsToMarkdownTable(rows, 10);
+              }
+
+              const stepFPath = findFirstFileByName(process.env.GITHUB_WORKSPACE, 'EVAL_TABLE_stepF.csv');
+              if (stepFPath && fs.existsSync(stepFPath)) {
+                const rows = csvToRows(fs.readFileSync(stepFPath, 'utf8'));
+                stepFTableMd = rowsToMarkdownTable(rows, 1);
+              }
+            } catch (e) {
+              stepETableMd = `(failed to render StepE table: ${e && e.message ? e.message : String(e)})`;
+              stepFTableMd = '(failed to render StepF table)';
+            }
+
+            if (evalTxt.length > 12000) evalTxt = evalTxt.slice(-12000);
+
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = 'ApexTraderAI Diagnostics (latest)';
+            const issueNumber = 50;
+            const attempt = process.env.GITHUB_RUN_ATTEMPT || '1';
+            const diagRunFolder = process.env.DIAG_RUN_FOLDER || 'LATEST_CSV.md';
+            const csvIndexUrl = diagRunFolder === 'LATEST_CSV.md'
+              ? `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/LATEST_CSV.md`
+              : `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/runs/${diagRunFolder}/CSV_INDEX.md`;
+            const evalPathInBranch = diagRunFolder === 'LATEST_CSV.md'
+              ? 'runs/LATEST_CSV.md'
+              : `runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
+            const evalUrl = `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/${evalPathInBranch}`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const maxIssueBody = 60000;
+            if (body.length > maxIssueBody) {
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const suffix = `\n\`\`\`\n`;
+              const reserve = fixedPrefix.length + suffix.length;
+              const allowedReportLen = Math.max(0, maxIssueBody - reserve);
+              report = report.slice(-allowedReportLen);
+              body = `${fixedPrefix}${report}${suffix}`;
+            }
+
+            try {
+              await github.rest.issues.update({ owner, repo, issue_number: issueNumber, title, body });
+            } catch (error) {
+              core.warning(`Failed to update issue #${issueNumber}: ${error.message}`);
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
+
+      - name: Collect diagnostics
+        if: always()
+        id: collect_diag
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          FAILING_STEP: ${{ steps.mode_gate.outputs.should_run != 'true' && 'Mode filtered by inputs (run_sim/run_live)' || (steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown') }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Mask-Secrets {
+            param([string]$Text)
+
+            if ([string]::IsNullOrEmpty($Text)) { return $Text }
+
+            $masked = $Text
+            $masked = [regex]::Replace($masked, 'github_pat_[A-Za-z0-9_]{20,}', 'github_pat_***MASKED***')
+            $masked = [regex]::Replace($masked, 'gh[pousr]_[A-Za-z0-9_]{20,}', 'gh***_***MASKED***')
+            $masked = [regex]::Replace($masked, '(?im)\b(token|password|secret)\b\s*[:=]\s*\S+', '$1=***MASKED***')
+            return $masked
+          }
+
+          function Get-MaskedTail {
+            param(
+              [string]$Path,
+              [int]$Tail = 200
+            )
+
+            if (-not (Test-Path $Path)) { return "(not found) $Path" }
+            $raw = (Get-Content -Path $Path -Tail $Tail -ErrorAction SilentlyContinue) -join "`r`n"
+            return (Mask-Secrets -Text $raw)
+          }
+
+          $diagOut = Join-Path $env:RUNNER_TEMP 'diag_out'
+          $null = New-Item -Path $diagOut -ItemType Directory -Force
+
+          $ws = $env:GITHUB_WORKSPACE
+          $runnerRoot = (Resolve-Path (Join-Path $ws '..\..\..')).Path
+          $runnerDiag = Join-Path $runnerRoot '_diag'
+          $runId = '${{ github.run_id }}'
+          $runAttempt = '${{ github.run_attempt }}'
+          $sha = '${{ github.sha }}'
+          $branch = '${{ github.ref_name }}'
+          $repo = '${{ github.repository }}'
+          $artifactName = "diag_full_${{ env.MODE }}_${runId}_${runAttempt}"
 
           $latestRunnerLog = $null
           $latestWorkerLog = $null
