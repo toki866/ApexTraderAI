@@ -50,9 +50,52 @@ on:
         type: boolean
       steps:
         description: "Pipeline steps to run (comma-separated). Standard flow is A,B,C,DPRIME,E,F. StepD is deprecated and D' (DPRIME) is used instead."
-        required: true
-        default: "A,B,C,DPRIME,E,F"
+        required: false
+        default: ""
         type: string
+      run_stepA:
+        description: "Run StepA"
+        required: true
+        default: true
+        type: boolean
+      run_stepB:
+        description: "Run StepB"
+        required: true
+        default: true
+        type: boolean
+      run_stepC:
+        description: "Run StepC"
+        required: true
+        default: true
+        type: boolean
+      run_stepDPRIME:
+        description: "Run StepDPRIME"
+        required: true
+        default: true
+        type: boolean
+      run_stepE:
+        description: "Run StepE"
+        required: true
+        default: true
+        type: boolean
+      run_stepF:
+        description: "Run StepF"
+        required: true
+        default: true
+        type: boolean
+      resume_from:
+        description: "Resume from this step (run selected step and later steps only)"
+        required: true
+        default: "none"
+        type: choice
+        options:
+          - none
+          - A
+          - B
+          - C
+          - DPRIME
+          - E
+          - F
       skip_stepe:
         description: "Debug only: skip StepE (1=true, 0=false)"
         required: true
@@ -421,6 +464,72 @@ jobs:
             Select-Object Name, Id, StartTime |
             Format-Table -AutoSize
 
+      - name: Compute steps for desktop BAT
+        id: compute_steps
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          $manualSteps = '${{ inputs.steps }}'.Trim()
+          $resumeFrom = '${{ inputs.resume_from }}'.Trim()
+
+          $runStepA = ('${{ inputs.run_stepA }}' -eq 'true')
+          $runStepB = ('${{ inputs.run_stepB }}' -eq 'true')
+          $runStepC = ('${{ inputs.run_stepC }}' -eq 'true')
+          $runStepDPrime = ('${{ inputs.run_stepDPRIME }}' -eq 'true')
+          $runStepE = ('${{ inputs.run_stepE }}' -eq 'true')
+          $runStepF = ('${{ inputs.run_stepF }}' -eq 'true')
+          $skipStepEInput = ('${{ inputs.skip_stepe }}' -eq 'true')
+          $effectiveSkipStepE = $skipStepEInput -or (-not $runStepE)
+
+          $allSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
+          $computedSteps = @()
+          $stepsSource = ''
+
+          if ($manualSteps -ne '') {
+            $stepsSource = 'manual'
+            $computedSteps = $manualSteps.Split(',') | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ -ne '' }
+          } elseif ($resumeFrom -ne '' -and $resumeFrom -ne 'none') {
+            $stepsSource = 'resume_from'
+            $resumeUpper = $resumeFrom.ToUpperInvariant()
+            $startIndex = [Array]::IndexOf($allSteps, $resumeUpper)
+            if ($startIndex -lt 0) {
+              throw "Invalid resume_from value: $resumeFrom"
+            }
+            $computedSteps = $allSteps[$startIndex..($allSteps.Count - 1)]
+          } else {
+            $stepsSource = 'toggle'
+            if ($runStepA) { $computedSteps += 'A' }
+            if ($runStepB) { $computedSteps += 'B' }
+            if ($runStepC) { $computedSteps += 'C' }
+            if ($runStepDPrime) { $computedSteps += 'DPRIME' }
+            if ($runStepE) { $computedSteps += 'E' }
+            if ($runStepF) { $computedSteps += 'F' }
+          }
+
+          if ($effectiveSkipStepE) {
+            $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
+          }
+
+          $computedStepsString = ($computedSteps -join ',')
+          $effectiveSkipStepEStr = if ($effectiveSkipStepE) { '1' } else { '0' }
+
+          Write-Host "[INFO] computed_steps=$computedStepsString"
+          Write-Host "[INFO] steps_source=$stepsSource"
+
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] compute_steps',
+            ('[INFO] computed_steps={0}' -f $computedStepsString),
+            ('[INFO] steps_source={0}' -f $stepsSource),
+            ('[INFO] effective_skip_stepe={0}' -f $effectiveSkipStepEStr),
+            ''
+          )
+
+          "computed_steps=$computedStepsString" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "steps_source=$stepsSource" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "effective_skip_stepe=$effectiveSkipStepEStr" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Run desktop BAT
         id: run_bat
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -433,13 +542,13 @@ jobs:
           INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
           INPUT_TEST_MONTHS: ${{ inputs.test_months }}
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
-          INPUT_STEPS: ${{ inputs.steps }}
-          INPUT_SKIP_STEPE: ${{ inputs.skip_stepe }}
+          INPUT_STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
+          INPUT_SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
           RUN_MODE: ${{ matrix.mode }}
           SYMBOLS: ${{ inputs.symbols }}
           SYMBOL: SOXL
-          STEPS: ${{ inputs.steps }}
-          SKIP_STEPE: ${{ inputs.skip_stepe && '1' || '0' }}
+          STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
+          SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
           DATA_START: ${{ inputs.start }}
           DATA_END: ${{ inputs.end }}
           TEST_START: ${{ inputs.test_start }}
