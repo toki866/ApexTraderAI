@@ -139,6 +139,16 @@ if (Test-Path $summaryPath) {
   $sourceItems[$summaryPath] = $true
 }
 
+$evalDir = Join-Path $workspaceTemp 'eval'
+if (Test-Path $evalDir) {
+  $evalTables = @(Get-ChildItem -Path $evalDir -File -Filter 'EVAL_TABLE_*.csv' -ErrorAction SilentlyContinue)
+  foreach ($evalTable in $evalTables) {
+    if ($null -ne $evalTable -and (Test-Path $evalTable.FullName)) {
+      $sourceItems[$evalTable.FullName] = $true
+    }
+  }
+}
+
 $consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
 if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
   $consoleLogCandidates += (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
