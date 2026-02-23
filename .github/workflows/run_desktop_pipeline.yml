@@ -1187,6 +1187,55 @@ jobs:
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
+      - name: Generate GitHub-viewable run report (best effort)
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            Write-Warning '[WARN] report generation skipped: output_root not found.'
+            exit 0
+          }
+
+          $symbols = '${{ inputs.symbols }}'
+          $symbol = 'SOXL'
+          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
+            $symbol = ($symbols -split ',')[0].Trim()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+          }
+          $mode = '${{ env.MODE }}'
+          if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
+
+          $diagDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish'
+          $reportDir = Join-Path $diagDir 'report'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+
+          python tools/generate_run_report.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-dir "$reportDir"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[WARN] generate_run_report failed with exit code $LASTEXITCODE"
+            exit 0
+          }
+
+      - name: Checkout diag-logs branch workspace (best effort)
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+          ref: diag-logs
+          fetch-depth: 1
+          path: temp/diag-logs
 
       - name: Publish ONE_TAP report to diag-logs branch
         id: publish_diag_logs
@@ -1196,15 +1245,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
 
-          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
-          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
-          $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          $diagRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs'
+          if (!(Test-Path $diagRepo)) {
+            $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          }
           Set-Location $diagRepo
 
-          git init
+          if (!(Test-Path (Join-Path $diagRepo '.git'))) {
+            git init
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          }
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
 
           cmd /c "git fetch origin diag-logs --depth 1 1>nul 2>nul"
           $fetchRc = $LASTEXITCODE
@@ -1224,6 +1280,14 @@ jobs:
           $null = New-Item -Path $runFolder -ItemType Directory -Force
           $csvOutDir = Join-Path $runFolder 'csv'
           $null = New-Item -Path $csvOutDir -ItemType Directory -Force
+
+          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish\report'
+          $reportDestDir = Join-Path $runFolder 'report'
+          if (Test-Path $reportSourceDir) {
+            Copy-Item -Path $reportSourceDir -Destination $reportDestDir -Recurse -Force
+          } else {
+            Write-Warning "[WARN] report directory missing: $reportSourceDir"
+          }
 
           $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
@@ -1505,6 +1569,7 @@ jobs:
 
           $latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'
           $latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'
+          $latestReportPath = Join-Path $runsDir 'LATEST_REPORT.md'
           $keepLatest = 10
           try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
           if ($keepLatest -lt 1) { $keepLatest = 1 }
@@ -1524,6 +1589,13 @@ jobs:
             "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
           ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
 
+          @(
+            '# Latest Report index',
+            '',
+            "- folder: $runFolderName",
+            "- report_index: ./runs/$runFolderName/report/index.md"
+          ) -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
+
           $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
             Sort-Object Name -Descending
@@ -1535,6 +1607,7 @@ jobs:
           }
 
           "run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "report_relpath=runs/$runFolderName/report/index.md" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
           git add runs
           if (git diff --cached --quiet) {
@@ -1548,6 +1621,10 @@ jobs:
           if ($pushRc -ne 0) {
             Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)
             Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
+          } else {
+            $reportRelPath = "runs/$runFolderName/report/index.md"
+            Write-Host "Report saved to diag-logs: $reportRelPath"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Report saved to diag-logs: $reportRelPath"
           }
 
       - name: Publish diagnostics to Issue #50 (always)
@@ -2913,6 +2990,55 @@ jobs:
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
+      - name: Generate GitHub-viewable run report (best effort)
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            Write-Warning '[WARN] report generation skipped: output_root not found.'
+            exit 0
+          }
+
+          $symbols = '${{ inputs.symbols }}'
+          $symbol = 'SOXL'
+          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
+            $symbol = ($symbols -split ',')[0].Trim()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+          }
+          $mode = '${{ env.MODE }}'
+          if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
+
+          $diagDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish'
+          $reportDir = Join-Path $diagDir 'report'
+          $null = New-Item -Path $reportDir -ItemType Directory -Force
+
+          python tools/generate_run_report.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-dir "$reportDir"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[WARN] generate_run_report failed with exit code $LASTEXITCODE"
+            exit 0
+          }
+
+      - name: Checkout diag-logs branch workspace (best effort)
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+          ref: diag-logs
+          fetch-depth: 1
+          path: temp/diag-logs
 
       - name: Publish ONE_TAP report to diag-logs branch
         id: publish_diag_logs
@@ -2922,15 +3048,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
 
-          $diagRepo = Join-Path $env:RUNNER_TEMP 'diag_repo'
-          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
-          $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          $diagRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs'
+          if (!(Test-Path $diagRepo)) {
+            $null = New-Item -Path $diagRepo -ItemType Directory -Force
+          }
           Set-Location $diagRepo
 
-          git init
+          if (!(Test-Path (Join-Path $diagRepo '.git'))) {
+            git init
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          }
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
 
           cmd /c "git fetch origin diag-logs --depth 1 1>nul 2>nul"
           $fetchRc = $LASTEXITCODE
@@ -2950,6 +3083,14 @@ jobs:
           $null = New-Item -Path $runFolder -ItemType Directory -Force
           $csvOutDir = Join-Path $runFolder 'csv'
           $null = New-Item -Path $csvOutDir -ItemType Directory -Force
+
+          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish\report'
+          $reportDestDir = Join-Path $runFolder 'report'
+          if (Test-Path $reportSourceDir) {
+            Copy-Item -Path $reportSourceDir -Destination $reportDestDir -Recurse -Force
+          } else {
+            Write-Warning "[WARN] report directory missing: $reportSourceDir"
+          }
 
           $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
@@ -3231,6 +3372,7 @@ jobs:
 
           $latestOneTapPath = Join-Path $runsDir 'LATEST_ONE_TAP.md'
           $latestCsvPath = Join-Path $runsDir 'LATEST_CSV.md'
+          $latestReportPath = Join-Path $runsDir 'LATEST_REPORT.md'
           $keepLatest = 10
           try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
           if ($keepLatest -lt 1) { $keepLatest = 1 }
@@ -3250,6 +3392,13 @@ jobs:
             "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
           ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
 
+          @(
+            '# Latest Report index',
+            '',
+            "- folder: $runFolderName",
+            "- report_index: ./runs/$runFolderName/report/index.md"
+          ) -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
+
           $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
             Sort-Object Name -Descending
@@ -3261,6 +3410,7 @@ jobs:
           }
 
           "run_folder=$runFolderName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "report_relpath=runs/$runFolderName/report/index.md" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
           git add runs
           if (git diff --cached --quiet) {
@@ -3274,6 +3424,10 @@ jobs:
           if ($pushRc -ne 0) {
             Write-Warning ('Failed to push ONE_TAP report to diag-logs branch. git push rc={0}' -f $pushRc)
             Write-Warning 'Enable Settings > Actions > Workflow permissions: Read and write permissions'
+          } else {
+            $reportRelPath = "runs/$runFolderName/report/index.md"
+            Write-Host "Report saved to diag-logs: $reportRelPath"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Report saved to diag-logs: $reportRelPath"
           }
 
       - name: Publish diagnostics to Issue #50 (always)
