@@ -286,6 +286,7 @@ jobs:
               '[SKIP] repo_prepare',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
               '[INFO] repo prepare intentionally skipped because mode is filtered by inputs',
+              '[OK] filtered matrix mode is treated as success',
               ''
             )
           } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -ne 'success') {
@@ -1858,6 +1859,7 @@ jobs:
           path: _diagnostics/**/*
 
       - name: Fail run if repo prepare failed
+        # Do not fail filtered matrix legs (e.g. live when run_live=false).
         if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome != 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
