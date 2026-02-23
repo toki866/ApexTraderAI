@@ -1,6 +1,7 @@
 name: Run Desktop Pipeline (Manual Dispatch Only)
 
 on:
+  # Manual-only trigger to avoid push/merge noise in Actions runs.
   workflow_dispatch:
     inputs:
       run_sim:
