@@ -289,7 +289,7 @@ jobs:
               '[OK] filtered matrix mode is treated as success',
               ''
             )
-          } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -ne 'success') {
+          } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -eq 'failure') {
             Add-Content -Path $reportPath -Value @(
               '[NG] repo_prepare_failed',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
@@ -1860,7 +1860,7 @@ jobs:
 
       - name: Fail run if repo prepare failed
         # Do not fail filtered matrix legs (e.g. live when run_live=false).
-        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome != 'success' }}
+        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome == 'failure' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
