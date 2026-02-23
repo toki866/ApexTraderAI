@@ -241,6 +241,52 @@ def _calc_diversity(pos_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _read_split_summary_map(output_root: str, mode: str, symbol: str) -> tuple[dict[str, Any], str | None, str | None]:
+    """Return split summary map, basename, and optional skip reason."""
+    base = os.path.join(output_root, "stepA", mode)
+    candidates = [
+        os.path.join(base, f"stepA_split_summary_{symbol}.csv"),
+    ]
+    candidates.extend(sorted(glob.glob(os.path.join(base, f"*split*summary*{symbol}*.csv"))))
+    seen: set[str] = set()
+    for p in candidates:
+        if p in seen or not os.path.exists(p):
+            continue
+        seen.add(p)
+        try:
+            df = _read_csv(p)
+            if "key" in df.columns and "value" in df.columns:
+                out = {str(k): v for k, v in zip(df["key"].astype(str), df["value"]) }
+            elif len(df) == 1:
+                out = {str(c): df.iloc[0][c] for c in df.columns}
+            else:
+                out = {}
+            return out, os.path.basename(p), None
+        except Exception as exc:
+            return {}, os.path.basename(p), f"failed to parse split summary: {exc}"
+    return {}, None, "split summary file missing"
+
+
+def _md_escape(v: Any) -> str:
+    return str(v).replace("|", "\\|") if v is not None else ""
+
+
+def _append_kv_table(lines: list[str], rows: list[tuple[str, Any]]) -> None:
+    lines.extend([
+        "| key | value |",
+        "|---|---|",
+    ])
+    for k, v in rows:
+        lines.append(f"| {_md_escape(k)} | {_md_escape(v)} |")
+
+
+def _pct(v: Any, nd: int = 2) -> str:
+    f = _to_float(v)
+    if f is None:
+        return "NA"
+    return f"{f * 100:.{nd}f}"
+
+
 
 
 def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
@@ -397,10 +443,16 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                         elif nn_ratio < 0.9 or (coverage_ratio is not None and coverage_ratio < 0.9):
                             status = "WARN"
 
+                        horizon = None
+                        hm = re.search(r"(?:horizon|h)(\d+)", str(col).lower())
+                        if hm:
+                            horizon = f"h{hm.group(1)}"
+
                         rows.append(
                             {
                                 "file": os.path.basename(fpath),
                                 "pred_col": col,
+                                "horizon": horizon,
                                 "non_null_ratio": nn_ratio,
                                 "first_valid_date": first_valid_date,
                                 "coverage_ratio_over_test": coverage_ratio,
@@ -433,8 +485,12 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, f"stepE_daily_log_*_{symbol}.csv")))
         if not step_e_logs:
             step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", f"stepE_daily_log_*_{symbol}.csv")))
-        if not step_e_logs:
-            report["stepE"] = {"status": "SKIP", "summary": "stepE_daily_log missing", "rows": []}
+        step_e_summaries = sorted(glob.glob(os.path.join(output_root, "stepE", mode, f"stepE_summary_*_{symbol}.json")))
+        if not step_e_summaries:
+            step_e_summaries = sorted(glob.glob(os.path.join(output_root, "stepE", "*", f"stepE_summary_*_{symbol}.json")))
+
+        if not step_e_logs and not step_e_summaries:
+            report["stepE"] = {"status": "SKIP", "summary": "stepE_daily_log/stepE_summary missing", "rows": []}
         else:
             rows = []
             pos_rows: list[dict[str, Any]] = []
@@ -480,11 +536,39 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                 except Exception as exc:
                     rows.append({"file": os.path.basename(fpath), "status": "SKIP", "reason": str(exc)})
 
+            known_agents = {str(r.get("agent")) for r in rows if r.get("agent")}
+            for fpath in step_e_summaries:
+                try:
+                    fname = os.path.basename(fpath)
+                    m = re.match(rf"stepE_summary_(.+)_{re.escape(symbol)}\.json$", fname)
+                    agent = m.group(1) if m else None
+                    payload = json.loads(open(fpath, encoding="utf-8").read())
+                    agent = str(payload.get("agent") or agent or fname)
+                    if agent in known_agents:
+                        continue
+                    eq = _to_float(payload.get("equity_multiple"))
+                    rows.append(
+                        {
+                            "file": fname,
+                            "agent": agent,
+                            "test_days": _to_int(payload.get("rows_test")),
+                            "equity_multiple": eq,
+                            "max_dd": _to_float(payload.get("max_dd")),
+                            "mean_ret": _to_float(payload.get("mean_ret")),
+                            "std_ret": _to_float(payload.get("std_ret")),
+                            "sharpe": _to_float(payload.get("sharpe")),
+                            "status": "OK" if eq is not None else "SKIP",
+                            "note": "from stepE_summary json (daily log missing)",
+                        }
+                    )
+                except Exception as exc:
+                    rows.append({"file": os.path.basename(fpath), "agent": "NA", "status": "SKIP", "reason": f"summary parse failed: {exc}"})
+
             report["diversity"] = _calc_diversity(pos_rows)
             rows = sorted(rows, key=lambda r: (0 if r.get("status") == "OK" else 1, str(r.get("agent", ""))))
             report["stepE"] = {
                 "status": "OK" if any(r.get("status") == "OK" for r in rows) else "SKIP",
-                "summary": "stepE daily logs evaluated",
+                "summary": "stepE daily logs/summaries evaluated",
                 "rows": rows,
             }
     except Exception as exc:
@@ -556,66 +640,131 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- symbol: `{report.get('symbol')}`",
         f"- overall_status: **{report.get('overall_status')}**",
         "",
-        "## D' (stepD_prime) artifacts",
+        "## Dataset / Split Summary",
     ]
-    dprime = report.get("dprime", {})
-    ddet = dprime.get("details", {})
-    lines.extend([
-        f"- status: **{dprime.get('status', 'SKIP')}**",
-        f"- summary: {dprime.get('summary', 'NA')}",
-        f"- state_count: {_fmt(ddet.get('state_count'))}",
-        f"- embeddings_count: {_fmt(ddet.get('embeddings_count'))}",
-    ])
+
+    split_map = report.get("split_summary", {})
+    split_file = report.get("split_summary_file")
+    split_skip_reason = report.get("split_summary_skip_reason")
+    stepa = report.get("stepA", {})
+    ad = stepa.get("details", {})
+    ds_rows: list[tuple[str, Any]] = [
+        ("symbol", report.get("symbol")),
+        ("mode", report.get("mode")),
+        ("test_start", split_map.get("test_start", split_map.get("test_start_date", split_map.get("test_start_dt", ad.get("test_date_start"))))),
+        ("test_end", split_map.get("test_end", split_map.get("test_end_date", ad.get("test_date_end")))),
+        ("train_years", split_map.get("train_years", "SKIP: train_years missing in split summary" if split_map else "SKIP: split summary unavailable")),
+        ("test_months", split_map.get("test_months", "SKIP: test_months missing in split summary" if split_map else "SKIP: split summary unavailable")),
+        ("rows_train", split_map.get("rows_train", "SKIP: rows_train missing in split summary" if split_map else "SKIP: split summary unavailable")),
+        ("rows_test", split_map.get("rows_test", ad.get("test_rows", "SKIP: rows_test missing"))),
+        ("missing_ohlcv", ad.get("missing_ohlcv_count", "SKIP: stepA prices_test missing")),
+    ]
+    if split_file:
+        ds_rows.append(("split_summary_file", split_file))
+    if split_skip_reason:
+        ds_rows.append(("note", f"SKIP: {split_skip_reason}"))
+    _append_kv_table(lines, ds_rows)
 
     lines.extend([
         "",
-        "## StepE agents table",
+        "## StepB (Forecast) Summary",
+    ])
+
+    stepb_rows = report.get("stepB", {}).get("rows", [])
+    if stepb_rows:
+        lines.extend([
+            "| file | pred_col | coverage_ratio_over_test | nn_ratio | corr | mae | horizon | status | note |",
+            "|---|---|---:|---:|---:|---:|---|---|---|",
+        ])
+        for r in stepb_rows:
+            lines.append(
+                f"| {r.get('file', 'NA')} | {r.get('pred_col', 'NA')} | {_fmt(r.get('coverage_ratio_over_test'))} | {_fmt(r.get('non_null_ratio'))} | "
+                + f"{_fmt(r.get('corr'))} | {_fmt(r.get('mae'))} | {_fmt(r.get('horizon', 'NA'))} | {r.get('status', 'NA')} | {r.get('reason', '')} |"
+            )
+    else:
+        _append_kv_table(lines, [("stepB", f"SKIP: {report.get('stepB', {}).get('summary', 'no rows')}")])
+
+    lines.extend([
+        "",
+        "## D' (stepD_prime) artifacts",
+    ])
+    dprime = report.get("dprime", {})
+    ddet = dprime.get("details", {})
+    _append_kv_table(
+        lines,
+        [
+            ("status", dprime.get("status", "SKIP")),
+            ("summary", dprime.get("summary", "NA")),
+            ("state_count", _fmt(ddet.get("state_count"))),
+            ("embeddings_count", _fmt(ddet.get("embeddings_count"))),
+        ],
+    )
+
+    lines.extend([
+        "",
+        "## StepE Experts Summary (Top-to-Bottom)",
     ])
 
     stepe_rows = report.get("stepE", {}).get("rows", [])
     if stepe_rows:
+        ranked = sorted(
+            stepe_rows,
+            key=lambda r: (_to_float(r.get("equity_multiple")) is None, -(_to_float(r.get("equity_multiple")) or -1e9), str(r.get("agent", ""))),
+        )
         lines.extend([
-            "| agent | file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---|---|",
+            "| agent | test_days | equity_multiple | return_% | max_dd_% | sharpe | mean_ret | std_ret | note | status |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
         ])
-        for r in stepe_rows:
+        for r in ranked:
+            eq = _to_float(r.get("equity_multiple"))
+            ret_pct = ((eq - 1.0) * 100.0) if eq is not None else None
             lines.append(
-                f"| {r.get('agent', 'NA')} | {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | "
-                f"{_fmt(r.get('max_dd'))} | {_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('sharpe'))} | "
+                f"| {r.get('agent', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(eq)} | {_fmt(ret_pct, 2)} | "
+                f"{_pct(r.get('max_dd'))} | {_fmt(r.get('sharpe'))} | {_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | "
                 f"{r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
             )
     else:
-        lines.append(f"- SKIP: {report.get('stepE', {}).get('summary')}")
+        _append_kv_table(lines, [("stepE", f"SKIP: {report.get('stepE', {}).get('summary', 'no rows')}")])
 
     lines.extend([
         "",
-        "## StepF router summary",
+        "## StepE Diversity Check (Table)",
+    ])
+    div = report.get("diversity", {})
+    div_note = div.get("summary", "NA")
+    if div.get("status") == "SKIP":
+        div_note = f"SKIP: {div_note}"
+    lines.extend([
+        "| metric | value |",
+        "|---|---|",
+        f"| max_pos_corr | {_fmt(div.get('max_corr'))} |",
+        f"| identical_agents | {'yes' if div.get('identical_all_agents') else 'no'} |",
+        f"| note | {div_note} |",
+    ])
+
+    lines.extend([
+        "",
+        "## StepF Router Summary",
     ])
     stepf_rows = report.get("stepF", {}).get("rows", [])
     if stepf_rows:
         lines.extend([
-            "| file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
-            "|---|---:|---:|---:|---:|---:|---:|---|---|",
+            "| file | equity_multiple | return_% | max_dd_% | sharpe | rows | split_policy | note | status |",
+            "|---|---:|---:|---:|---:|---:|---|---|---|",
         ])
         for r in stepf_rows:
+            eq = _to_float(r.get("equity_multiple"))
+            ret_pct = ((eq - 1.0) * 100.0) if eq is not None else None
+            split_policy = "test_only"
+            note_text = r.get("note", r.get("reason", ""))
+            if "all rows as test" in str(note_text):
+                split_policy = "all_as_test"
             lines.append(
-                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_dd'))} | "
-                f"{_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
+                f"| {r.get('file', 'NA')} | {_fmt(eq)} | {_fmt(ret_pct, 2)} | {_pct(r.get('max_dd'))} | {_fmt(r.get('sharpe'))} | "
+                f"{_fmt(r.get('test_days'))} | {split_policy} | {note_text} | {r.get('status', 'NA')} |"
             )
     else:
-        lines.append(f"- SKIP: {report.get('stepF', {}).get('summary')}")
-
-    div = report.get("diversity", {})
-    lines.extend([
-        "",
-        "## Diversity",
-        f"- status: **{div.get('status', 'SKIP')}**",
-        f"- summary: {div.get('summary', 'NA')}",
-        f"- max_corr: {_fmt(div.get('max_corr'))}",
-        f"- max_match_ratio: {_fmt(div.get('max_match_ratio'))}",
-        f"- pairs_over_0_9999: {_fmt(div.get('pairs_over_0_9999'))} / {_fmt(div.get('all_pairs'))}",
-        f"- identical_all_agents: {_fmt(div.get('identical_all_agents'))}",
-    ])
+        _append_kv_table(lines, [("stepF", f"SKIP: {report.get('stepF', {}).get('summary', 'no rows')}")])
 
     lines.extend([
         "",
@@ -733,6 +882,10 @@ def main() -> None:
 
     try:
         report = evaluate(args.output_root, args.mode, args.symbol)
+        split_map, split_file, split_skip_reason = _read_split_summary_map(args.output_root, args.mode, args.symbol)
+        report["split_summary"] = split_map
+        report["split_summary_file"] = split_file
+        report["split_summary_skip_reason"] = split_skip_reason
         md = render_markdown(report)
         summary = render_summary(report)
     except Exception as exc:
