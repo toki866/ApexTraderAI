@@ -128,6 +128,7 @@ jobs:
     steps:
       - name: Prepare repo in C:\work (no OneDrive cleanup)
         id: prep_repo
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           GIT_TERMINAL_PROMPT: "0"
@@ -141,30 +142,67 @@ jobs:
 
           New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
 
-          if (!(Test-Path (Join-Path $repoDir ".git"))) {
-            Write-Host "[repo] cloning to $repoDir"
-            if (Test-Path $repoDir) { Remove-Item -Path $repoDir -Recurse -Force -ErrorAction SilentlyContinue }
-            git clone $repoUrl $repoDir
-            if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit=$LASTEXITCODE)" }
-          } else {
-            Write-Host "[repo] fetch/reset in $repoDir"
-            git -C $repoDir remote set-url origin $repoUrl | Out-Null
-            git -C $repoDir fetch --force --prune origin
-            if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit=$LASTEXITCODE)" }
+          function Invoke-GitStrict {
+            param([string]$Command)
+            Write-Host ">>> git $Command"
+            & cmd /c "git $Command"
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "git $Command failed (exit=$exitCode)"
+            }
           }
 
-          git -C $repoDir checkout -f $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw "git checkout SHA failed (exit=$LASTEXITCODE)" }
-          git -C $repoDir reset --hard $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw "git reset SHA failed (exit=$LASTEXITCODE)" }
-          git -C $repoDir clean -ffdx
-          if ($LASTEXITCODE -ne 0) { throw "git clean failed (exit=$LASTEXITCODE)" }
+          function Sync-Repo {
+            param([string]$TargetRepoDir)
+            if (!(Test-Path (Join-Path $TargetRepoDir '.git'))) {
+              Write-Host "[repo] cloning to $TargetRepoDir"
+              if (Test-Path $TargetRepoDir) {
+                Remove-Item -Path $TargetRepoDir -Recurse -Force
+              }
+              Invoke-GitStrict "clone $repoUrl `"$TargetRepoDir`""
+            } else {
+              Write-Host "[repo] fetch/reset in $TargetRepoDir"
+              Invoke-GitStrict "-C `"$TargetRepoDir`" remote set-url origin $repoUrl"
+              Invoke-GitStrict "-C `"$TargetRepoDir`" fetch --force --prune origin"
+            }
+
+            Invoke-GitStrict "-C `"$TargetRepoDir`" checkout -f $env:GITHUB_SHA"
+            Invoke-GitStrict "-C `"$TargetRepoDir`" reset --hard $env:GITHUB_SHA"
+            Invoke-GitStrict "-C `"$TargetRepoDir`" clean -ffdx"
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
+
+          try {
+            Sync-Repo -TargetRepoDir $repoDir
+          } catch {
+            $prepError = $_.Exception.Message
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $prepError)
+            Write-Warning "[repo] initial prepare failed: $prepError"
+
+            try {
+              if (Test-Path $repoDir) {
+                Write-Host "[repo] removing $repoDir before retry"
+                Remove-Item -Path $repoDir -Recurse -Force -ErrorAction Stop
+              }
+            } catch {
+              Write-Warning "[repo] failed to remove repoDir due to lock: $($_.Exception.Message)"
+              $repoDir = Join-Path $cacheRoot ("ApexTraderAI_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
+              Write-Warning "[repo] switching to fallback repoDir=$repoDir"
+            }
+
+            try {
+              Sync-Repo -TargetRepoDir $repoDir
+            } catch {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $_.Exception.Message)
+              throw
+            }
+          }
 
           git config --global --add safe.directory $repoDir
-
           Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"
           Write-Host "REPO_ROOT=$repoDir"
-          $headShort = git -C $repoDir rev-parse --short HEAD
+          $headShort = (& cmd /c "git -C `"$repoDir`" rev-parse --short HEAD").Trim()
           Write-Host "HEAD=$headShort"
 
       - name: Initialize ONE_TAP error report
@@ -191,10 +229,30 @@ jobs:
             '[STEP] initialize_one_tap_report',
             '[OK] report initialized',
             ('[PATH] {0}' -f $reportPath),
+            ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
             ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
-            ('[INFO] HEAD={0}' -f (git -C $env:REPO_ROOT rev-parse --short HEAD)),
             ''
           )
+
+          if ([string]::IsNullOrWhiteSpace($env:REPO_ROOT)) {
+            Add-Content -Path $reportPath -Value @(
+              '[NG] repo_prepare_failed',
+              ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
+              ('[INFO] PREP_REPO_ERROR={0}' -f $env:PREP_REPO_ERROR),
+              ''
+            )
+          } else {
+            $headShort = ''
+            try {
+              $headShort = (& cmd /c "git -C `"$env:REPO_ROOT`" rev-parse --short HEAD").Trim()
+            } catch {
+              $headShort = "(unavailable: $($_.Exception.Message))"
+            }
+            Add-Content -Path $reportPath -Value @(
+              ('[INFO] HEAD={0}' -f $headShort),
+              ''
+            )
+          }
 
       - name: GPU / CUDA diagnostics
         if: always()
@@ -276,6 +334,7 @@ jobs:
           exit 0
 
       - name: Verify scripts directory (post-prepare)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference='Stop'
@@ -320,6 +379,7 @@ jobs:
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
 
       - name: Verify required scripts
+        if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Stop'
@@ -528,6 +588,7 @@ jobs:
 
       - name: Run desktop BAT
         id: run_bat
+        if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           INPUT_MODE: ${{ matrix.mode }}
@@ -1022,7 +1083,7 @@ jobs:
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
-        if: always()
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
@@ -1709,3 +1770,10 @@ jobs:
           name: diagnostics
           if-no-files-found: warn
           path: _diagnostics/**/*
+
+      - name: Fail run if repo prepare failed
+        if: ${{ always() && steps.prep_repo.outcome != 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
+          exit 1
