@@ -124,42 +124,8 @@ jobs:
       MODE: sim
     runs-on: [self-hosted, windows]
     steps:
-      - name: Decide whether selected mode should run
-        id: mode_gate
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $mode = '${{ env.MODE }}'.Trim().ToLowerInvariant()
-          $runSimRaw = '${{ inputs.run_sim }}'.Trim().ToLowerInvariant()
-          $runLiveRaw = '${{ inputs.run_live }}'.Trim().ToLowerInvariant()
-
-          $runSim = ($runSimRaw -eq 'true' -or $runSimRaw -eq '1')
-          $runLive = ($runLiveRaw -eq 'true' -or $runLiveRaw -eq '1')
-
-          $shouldRun = $false
-          if ($mode -eq 'sim') { $shouldRun = $runSim }
-          elseif ($mode -eq 'live') { $shouldRun = $runLive }
-
-          $reason = if ($shouldRun) {
-            "mode $mode enabled by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
-          } else {
-            "mode $mode skipped by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
-          }
-
-          Write-Host "[MODE_GATE] $reason"
-          "should_run=$($shouldRun.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "reason=$reason" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Finish cleanly when mode filtered
-        if: ${{ steps.mode_gate.outputs.should_run != 'true' }}
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        run: |
-          Write-Host 'Mode filtered by inputs; job should succeed.'
-
       - name: Prepare repo in C:\work (no OneDrive cleanup)
         id: prep_repo
-        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
@@ -261,33 +227,14 @@ jobs:
             '[STEP] initialize_one_tap_report',
             '[OK] report initialized',
             ('[PATH] {0}' -f $reportPath),
-            ('[INFO] mode_gate_should_run=${{ steps.mode_gate.outputs.should_run }}'),
-            ('[INFO] mode_gate_reason=${{ steps.mode_gate.outputs.reason }}'),
             ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
             ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
             ''
           )
 
-          if ('${{ steps.mode_gate.outputs.should_run }}' -ne 'true') {
-            Add-Content -Path $reportPath -Value @(
-              '[SKIP] mode_gate',
-              ('[INFO] reason=${{ steps.mode_gate.outputs.reason }}'),
-              ''
-            )
-          }
-
-          $modeGateShouldRun = '${{ steps.mode_gate.outputs.should_run }}'
           $prepRepoOutcome = '${{ steps.prep_repo.outcome }}'
 
-          if ($modeGateShouldRun -ne 'true') {
-            Add-Content -Path $reportPath -Value @(
-              '[SKIP] repo_prepare',
-              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
-              '[INFO] repo prepare intentionally skipped because mode is filtered by inputs',
-              '[OK] filtered matrix mode is treated as success',
-              ''
-            )
-          } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -eq 'failure') {
+          if ($prepRepoOutcome -eq 'failure') {
             Add-Content -Path $reportPath -Value @(
               '[NG] repo_prepare_failed',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
@@ -424,7 +371,6 @@ jobs:
           exit /b 0
 
       - name: Debug python environment
-        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
         shell: cmd
         run: |
           where python
@@ -1725,7 +1671,7 @@ jobs:
         id: collect_diag
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          FAILING_STEP: ${{ steps.mode_gate.outputs.should_run != 'true' && 'Mode filtered by inputs (run_sim/run_live)' || (steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown') }}
+          FAILING_STEP: ${{ steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown' }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -1857,8 +1803,7 @@ jobs:
           path: _diagnostics/**/*
 
       - name: Fail run if repo prepare failed
-        # Do not fail filtered matrix legs (e.g. live when run_live=false).
-        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome == 'failure' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'failure' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
@@ -1870,42 +1815,8 @@ jobs:
       MODE: live
     runs-on: [self-hosted, windows]
     steps:
-      - name: Decide whether selected mode should run
-        id: mode_gate
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $mode = '${{ env.MODE }}'.Trim().ToLowerInvariant()
-          $runSimRaw = '${{ inputs.run_sim }}'.Trim().ToLowerInvariant()
-          $runLiveRaw = '${{ inputs.run_live }}'.Trim().ToLowerInvariant()
-
-          $runSim = ($runSimRaw -eq 'true' -or $runSimRaw -eq '1')
-          $runLive = ($runLiveRaw -eq 'true' -or $runLiveRaw -eq '1')
-
-          $shouldRun = $false
-          if ($mode -eq 'sim') { $shouldRun = $runSim }
-          elseif ($mode -eq 'live') { $shouldRun = $runLive }
-
-          $reason = if ($shouldRun) {
-            "mode $mode enabled by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
-          } else {
-            "mode $mode skipped by inputs (run_sim=$runSimRaw, run_live=$runLiveRaw)"
-          }
-
-          Write-Host "[MODE_GATE] $reason"
-          "should_run=$($shouldRun.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "reason=$reason" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Finish cleanly when mode filtered
-        if: ${{ steps.mode_gate.outputs.should_run != 'true' }}
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
-        run: |
-          Write-Host 'Mode filtered by inputs; job should succeed.'
-
       - name: Prepare repo in C:\work (no OneDrive cleanup)
         id: prep_repo
-        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
@@ -2007,33 +1918,14 @@ jobs:
             '[STEP] initialize_one_tap_report',
             '[OK] report initialized',
             ('[PATH] {0}' -f $reportPath),
-            ('[INFO] mode_gate_should_run=${{ steps.mode_gate.outputs.should_run }}'),
-            ('[INFO] mode_gate_reason=${{ steps.mode_gate.outputs.reason }}'),
             ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
             ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
             ''
           )
 
-          if ('${{ steps.mode_gate.outputs.should_run }}' -ne 'true') {
-            Add-Content -Path $reportPath -Value @(
-              '[SKIP] mode_gate',
-              ('[INFO] reason=${{ steps.mode_gate.outputs.reason }}'),
-              ''
-            )
-          }
-
-          $modeGateShouldRun = '${{ steps.mode_gate.outputs.should_run }}'
           $prepRepoOutcome = '${{ steps.prep_repo.outcome }}'
 
-          if ($modeGateShouldRun -ne 'true') {
-            Add-Content -Path $reportPath -Value @(
-              '[SKIP] repo_prepare',
-              ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
-              '[INFO] repo prepare intentionally skipped because mode is filtered by inputs',
-              '[OK] filtered matrix mode is treated as success',
-              ''
-            )
-          } elseif ($modeGateShouldRun -eq 'true' -and $prepRepoOutcome -eq 'failure') {
+          if ($prepRepoOutcome -eq 'failure') {
             Add-Content -Path $reportPath -Value @(
               '[NG] repo_prepare_failed',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
@@ -2170,7 +2062,6 @@ jobs:
           exit /b 0
 
       - name: Debug python environment
-        if: ${{ steps.mode_gate.outputs.should_run == 'true' }}
         shell: cmd
         run: |
           where python
@@ -3471,7 +3362,7 @@ jobs:
         id: collect_diag
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          FAILING_STEP: ${{ steps.mode_gate.outputs.should_run != 'true' && 'Mode filtered by inputs (run_sim/run_live)' || (steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown') }}
+          FAILING_STEP: ${{ steps.run_bat.outcome != 'success' && 'Run desktop BAT' || 'unknown' }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -3603,8 +3494,7 @@ jobs:
           path: _diagnostics/**/*
 
       - name: Fail run if repo prepare failed
-        # Do not fail filtered matrix legs (e.g. live when run_live=false).
-        if: ${{ always() && steps.mode_gate.outputs.should_run == 'true' && steps.prep_repo.outcome == 'failure' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'failure' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           Write-Error 'prep_repo did not succeed; failing run after diagnostics publication.'
