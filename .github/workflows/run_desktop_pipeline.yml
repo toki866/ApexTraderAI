@@ -118,17 +118,13 @@ permissions:
 
 jobs:
   run:
-    if: ${{ matrix.enabled }}
+    if: ${{ (matrix.mode == 'sim' && inputs.run_sim) || (matrix.mode == 'live' && inputs.run_live) }}
     runs-on: [self-hosted, windows]
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        include:
-          - mode: sim
-            enabled: ${{ inputs.run_sim }}
-          - mode: live
-            enabled: ${{ inputs.run_live }}
+        mode: [sim, live]
     steps:
       - name: Prepare repo in C:\work (no OneDrive cleanup)
         id: prep_repo
