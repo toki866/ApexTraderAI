@@ -1,0 +1,318 @@
+# EVAL_REPORT
+
+- output_root: `C:\work\apex_work\runs\20260223_143816\output`
+- mode: `sim`
+- symbol: `SOXL`
+- overall_status: **OK**
+
+## D' (stepD_prime) artifacts
+- status: **OK**
+- summary: D' state/embeddings found
+- state_count: 6
+- embeddings_count: 4
+
+## StepA table
+| status | summary | test_rows | test_date_start | test_date_end | missing_ohlcv_count |
+|---|---|---:|---|---|---:|
+| OK | prices_test evaluated | 62 | 2022-01-03 | 2022-03-31 | 0 |
+
+## StepB table
+| file | pred_col | non_null_ratio | coverage_ratio_over_test | mae | corr | status |
+|---|---|---:|---:|---:|---:|---|
+| stepB_pred_close_mamba_SOXL.csv | Pred_Close_MAMBA | 0.9711 | 1.0000 | 4.4167 | 0.9116 | OK |
+| stepB_pred_time_all_SOXL.csv | Pred_Close_MAMBA | 0.9711 | 1.0000 | 4.4167 | 0.9116 | OK |
+
+## StepE table
+| agent | file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| dprime_all_features_3scale | stepE_daily_log_dprime_all_features_3scale_SOXL.csv | 62 | 0.5489 | -0.5656 | -0.0071 | 0.0724 | -1.5635 |  | OK |
+| dprime_all_features_h01 | stepE_daily_log_dprime_all_features_h01_SOXL.csv | 62 | 0.8054 | -0.3145 | -0.0029 | 0.0361 | -1.2983 |  | OK |
+| dprime_all_features_h02 | stepE_daily_log_dprime_all_features_h02_SOXL.csv | 62 | 0.4278 | -0.6008 | -0.0119 | 0.0626 | -3.0176 |  | OK |
+| dprime_all_features_h03 | stepE_daily_log_dprime_all_features_h03_SOXL.csv | 62 | 0.4599 | -0.5650 | -0.0108 | 0.0603 | -2.8341 |  | OK |
+| dprime_bnf_3scale | stepE_daily_log_dprime_bnf_3scale_SOXL.csv | 62 | 0.6081 | -0.4398 | -0.0063 | 0.0613 | -1.6403 |  | OK |
+| dprime_bnf_h01 | stepE_daily_log_dprime_bnf_h01_SOXL.csv | 62 | 0.7899 | -0.3626 | -0.0030 | 0.0439 | -1.0767 |  | OK |
+| dprime_bnf_h02 | stepE_daily_log_dprime_bnf_h02_SOXL.csv | 62 | 0.5266 | -0.5028 | -0.0088 | 0.0592 | -2.3478 |  | OK |
+| dprime_bnf_h03 | stepE_daily_log_dprime_bnf_h03_SOXL.csv | 62 | 0.4506 | -0.5724 | -0.0111 | 0.0612 | -2.8878 |  | OK |
+| dprime_mix_3scale | stepE_daily_log_dprime_mix_3scale_SOXL.csv | 62 | 0.4481 | -0.5524 | -0.0109 | 0.0664 | -2.6124 |  | OK |
+| dprime_mix_h01 | stepE_daily_log_dprime_mix_h01_SOXL.csv | 62 | 0.4258 | -0.5822 | -0.0117 | 0.0670 | -2.7724 |  | OK |
+
+## StepF table
+| file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| stepF_equity_marl_SOXL.csv | 62 | 0.5379 | -0.4845 | -0.0088 | 0.0518 | -2.7034 | Split missing: evaluated all rows as test | OK |
+
+## Diversity
+- status: **OK**
+- summary: agent positions look diverse
+- max_corr: 0.9891
+- max_match_ratio: 0.0000
+- pairs_over_0_9999: 0 / 45
+- identical_all_agents: False
+
+## PLOTS
+- [equity_stepE_topN.png](./equity_stepE_topN.png)
+- [equity_stepF.png](./equity_stepF.png)
+- [bar_stepE_return.png](./bar_stepE_return.png)
+- [scatter_stepE_dd_vs_ret.png](./scatter_stepE_dd_vs_ret.png)
+  - note: StepF_vs_best_StepE: StepF(0.5379) は best StepE(0.8054) に負けてる
+
+## Raw JSON
+```json
+{
+  "output_root": "C:\\work\\apex_work\\runs\\20260223_143816\\output",
+  "mode": "sim",
+  "symbol": "SOXL",
+  "stepA": {
+    "status": "OK",
+    "summary": "prices_test evaluated",
+    "details": {
+      "path": "C:\\work\\apex_work\\runs\\20260223_143816\\output\\stepA\\sim\\stepA_prices_test_SOXL.csv",
+      "test_rows": 62,
+      "test_date_start": "2022-01-03",
+      "test_date_end": "2022-03-31",
+      "missing_ohlcv_count": 0,
+      "ohlcv_missing": {
+        "Open": 0,
+        "High": 0,
+        "Low": 0,
+        "Close": 0,
+        "Volume": 0
+      }
+    }
+  },
+  "stepB": {
+    "status": "OK",
+    "summary": "stepB files evaluated",
+    "rows": [
+      {
+        "file": "stepB_pred_close_mamba_SOXL.csv",
+        "pred_col": "Pred_Close_MAMBA",
+        "non_null_ratio": 0.9710982658959537,
+        "first_valid_date": "2014-04-01",
+        "coverage_ratio_over_test": 1.0,
+        "mae": 4.4166717529296875,
+        "corr": 0.911602446398402,
+        "status": "OK"
+      },
+      {
+        "file": "stepB_pred_time_all_SOXL.csv",
+        "pred_col": "Pred_Close_MAMBA",
+        "non_null_ratio": 0.9710982658959537,
+        "first_valid_date": "2014-04-01",
+        "coverage_ratio_over_test": 1.0,
+        "mae": 4.4166717529296875,
+        "corr": 0.911602446398402,
+        "status": "OK"
+      }
+    ],
+    "files": [
+      "stepB_pred_close_mamba_SOXL.csv",
+      "stepB_pred_path_mamba_SOXL.csv",
+      "stepB_pred_time_all_SOXL.csv"
+    ]
+  },
+  "dprime": {
+    "status": "OK",
+    "summary": "D' state/embeddings found",
+    "details": {
+      "state_count": 6,
+      "embeddings_count": 4,
+      "state_files": [
+        "stepDprime_state_all_features_SOXL_test.csv",
+        "stepDprime_state_all_features_SOXL_train.csv",
+        "stepDprime_state_bnf_SOXL_test.csv",
+        "stepDprime_state_bnf_SOXL_train.csv",
+        "stepDprime_state_mix_SOXL_test.csv",
+        "stepDprime_state_mix_SOXL_train.csv"
+      ],
+      "embeddings_files": [
+        "stepDprime_mamba_h01_SOXL_embeddings_all.csv",
+        "stepDprime_mamba_h05_SOXL_embeddings_all.csv",
+        "stepDprime_mamba_h10_SOXL_embeddings_all.csv",
+        "stepDprime_mamba_h20_SOXL_embeddings_all.csv"
+      ],
+      "searched": [
+        "C:\\work\\apex_work\\runs\\20260223_143816\\output\\stepD_prime\\sim\\stepDprime_state_*_SOXL_train.csv",
+        "C:\\work\\apex_work\\runs\\20260223_143816\\output\\stepD_prime\\sim\\stepDprime_state_*_SOXL_test.csv",
+        "C:\\work\\apex_work\\runs\\20260223_143816\\output\\stepD_prime\\sim\\embeddings\\stepDprime_*_SOXL_embeddings*.csv"
+      ]
+    }
+  },
+  "stepE": {
+    "status": "OK",
+    "summary": "stepE daily logs evaluated",
+    "rows": [
+      {
+        "file": "stepE_daily_log_dprime_all_features_3scale_SOXL.csv",
+        "agent": "dprime_all_features_3scale",
+        "test_days": 62,
+        "equity_multiple": 0.5489111925919844,
+        "max_dd": -0.5656343405814879,
+        "mean_ret": -0.007133462518404776,
+        "std_ret": 0.07242640937334187,
+        "sharpe": -1.5635209289372538,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h01_SOXL.csv",
+        "agent": "dprime_all_features_h01",
+        "test_days": 62,
+        "equity_multiple": 0.8054043976341367,
+        "max_dd": -0.3145022324543466,
+        "mean_ret": -0.002948351286777907,
+        "std_ret": 0.03605123327148149,
+        "sharpe": -1.2982531094672416,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h02_SOXL.csv",
+        "agent": "dprime_all_features_h02",
+        "test_days": 62,
+        "equity_multiple": 0.42784987360184296,
+        "max_dd": -0.6008009382859487,
+        "mean_ret": -0.011896782803946293,
+        "std_ret": 0.06258522805668042,
+        "sharpe": -3.0175742434766257,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h03_SOXL.csv",
+        "agent": "dprime_all_features_h03",
+        "test_days": 62,
+        "equity_multiple": 0.45993156092544063,
+        "max_dd": -0.5649565973325714,
+        "mean_ret": -0.01077060971874743,
+        "std_ret": 0.06032874222548871,
+        "sharpe": -2.834107299419355,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_3scale_SOXL.csv",
+        "agent": "dprime_bnf_3scale",
+        "test_days": 62,
+        "equity_multiple": 0.608124941364484,
+        "max_dd": -0.4397703026854899,
+        "mean_ret": -0.006333492998706903,
+        "std_ret": 0.06129275679006533,
+        "sharpe": -1.6403420191075404,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_h01_SOXL.csv",
+        "agent": "dprime_bnf_h01",
+        "test_days": 62,
+        "equity_multiple": 0.7898746258885672,
+        "max_dd": -0.3626475886064804,
+        "mean_ret": -0.0029797942822164416,
+        "std_ret": 0.043932650596704405,
+        "sharpe": -1.0767109912737642,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_h02_SOXL.csv",
+        "agent": "dprime_bnf_h02",
+        "test_days": 62,
+        "equity_multiple": 0.5266337897937974,
+        "max_dd": -0.5028074855695497,
+        "mean_ret": -0.008754537011085512,
+        "std_ret": 0.05919335626193107,
+        "sharpe": -2.3477967026248177,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_h03_SOXL.csv",
+        "agent": "dprime_bnf_h03",
+        "test_days": 62,
+        "equity_multiple": 0.4505946437658416,
+        "max_dd": -0.5723632963555936,
+        "mean_ret": -0.0111415613416372,
+        "std_ret": 0.061247243330083426,
+        "sharpe": -2.887751244712522,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_mix_3scale_SOXL.csv",
+        "agent": "dprime_mix_3scale",
+        "test_days": 62,
+        "equity_multiple": 0.4481442868569026,
+        "max_dd": -0.5523628836165824,
+        "mean_ret": -0.010924819619357285,
+        "std_ret": 0.06638602997342151,
+        "sharpe": -2.612389007985348,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_mix_h01_SOXL.csv",
+        "agent": "dprime_mix_h01",
+        "test_days": 62,
+        "equity_multiple": 0.4257521289385297,
+        "max_dd": -0.5821517778450498,
+        "mean_ret": -0.011696217248813357,
+        "std_ret": 0.06697203260609998,
+        "sharpe": -2.7723765503027886,
+        "status": "OK"
+      }
+    ]
+  },
+  "stepF": {
+    "status": "OK",
+    "summary": "stepF equity logs evaluated",
+    "rows": [
+      {
+        "file": "stepF_equity_marl_SOXL.csv",
+        "test_days": 62,
+        "equity_multiple": 0.5378710749768222,
+        "max_dd": -0.48445458604658354,
+        "mean_ret": -0.008815578045605135,
+        "std_ret": 0.05176518345322357,
+        "sharpe": -2.703418662819351,
+        "status": "OK",
+        "note": "Split missing: evaluated all rows as test"
+      }
+    ]
+  },
+  "diversity": {
+    "status": "OK",
+    "summary": "agent positions look diverse",
+    "max_corr": 0.9890901996370417,
+    "max_match_ratio": 0.0,
+    "pairs_over_0_9999": 0,
+    "all_pairs": 45,
+    "identical_all_agents": false
+  },
+  "overall_status": "OK",
+  "plots": {
+    "items": [
+      {
+        "name": "equity_stepE_topN.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\equity_stepE_topN.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "equity_stepF.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\equity_stepF.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "bar_stepE_return.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\bar_stepE_return.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "scatter_stepE_dd_vs_ret.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\scatter_stepE_dd_vs_ret.png",
+        "exists": true,
+        "reason": null
+      }
+    ],
+    "notes": [
+      "StepF_vs_best_StepE: StepF(0.5379) は best StepE(0.8054) に負けてる"
+    ]
+  }
+}
+```
+
+Best-effort mode: this evaluator writes SKIP/notes and always exits 0.

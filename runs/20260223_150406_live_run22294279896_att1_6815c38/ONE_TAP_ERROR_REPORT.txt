@@ -1,0 +1,1066 @@
+﻿=== ONE TAP ERROR REPORT ===
+timestamp=2026-02-23 15:03:56 +09:00
+repo=toki866/ApexTraderAI
+ref=refs/heads/main
+sha=6815c389536c0ee7012a34268365cfc794248a2b
+run_id=22294279896
+run_attempt=1
+
+[STEP] initialize_one_tap_report
+[OK] report initialized
+[PATH] C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\ONE_TAP_ERROR_REPORT.txt
+[INFO] mode_gate_should_run=false
+[INFO] mode_gate_reason=mode live skipped by inputs (run_sim=true, run_live=false)
+[INFO] prep_repo_outcome=skipped
+[INFO] REPO_ROOT=
+
+[NG] mode_gate
+[INFO] reason=mode live skipped by inputs (run_sim=true, run_live=false)
+
+[NG] repo_prepare_failed
+[INFO] prep_repo_outcome=skipped
+[INFO] PREP_REPO_ERROR=
+
+## GPU_DIAGNOSTICS
+torch 2.10.0+cu126
+cuda_available True
+gpu NVIDIA GeForce RTX 3080 Ti
+timestamp, utilization.gpu [%], utilization.memory [%], memory.used [MiB]
+2026/02/23 15:03:59.501, 0 %, 13 %, 828 MiB
+
+
+[STEP] append_error_tails
+timestamp=2026-02-23 15:04:01 +09:00
+---- python_env ----
+C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+Python 3.10.6
+C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+[INFO] console_log=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\run_all_local_then_copy_console.log
+[WARN] console log not found
+[INFO] work_root=C:\work\apex_work\runs
+[INFO] latest_run_dir=C:\work\apex_work\runs\20260223_143816
+[INFO] run_log=C:\work\apex_work\runs\20260223_143816\logs\run_20260223_143816.log
+---- run_log_tail (last 350 lines) ----
+100%  
+	    New File  		     461	stepC_daily_pred_time_all_SOXL_2022_02_25.csv
+100%  
+	    New File  		     457	stepC_daily_pred_time_all_SOXL_2022_02_28.csv
+100%  
+	    New File  		     463	stepC_daily_pred_time_all_SOXL_2022_03_01.csv
+100%  
+	    New File  		     465	stepC_daily_pred_time_all_SOXL_2022_03_02.csv
+100%  
+	    New File  		     459	stepC_daily_pred_time_all_SOXL_2022_03_03.csv
+100%  
+	    New File  		     458	stepC_daily_pred_time_all_SOXL_2022_03_04.csv
+100%  
+	    New File  		     457	stepC_daily_pred_time_all_SOXL_2022_03_07.csv
+100%  
+	    New File  		     462	stepC_daily_pred_time_all_SOXL_2022_03_08.csv
+100%  
+	    New File  		     458	stepC_daily_pred_time_all_SOXL_2022_03_09.csv
+100%  
+	    New File  		     453	stepC_daily_pred_time_all_SOXL_2022_03_10.csv
+100%  
+	    New File  		     457	stepC_daily_pred_time_all_SOXL_2022_03_11.csv
+100%  
+	    New File  		     461	stepC_daily_pred_time_all_SOXL_2022_03_14.csv
+100%  
+	    New File  		     461	stepC_daily_pred_time_all_SOXL_2022_03_15.csv
+100%  
+	    New File  		     465	stepC_daily_pred_time_all_SOXL_2022_03_16.csv
+100%  
+	    New File  		     465	stepC_daily_pred_time_all_SOXL_2022_03_17.csv
+100%  
+	    New File  		     465	stepC_daily_pred_time_all_SOXL_2022_03_18.csv
+100%  
+	    New File  		     451	stepC_daily_pred_time_all_SOXL_2022_03_21.csv
+100%  
+	    New File  		     462	stepC_daily_pred_time_all_SOXL_2022_03_22.csv
+100%  
+	    New File  		     461	stepC_daily_pred_time_all_SOXL_2022_03_23.csv
+100%  
+	    New File  		     463	stepC_daily_pred_time_all_SOXL_2022_03_24.csv
+100%  
+	    New File  		     458	stepC_daily_pred_time_all_SOXL_2022_03_25.csv
+100%  
+	    New File  		     463	stepC_daily_pred_time_all_SOXL_2022_03_28.csv
+100%  
+	    New File  		     460	stepC_daily_pred_time_all_SOXL_2022_03_29.csv
+100%  
+	    New File  		     445	stepC_daily_pred_time_all_SOXL_2022_03_30.csv
+100%  
+	    New File  		     463	stepC_daily_pred_time_all_SOXL_2022_03_31.csv
+100%  
+	  New Dir          0	C:\work\apex_work\runs\20260223_143816\output\stepD_prime\
+	  New Dir          7	C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\
+	    New File  		   56998	stepDprime_state_all_features_SOXL_test.csv
+100%  
+	    New File  		   1.9 m	stepDprime_state_all_features_SOXL_train.csv
+ 12%  
+ 25%  
+ 38%  
+ 50%  
+ 63%  
+ 76%  
+ 88%  
+100%  
+	    New File  		   17881	stepDprime_state_bnf_SOXL_test.csv
+100%  
+	    New File  		  847986	stepDprime_state_bnf_SOXL_train.csv
+ 30%  
+ 61%  
+ 92%  
+100%  
+	    New File  		   16693	stepDprime_state_mix_SOXL_test.csv
+100%  
+	    New File  		  801691	stepDprime_state_mix_SOXL_train.csv
+ 32%  
+ 65%  
+ 98%  
+100%  
+	    New File  		    4449	stepDprime_summary_SOXL.json
+100%  
+	  New Dir          4	C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\embeddings\
+	    New File  		  304968	stepDprime_mamba_h01_SOXL_embeddings_all.csv
+ 42%  
+ 85%  
+100%  
+	    New File  		  304976	stepDprime_mamba_h05_SOXL_embeddings_all.csv
+ 42%  
+ 85%  
+100%  
+	    New File  		  305439	stepDprime_mamba_h10_SOXL_embeddings_all.csv
+ 42%  
+ 85%  
+100%  
+	    New File  		  304852	stepDprime_mamba_h20_SOXL_embeddings_all.csv
+ 42%  
+ 85%  
+100%  
+	  New Dir          8	C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\models\
+	    New File  		     651	stepDprime_mamba_h01_SOXL.json
+100%  
+	    New File  		  428734	stepDprime_mamba_h01_SOXL.pt
+ 30%  
+ 61%  
+ 91%  
+100%  
+	    New File  		     637	stepDprime_mamba_h05_SOXL.json
+100%  
+	    New File  		  428542	stepDprime_mamba_h05_SOXL.pt
+ 30%  
+ 61%  
+ 91%  
+100%  
+	    New File  		     650	stepDprime_mamba_h10_SOXL.json
+100%  
+	    New File  		  428542	stepDprime_mamba_h10_SOXL.pt
+ 30%  
+ 61%  
+ 91%  
+100%  
+	    New File  		     651	stepDprime_mamba_h20_SOXL.json
+100%  
+	    New File  		  428542	stepDprime_mamba_h20_SOXL.pt
+ 30%  
+ 61%  
+ 91%  
+100%  
+	  New Dir          0	C:\work\apex_work\runs\20260223_143816\output\stepE\
+	  New Dir         30	C:\work\apex_work\runs\20260223_143816\output\stepE\sim\
+	    New File  		  379358	stepE_daily_log_dprime_all_features_3scale_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  375689	stepE_daily_log_dprime_all_features_h01_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  377734	stepE_daily_log_dprime_all_features_h02_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  378254	stepE_daily_log_dprime_all_features_h03_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  377922	stepE_daily_log_dprime_bnf_3scale_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  375394	stepE_daily_log_dprime_bnf_h01_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  377720	stepE_daily_log_dprime_bnf_h02_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  378031	stepE_daily_log_dprime_bnf_h03_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  378072	stepE_daily_log_dprime_mix_3scale_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		  378043	stepE_daily_log_dprime_mix_h01_SOXL.csv
+ 34%  
+ 69%  
+100%  
+	    New File  		    4438	stepE_equity_dprime_all_features_3scale_SOXL.csv
+100%  
+	    New File  		    4439	stepE_equity_dprime_all_features_h01_SOXL.csv
+100%  
+	    New File  		    4449	stepE_equity_dprime_all_features_h02_SOXL.csv
+100%  
+	    New File  		    4460	stepE_equity_dprime_all_features_h03_SOXL.csv
+100%  
+	    New File  		    4430	stepE_equity_dprime_bnf_3scale_SOXL.csv
+100%  
+	    New File  		    4432	stepE_equity_dprime_bnf_h01_SOXL.csv
+100%  
+	    New File  		    4446	stepE_equity_dprime_bnf_h02_SOXL.csv
+100%  
+	    New File  		    4449	stepE_equity_dprime_bnf_h03_SOXL.csv
+100%  
+	    New File  		    4449	stepE_equity_dprime_mix_3scale_SOXL.csv
+100%  
+	    New File  		    4444	stepE_equity_dprime_mix_h01_SOXL.csv
+100%  
+	    New File  		     658	stepE_summary_dprime_all_features_3scale_SOXL.json
+100%  
+	    New File  		     654	stepE_summary_dprime_all_features_h01_SOXL.json
+100%  
+	    New File  		     652	stepE_summary_dprime_all_features_h02_SOXL.json
+100%  
+	    New File  		     654	stepE_summary_dprime_all_features_h03_SOXL.json
+100%  
+	    New File  		     646	stepE_summary_dprime_bnf_3scale_SOXL.json
+100%  
+	    New File  		     648	stepE_summary_dprime_bnf_h01_SOXL.json
+100%  
+	    New File  		     645	stepE_summary_dprime_bnf_h02_SOXL.json
+100%  
+	    New File  		     641	stepE_summary_dprime_bnf_h03_SOXL.json
+100%  
+	    New File  		     645	stepE_summary_dprime_mix_3scale_SOXL.json
+100%  
+	    New File  		     645	stepE_summary_dprime_mix_h01_SOXL.json
+100%  
+	  New Dir         10	C:\work\apex_work\runs\20260223_143816\output\stepE\sim\models\
+	    New File  		   53501	stepE_dprime_all_features_3scale_SOXL.pt
+100%  
+	    New File  		   31961	stepE_dprime_all_features_h01_SOXL.pt
+100%  
+	    New File  		   33881	stepE_dprime_all_features_h02_SOXL.pt
+100%  
+	    New File  		   34777	stepE_dprime_all_features_h03_SOXL.pt
+100%  
+	    New File  		   37265	stepE_dprime_bnf_3scale_SOXL.pt
+100%  
+	    New File  		   31789	stepE_dprime_bnf_h01_SOXL.pt
+100%  
+	    New File  		   33773	stepE_dprime_bnf_h02_SOXL.pt
+100%  
+	    New File  		   34349	stepE_dprime_bnf_h03_SOXL.pt
+100%  
+	    New File  		   37521	stepE_dprime_mix_3scale_SOXL.pt
+100%  
+	    New File  		   37485	stepE_dprime_mix_h01_SOXL.pt
+100%  
+	  New Dir          0	C:\work\apex_work\runs\20260223_143816\output\stepF\
+	  New Dir          3	C:\work\apex_work\runs\20260223_143816\output\stepF\sim\
+	    New File  		  572187	stepF_daily_log_marl_SOXL.csv
+ 45%  
+ 91%  
+100%  
+	    New File  		    4398	stepF_equity_marl_SOXL.csv
+100%  
+	    New File  		     897	stepF_summary_marl_SOXL.json
+100%  
+	  New Dir          1	C:\work\apex_work\runs\20260223_143816\output\stepF\sim\models\
+	    New File  		   29041	stepF_marl_gate_SOXL.pt
+100%  
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :        21        21         0         0         0         0
+   Files :       767       767         0         0         0         0
+   Bytes :   18.31 m   18.31 m         0         0         0         0
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+   Speed :            39929309 Bytes/sec.
+   Speed :            2284.773 MegaBytes/min.
+   Ended : 2026蟷ｴ2譛・3譌･ 15:03:03
+
+[RC] 
+
+[CMD] robocopy "C:\work\apex_work\runs\20260223_143816\logs" "C:\Users\becky\OneDrive\ApexTraderAI\runs\20260223_143816\logs" /E /Z /R:2 /W:2
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Robust File Copy for Windows                              
+-------------------------------------------------------------------------------
+
+  Started : 2026蟷ｴ2譛・3譌･ 15:03:03
+   Source : C:\work\apex_work\runs\20260223_143816\logs\
+     Dest : C:\Users\becky\OneDrive\ApexTraderAI\runs\20260223_143816\logs\
+
+    Files : *.*
+	    
+  Options : *.* /S /E /DCOPY:DA /COPY:DAT /Z /R:2 /W:2 
+
+------------------------------------------------------------------------------
+
+	  New Dir          1	C:\work\apex_work\runs\20260223_143816\logs\
+	    New File  		  110569	run_20260223_143816.log
+100%  
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :         1         1         0         0         0         0
+   Files :         1         1         0         0         0         0
+   Bytes :   107.9 k   107.9 k         0         0         0         0
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+   Speed :           110569000 Bytes/sec.
+   Speed :            6326.808 MegaBytes/min.
+   Ended : 2026蟷ｴ2譛・3譌･ 15:03:03
+
+[RC] 
+
+[CMD] robocopy "C:\work\apex_work\runs\20260223_143816" "C:\Users\becky\OneDrive\ApexTraderAI\runs\20260223_143816" run_20260223_143816.zip /R:2 /W:2
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Robust File Copy for Windows                              
+-------------------------------------------------------------------------------
+
+  Started : 2026蟷ｴ2譛・3譌･ 15:03:03
+   Source : C:\work\apex_work\runs\20260223_143816\
+     Dest : C:\Users\becky\OneDrive\ApexTraderAI\runs\20260223_143816\
+
+    Files : run_20260223_143816.zip
+	    
+  Options : /DCOPY:DA /COPY:DAT /R:2 /W:2 
+
+------------------------------------------------------------------------------
+
+	                   1	C:\work\apex_work\runs\20260223_143816\
+	    New File  		   7.7 m	run_20260223_143816.zip
+  6.4%
+ 12.9%
+ 19.3%
+ 25.8%
+ 32.2%
+ 38.7%
+ 45.1%
+ 51.6%
+ 58.1%
+ 64.5%
+ 71.0%
+ 77.4%
+ 83.9%
+ 90.3%
+ 96.8%
+100%  
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :         1         0         1         0         0         0
+   Files :         1         1         0         0         0         0
+   Bytes :    7.74 m    7.74 m         0         0         0         0
+   Times :   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+   Speed :           2707182666 Bytes/sec.
+   Speed :           154906.234 MegaBytes/min.
+   Ended : 2026蟷ｴ2譛・3譌･ 15:03:03
+
+[RC] 
+[OK] repo_snapshots already exists: "C:\Users\becky\OneDrive\ApexTraderAI\repo_snapshots"
+
+[CMD] git archive --format=zip --output="C:\Users\becky\OneDrive\ApexTraderAI\repo_snapshots\repo_6815c38_20260223_143816.zip" HEAD
+[SUCCESS] Completed run_id=20260223_143816
+[SUCCESS] local_run_dir=C:\work\apex_work\runs\20260223_143816
+[SUCCESS] onedrive_dest=C:\Users\becky\OneDrive\ApexTraderAI\runs\20260223_143816
+[SUCCESS] repo_snapshot=C:\Users\becky\OneDrive\ApexTraderAI\repo_snapshots\repo_6815c38_20260223_143816.zip
+[SUCCESS] reproducible_command=run_all_local_then_copy.bat
+[STEP] resolve_latest_run_artifacts
+[INFO] work_root=C:\work\apex_work\runs
+[OK] resolve_latest_run_artifacts
+[OK] run_dir=C:\work\apex_work\runs\20260223_143816
+[OK] run_id=20260223_143816
+
+[PUBLISH] run_dir=C:\work\apex_work\runs\20260223_143816
+[PUBLISH] output_root=C:\work\apex_work\runs\20260223_143816\output
+[PUBLISH] output_root_source=workflow_output
+
+## publish_diag_logs warnings
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_features_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_03_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_04_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_05_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_06_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_07_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_10_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_11_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_12_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_13_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_14_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_18_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_19_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_20_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_21_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_24_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_25_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_26_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_27_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_28_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_01_31_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_01_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_02_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_03_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_04_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_07_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_08_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_09_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_10_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_11_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_14_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_15_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_16_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_17_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_18_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_22_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_23_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_24_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_25_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_02_28_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_01_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_02_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_03_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_04_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_07_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_08_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_09_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_10_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_11_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_14_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_15_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_16_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_17_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_18_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_21_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_22_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_23_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_24_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_25_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_28_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_29_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_30_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_daily_window_features_SOXL_2022_03_31_lb30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_03_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_04_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_05_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_06_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_07_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_10_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_11_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_12_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_13_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_14_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_18_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_19_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_20_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_21_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_24_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_25_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_26_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_27_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_28_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_01_31_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_01_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_02_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_03_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_04_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_07_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_08_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_09_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_10_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_11_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_14_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_15_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_16_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_17_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_18_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_22_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_23_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_24_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_25_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_02_28_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_01_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_02_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_03_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_04_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_07_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_08_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_09_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_10_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_11_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_14_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_15_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_16_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_17_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_18_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_21_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_22_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_23_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_24_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_25_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_28_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_29_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_30_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_future_SOXL_2022_03_31_m3.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_periodic_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_prices_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\daily\stepA_tech_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_daily_manifest_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_periodic_future_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_periodic_test_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_periodic_train_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_prices_test_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_prices_train_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_split_summary_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_tech_test_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepA\sim\stepA_tech_train_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h01_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h05_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h10_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_05.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_06.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_12.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_13.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_19.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_20.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_26.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_27.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_01_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_02_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_01.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_02.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_03.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_04.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_07.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_08.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_09.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_10.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_11.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_14.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_15.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_16.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_17.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_18.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_21.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_22.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_23.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_24.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_25.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_28.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_29.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_30.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\daily\stepB_daily_pred_mamba_h20_SOXL_2022_03_31.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\stepB_daily_manifest_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\stepB_delta_mamba_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\stepB_pred_close_mamba_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\stepB_pred_path_mamba_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepB\sim\stepB_pred_time_all_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\embeddings\stepDprime_mamba_h01_SOXL_embeddings_all.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\embeddings\stepDprime_mamba_h05_SOXL_embeddings_all.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\embeddings\stepDprime_mamba_h10_SOXL_embeddings_all.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\embeddings\stepDprime_mamba_h20_SOXL_embeddings_all.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_all_features_SOXL_test.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_all_features_SOXL_train.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_bnf_SOXL_test.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_bnf_SOXL_train.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_mix_SOXL_test.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepD_prime\sim\stepDprime_state_mix_SOXL_train.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_all_features_3scale_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_all_features_h01_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_all_features_h02_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_all_features_h03_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_bnf_3scale_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_bnf_h01_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_bnf_h02_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_bnf_h03_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_mix_3scale_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepE\sim\stepE_daily_log_dprime_mix_h01_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepF\sim\stepF_daily_log_marl_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepF\sim\stepF_equity_marl_SOXL.csv
+[WARN] publish issue: failed to publish file: C:\work\apex_work\runs\20260223_143816\output\stepF\sim\stepF_summary_marl_SOXL.json
+[WARN] publish issue: StepA files missing in diag publish output.
+[WARN] publish issue: StepB files missing in diag publish output.
+[WARN] publish issue: StepDPrime files missing in diag publish output.
+[WARN] publish issue: StepE files missing in diag publish output.
+[WARN] publish issue: StepF files missing in diag publish output.
