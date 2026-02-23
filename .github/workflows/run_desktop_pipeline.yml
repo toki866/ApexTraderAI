@@ -29,7 +29,7 @@ on:
         default: "2022-03-31"
         type: string
       test_start:
-        description: "Test start date (YYYY-MM-DD)"
+        description: "Test start date (YYYY-MM-DD); snapped to previous available trading date (floor), never to a future date"
         required: true
         default: "2022-01-03"
         type: string
