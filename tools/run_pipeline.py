@@ -1166,6 +1166,93 @@ def _validate_stepdprime_contract(output_root: Path, mode: str, symbol: str) -> 
     if miss:
         raise RuntimeError("StepDPrime contract missing required state files: " + ", ".join(miss))
 
+
+def _write_live_trade_plan(output_root: Path, symbol: str, mode: str) -> Optional[Path]:
+    """Create live paper-trade plan from StepF (fallback: StepE)."""
+    if str(mode).strip().lower() != "live":
+        return None
+
+    import pandas as pd
+
+    symbol = str(symbol).strip().upper()
+    out_root = Path(output_root)
+
+    plan_date = None
+    ratio = None
+    chosen_agent = ""
+    confidence = None
+
+    stepf_log = out_root / "stepF" / "live" / f"stepF_daily_log_marl_{symbol}.csv"
+    if stepf_log.exists():
+        df_f = pd.read_csv(stepf_log)
+        if not df_f.empty and "Date" in df_f.columns:
+            if "Split" in df_f.columns:
+                df_test = df_f[df_f["Split"].astype(str).str.lower() == "test"].copy()
+                if not df_test.empty:
+                    df_f = df_test
+
+            df_f["Date"] = pd.to_datetime(df_f["Date"], errors="coerce")
+            df_f = df_f[df_f["Date"].notna()].sort_values("Date")
+            if not df_f.empty:
+                last = df_f.iloc[-1]
+                plan_date = pd.to_datetime(last["Date"], errors="coerce")
+                ratio = float(last.get("pos", last.get("ratio", 0.0)))
+
+                weight_cols = [c for c in df_f.columns if str(c).startswith("w_")]
+                if weight_cols:
+                    w = pd.to_numeric(last[weight_cols], errors="coerce")
+                    if w.notna().any():
+                        top_col = str(w.idxmax())
+                        chosen_agent = top_col[2:] if top_col.startswith("w_") else top_col
+                        confidence = float(w.max())
+
+    if plan_date is None:
+        stepe_root = out_root / "stepE" / "live"
+        for src in sorted(stepe_root.glob(f"stepE_daily_log_*_{symbol}.csv")):
+            df_e = pd.read_csv(src)
+            if df_e.empty or "Date" not in df_e.columns:
+                continue
+
+            if "Split" in df_e.columns:
+                df_test = df_e[df_e["Split"].astype(str).str.lower() == "test"].copy()
+                if not df_test.empty:
+                    df_e = df_test
+
+            df_e["Date"] = pd.to_datetime(df_e["Date"], errors="coerce")
+            df_e = df_e[df_e["Date"].notna()].sort_values("Date")
+            if df_e.empty:
+                continue
+
+            last = df_e.iloc[-1]
+            plan_date = pd.to_datetime(last["Date"], errors="coerce")
+            ratio = float(last.get("ratio", last.get("pos", 0.0)))
+            agent_name = src.stem.replace("stepE_daily_log_", "")
+            if agent_name.endswith(f"_{symbol}"):
+                agent_name = agent_name[:-(len(symbol) + 1)]
+            chosen_agent = agent_name
+            break
+
+    if plan_date is None or ratio is None:
+        print("[TradePlan] WARN: live mode plan skipped (no StepF/StepE rows found).")
+        return None
+
+    ymd = plan_date.strftime("%Y%m%d")
+    plan_dir = out_root / "trade_plan" / "live"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plan_dir / f"trade_plan_{symbol}_{ymd}.csv"
+
+    pd.DataFrame([{
+        "Date": plan_date.strftime("%Y-%m-%d"),
+        "Symbol": symbol,
+        "ratio": float(ratio),
+        "chosen_agent": chosen_agent,
+        "confidence": "" if confidence is None else float(confidence),
+        "note": "paper_trade_only",
+    }], columns=["Date", "Symbol", "ratio", "chosen_agent", "confidence", "note"]).to_csv(plan_path, index=False)
+
+    print(f"[TradePlan] wrote {plan_path}")
+    return plan_path
+
 def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, prev_results: Dict[str, Any]):
     mod_map = {
         "C": ("ai_core.services.step_c_service", "StepCService"),
@@ -1495,6 +1582,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 reason = step_result.get("reason", "unknown")
                 raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
             print(f"[Step{step}] done")
+
+        _write_live_trade_plan(
+            output_root=Path(resolved_output_root),
+            symbol=symbol,
+            mode=resolved_mode,
+        )
 
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")

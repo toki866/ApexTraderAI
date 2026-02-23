@@ -1030,7 +1030,8 @@ jobs:
             @{ Label = 'DPrimeState'; Base = 'stepD_prime'; Patterns = @('stepDprime_state_*_train.csv', 'stepDprime_state_*_test.csv') },
             @{ Label = 'DPrimeEmbeddings'; Base = 'stepD_prime'; Patterns = @('stepDprime_*_embeddings*.csv') },
             @{ Label = 'StepE'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv', 'stepE_equity_*.csv', 'stepE_summary_*.json') },
-            @{ Label = 'StepF'; Base = 'stepF'; Patterns = @('stepF_equity_marl_*.csv', 'stepF_daily_log_marl_*.csv', 'stepF_summary_marl_*.json') }
+            @{ Label = 'StepF'; Base = 'stepF'; Patterns = @('stepF_equity_marl_*.csv', 'stepF_daily_log_marl_*.csv', 'stepF_summary_marl_*.json') },
+            @{ Label = 'TradePlan'; Base = 'trade_plan'; Patterns = @('trade_plan_*.csv') }
           )
 
           $searchedPatterns = New-Object System.Collections.Generic.List[string]
