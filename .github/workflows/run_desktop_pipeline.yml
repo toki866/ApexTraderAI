@@ -3,15 +3,16 @@ name: Run Desktop Pipeline
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Pipeline mode (sim/live/display)"
+      run_sim:
+        description: "Run sim mode in this workflow run"
         required: true
-        default: sim
-        type: choice
-        options:
-          - sim
-          - live
-          - display
+        default: true
+        type: boolean
+      run_live:
+        description: "Run live mode after sim in this workflow run"
+        required: true
+        default: false
+        type: boolean
       symbols:
         description: "Symbols for data preparation (comma-separated)"
         required: true
@@ -74,7 +75,17 @@ permissions:
 
 jobs:
   run:
+    if: ${{ matrix.enabled }}
     runs-on: [self-hosted, windows]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - mode: sim
+            enabled: ${{ inputs.run_sim }}
+          - mode: live
+            enabled: ${{ inputs.run_live }}
     steps:
       - name: Prepare repo in C:\work (no OneDrive cleanup)
         id: prep_repo
@@ -414,7 +425,7 @@ jobs:
         id: run_bat
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_MODE: ${{ matrix.mode }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
           INPUT_START: ${{ inputs.start }}
           INPUT_END: ${{ inputs.end }}
@@ -424,7 +435,7 @@ jobs:
           INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
           INPUT_STEPS: ${{ inputs.steps }}
           INPUT_SKIP_STEPE: ${{ inputs.skip_stepe }}
-          RUN_MODE: ${{ inputs.mode }}
+          RUN_MODE: ${{ matrix.mode }}
           SYMBOLS: ${{ inputs.symbols }}
           SYMBOL: SOXL
           STEPS: ${{ inputs.steps }}
@@ -899,7 +910,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-run-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
+          name: desktop-run-${{ matrix.mode }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
           path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
@@ -930,7 +941,7 @@ jobs:
             $symbol = ($symbols -split ',')[0].Trim()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
           }
-          $mode = '${{ inputs.mode }}'
+          $mode = '${{ matrix.mode }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
@@ -968,7 +979,7 @@ jobs:
 
           $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
           $shortSha = ('${{ github.sha }}').Substring(0, 7)
-          $runFolderName = "${timestamp}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
+          $runFolderName = "${timestamp}_${{ matrix.mode }}_run${{ github.run_id }}_att${{ github.run_attempt }}_${shortSha}"
           $runFolder = Join-Path $runsDir $runFolderName
           $null = New-Item -Path $runFolder -ItemType Directory -Force
           $csvOutDir = Join-Path $runFolder 'csv'
@@ -1379,7 +1390,7 @@ jobs:
           $sha = '${{ github.sha }}'
           $branch = '${{ github.ref_name }}'
           $repo = '${{ github.repository }}'
-          $artifactName = "diag_full_${runId}_${runAttempt}"
+          $artifactName = "diag_full_${{ matrix.mode }}_${runId}_${runAttempt}"
 
           $latestRunnerLog = $null
           $latestWorkerLog = $null
