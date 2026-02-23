@@ -281,7 +281,7 @@ jobs:
           $modeGateShouldRun = '${{ steps.mode_gate.outputs.should_run }}'
           $prepRepoOutcome = '${{ steps.prep_repo.outcome }}'
 
-          if ($modeGateShouldRun -ne 'true' -and $prepRepoOutcome -eq 'skipped') {
+          if ($modeGateShouldRun -ne 'true') {
             Add-Content -Path $reportPath -Value @(
               '[SKIP] repo_prepare',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
