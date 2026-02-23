@@ -17,8 +17,21 @@ import re
 import traceback
 from typing import Any
 
+import importlib
+import importlib.util
+
 import numpy as np
 import pandas as pd
+
+_MPL_SPEC = importlib.util.find_spec("matplotlib")
+MPL_AVAILABLE = _MPL_SPEC is not None
+if MPL_AVAILABLE:
+    matplotlib = importlib.import_module("matplotlib")
+    matplotlib.use("Agg")
+    plt = importlib.import_module("matplotlib.pyplot")
+else:
+    matplotlib = None
+    plt = None
 
 MAX_SUMMARY_LINES = 200
 MAX_SUMMARY_CHARS = 15000
@@ -239,6 +252,190 @@ def _calc_diversity(pos_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "all_pairs": int(valid_pairs),
         "identical_all_agents": bool(identical_all),
     }
+
+
+def _save_empty_plot_notice(path: str, title: str, message: str) -> None:
+    if not MPL_AVAILABLE or plt is None:
+        return
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.axis("off")
+    ax.set_title(title)
+    ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+def _generate_plots(output_root: str, mode: str, symbol: str, report: dict[str, Any], out_dir: str) -> list[str]:
+    notes: list[str] = []
+    plots: list[dict[str, Any]] = []
+    os.makedirs(out_dir, exist_ok=True)
+
+    if not MPL_AVAILABLE or plt is None:
+        notes.append("PLOT backend unavailable: matplotlib is not installed")
+        report["plots"] = {"items": plots, "notes": notes}
+        return notes
+
+    def record_plot(name: str, reason: str | None = None) -> str:
+        path = os.path.join(out_dir, name)
+        plots.append({"name": name, "path": path, "exists": os.path.exists(path), "reason": reason})
+        return path
+
+    # StepE equity overlay
+    try:
+        step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", mode, f"stepE_daily_log_*_{symbol}.csv")))
+        if not step_e_logs:
+            step_e_logs = sorted(glob.glob(os.path.join(output_root, "stepE", "*", f"stepE_daily_log_*_{symbol}.csv")))
+        path = record_plot("equity_stepE_topN.png")
+        if not step_e_logs:
+            _save_empty_plot_notice(path, "StepE topN equity", "stepE_daily_log files were not found")
+            notes.append("PLOT StepE topN: stepE_daily_log files were not found")
+        else:
+            rows = report.get("stepE", {}).get("rows", [])
+            ranked = [r for r in rows if r.get("equity_multiple") is not None]
+            ranked = sorted(ranked, key=lambda x: float(x.get("equity_multiple") or -1), reverse=True)[:10]
+            if not ranked:
+                _save_empty_plot_notice(path, "StepE topN equity", "No StepE rows with numeric equity_multiple")
+                notes.append("PLOT StepE topN: no numeric StepE equity_multiple rows")
+            else:
+                fig, ax = plt.subplots(figsize=(12, 6))
+                plotted = 0
+                for row in ranked:
+                    agent = row.get("agent")
+                    if not agent:
+                        continue
+                    hit = [x for x in step_e_logs if f"_{agent}_{symbol}.csv" in os.path.basename(x)]
+                    if not hit:
+                        continue
+                    df = _read_csv(hit[0])
+                    split_col = _pick_col(df, ["Split"])
+                    equity_col = _pick_col(df, ["equity", "Equity"])
+                    if equity_col is None:
+                        continue
+                    if split_col and split_col in df.columns:
+                        df = df[df[split_col] == "test"]
+                    eq = pd.to_numeric(df[equity_col], errors="coerce").dropna().reset_index(drop=True)
+                    if eq.empty:
+                        continue
+                    ax.plot(eq.values, linewidth=1.5, label=str(agent))
+                    plotted += 1
+                if plotted == 0:
+                    _save_empty_plot_notice(path, "StepE topN equity", "No plottable StepE test equity series")
+                    notes.append("PLOT StepE topN: no plottable StepE test equity series")
+                else:
+                    ax.set_title("StepE topN test equity")
+                    ax.set_xlabel("Test step")
+                    ax.set_ylabel("Equity")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc="best", fontsize=8)
+                    fig.tight_layout()
+                    fig.savefig(path, dpi=120)
+                    plt.close(fig)
+    except Exception as exc:
+        notes.append(f"PLOT StepE topN exception: {exc}")
+
+    # StepF equity
+    try:
+        path = record_plot("equity_stepF.png")
+        step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", mode, f"stepF_equity_marl_{symbol}.csv")))
+        if not step_f_logs:
+            step_f_logs = sorted(glob.glob(os.path.join(output_root, "stepF", "*", f"stepF_equity_marl_{symbol}.csv")))
+        if not step_f_logs:
+            _save_empty_plot_notice(path, "StepF equity", "stepF_equity_marl file was not found")
+            notes.append("PLOT StepF equity: stepF_equity_marl file not found")
+        else:
+            df = _read_csv(step_f_logs[0])
+            split_col = _pick_col(df, ["Split"])
+            equity_col = _pick_col(df, ["equity", "Equity"])
+            if equity_col is None:
+                _save_empty_plot_notice(path, "StepF equity", "equity column missing")
+                notes.append("PLOT StepF equity: equity column missing")
+            else:
+                if split_col and split_col in df.columns:
+                    df = df[df[split_col] == "test"]
+                eq = pd.to_numeric(df[equity_col], errors="coerce").dropna().reset_index(drop=True)
+                if eq.empty:
+                    _save_empty_plot_notice(path, "StepF equity", "No numeric StepF test equity rows")
+                    notes.append("PLOT StepF equity: no numeric test equity rows")
+                else:
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    ax.plot(eq.values, color="black", linewidth=2.0, label="StepF")
+                    ax.set_title("StepF test equity")
+                    ax.set_xlabel("Test step")
+                    ax.set_ylabel("Equity")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc="best")
+                    fig.tight_layout()
+                    fig.savefig(path, dpi=120)
+                    plt.close(fig)
+    except Exception as exc:
+        notes.append(f"PLOT StepF equity exception: {exc}")
+
+    # StepE returns bar
+    try:
+        path = record_plot("bar_stepE_return.png")
+        rows = [r for r in report.get("stepE", {}).get("rows", []) if r.get("equity_multiple") is not None and r.get("agent")]
+        if not rows:
+            _save_empty_plot_notice(path, "StepE equity multiple", "No numeric StepE equity_multiple rows")
+            notes.append("PLOT StepE return bar: no numeric StepE rows")
+        else:
+            rows = sorted(rows, key=lambda x: float(x.get("equity_multiple") or -1), reverse=True)[:10]
+            fig, ax = plt.subplots(figsize=(12, 6))
+            agents = [str(r.get("agent")) for r in rows]
+            values = [float(r.get("equity_multiple") or 0.0) for r in rows]
+            ax.bar(agents, values, color="tab:blue")
+            ax.set_title("StepE equity multiple (topN)")
+            ax.set_xlabel("Agent")
+            ax.set_ylabel("Equity multiple")
+            ax.tick_params(axis="x", rotation=30)
+            ax.grid(True, axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(path, dpi=120)
+            plt.close(fig)
+    except Exception as exc:
+        notes.append(f"PLOT StepE return bar exception: {exc}")
+
+    # StepE DD vs return scatter and StepF comparison note
+    try:
+        path = record_plot("scatter_stepE_dd_vs_ret.png")
+        rows = [
+            r
+            for r in report.get("stepE", {}).get("rows", [])
+            if r.get("equity_multiple") is not None and r.get("max_dd") is not None and r.get("agent")
+        ]
+        if not rows:
+            _save_empty_plot_notice(path, "StepE max_dd vs return", "No numeric StepE (max_dd, equity_multiple) pairs")
+            notes.append("PLOT StepE scatter: no numeric StepE DD/return pairs")
+        else:
+            fig, ax = plt.subplots(figsize=(12, 6))
+            x = [float(r.get("max_dd")) for r in rows]
+            y = [float(r.get("equity_multiple")) for r in rows]
+            ax.scatter(x, y, color="tab:green", alpha=0.8)
+            for r in rows[:10]:
+                ax.annotate(str(r.get("agent")), (float(r.get("max_dd")), float(r.get("equity_multiple"))), fontsize=8)
+            ax.set_title("StepE max drawdown vs equity multiple")
+            ax.set_xlabel("max_dd")
+            ax.set_ylabel("equity_multiple")
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(path, dpi=120)
+            plt.close(fig)
+
+        stepf_rows = [r for r in report.get("stepF", {}).get("rows", []) if r.get("equity_multiple") is not None]
+        best_stepe = max((float(r.get("equity_multiple")) for r in report.get("stepE", {}).get("rows", []) if r.get("equity_multiple") is not None), default=None)
+        stepf_best = max((float(r.get("equity_multiple")) for r in stepf_rows), default=None)
+        if best_stepe is not None and stepf_best is not None:
+            relation = "勝ってる" if stepf_best >= best_stepe else "負けてる"
+            notes.append(f"StepF_vs_best_StepE: StepF({stepf_best:.4f}) は best StepE({best_stepe:.4f}) に{relation}")
+        else:
+            notes.append("StepF_vs_best_StepE: 比較に必要な equity_multiple が不足")
+    except Exception as exc:
+        notes.append(f"PLOT StepE scatter exception: {exc}")
+
+    for item in plots:
+        item["exists"] = os.path.exists(item.get("path", ""))
+    report["plots"] = {"items": plots, "notes": notes}
+    return notes
 
 
 
@@ -617,6 +814,21 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- identical_all_agents: {_fmt(div.get('identical_all_agents'))}",
     ])
 
+    plots = report.get("plots", {})
+    plot_items = plots.get("items", []) if isinstance(plots, dict) else []
+    lines.extend([
+        "",
+        "## PLOTS",
+    ])
+    if plot_items:
+        for item in plot_items:
+            nm = item.get("name", "plot")
+            lines.append(f"- [{nm}](./{nm})")
+    else:
+        lines.append("- (no plots)")
+    for note in (plots.get("notes", []) if isinstance(plots, dict) else []):
+        lines.append(f"  - note: {note}")
+
     lines.extend([
         "",
         "## Raw JSON",
@@ -711,6 +923,15 @@ def render_summary(report: dict[str, Any]) -> str:
     )
     lines.append(f"  summary={div.get('summary', 'NA')}")
 
+    plots = report.get("plots", {}) if isinstance(report.get("plots", {}), dict) else {}
+    lines.append("PLOTS:")
+    for item in plots.get("items", []):
+        exists = "yes" if item.get("exists") else "no"
+        reason = item.get("reason") or ""
+        lines.append(f"  {item.get('name')} exists={exists} {reason}".rstrip())
+    for note in plots.get("notes", []):
+        lines.append(f"  note={note}")
+
     text = "\n".join(lines)
     sliced = text[:MAX_SUMMARY_CHARS]
     out_lines = sliced.splitlines()[:MAX_SUMMARY_LINES]
@@ -733,6 +954,13 @@ def main() -> None:
 
     try:
         report = evaluate(args.output_root, args.mode, args.symbol)
+        _generate_plots(
+            output_root=args.output_root,
+            mode=args.mode,
+            symbol=args.symbol,
+            report=report,
+            out_dir=os.path.dirname(os.path.abspath(args.out_md)),
+        )
         md = render_markdown(report)
         summary = render_summary(report)
     except Exception as exc:

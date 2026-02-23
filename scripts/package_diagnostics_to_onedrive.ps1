@@ -139,6 +139,21 @@ if (Test-Path $summaryPath) {
   $sourceItems[$summaryPath] = $true
 }
 
+$evalDir = Join-Path $workspaceTemp 'eval'
+if (Test-Path $evalDir) {
+  $evalArtifacts = @(
+    Get-ChildItem -Path $evalDir -File -Filter '*.md' -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $evalDir -File -Filter '*.json' -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $evalDir -File -Filter '*.txt' -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $evalDir -File -Filter '*.png' -ErrorAction SilentlyContinue
+  ) | Where-Object { $_ -ne $null }
+
+  foreach ($item in $evalArtifacts) {
+    if ($null -eq $sourceItems) { $sourceItems = @{} }
+    $sourceItems[$item.FullName] = $true
+  }
+}
+
 $consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
 if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
   $consoleLogCandidates += (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
