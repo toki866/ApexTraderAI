@@ -79,6 +79,33 @@ def _fmt(v: Any, nd: int = 4) -> str:
     return str(v)
 
 
+def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+
+    stepa = report.get("stepA", {})
+    stepa_details = stepa.get("details", {}) if isinstance(stepa, dict) else {}
+    stepa_row = {
+        "status": stepa.get("status", "SKIP"),
+        "summary": stepa.get("summary", "NA"),
+        "test_rows": stepa_details.get("test_rows"),
+        "test_date_start": stepa_details.get("test_date_start"),
+        "test_date_end": stepa_details.get("test_date_end"),
+        "missing_ohlcv_count": stepa_details.get("missing_ohlcv_count"),
+        "path": stepa_details.get("path"),
+    }
+    pd.DataFrame([stepa_row]).to_csv(os.path.join(out_dir, "EVAL_TABLE_stepA.csv"), index=False)
+
+    stepe_rows = report.get("stepE", {}).get("rows", []) if isinstance(report.get("stepE", {}), dict) else []
+    pd.DataFrame(stepe_rows if stepe_rows else [{"status": report.get("stepE", {}).get("status", "SKIP"), "summary": report.get("stepE", {}).get("summary", "NA")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepE.csv"), index=False
+    )
+
+    stepf_rows = report.get("stepF", {}).get("rows", []) if isinstance(report.get("stepF", {}), dict) else []
+    pd.DataFrame(stepf_rows if stepf_rows else [{"status": report.get("stepF", {}).get("status", "SKIP"), "summary": report.get("stepF", {}).get("summary", "NA")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepF.csv"), index=False
+    )
+
+
 def _status_level(s: str) -> int:
     return {"OK": 0, "WARN": 1, "BAD": 2}.get(s, 1)
 
@@ -764,9 +791,36 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- embeddings_count: {_fmt(ddet.get('embeddings_count'))}",
     ])
 
+    stepa = report.get("stepA", {})
+    stepa_d = stepa.get("details", {}) if isinstance(stepa, dict) else {}
     lines.extend([
         "",
-        "## StepE agents table",
+        "## StepA table",
+        "| status | summary | test_rows | test_date_start | test_date_end | missing_ohlcv_count |",
+        "|---|---|---:|---|---|---:|",
+        f"| {stepa.get('status', 'SKIP')} | {stepa.get('summary', 'NA')} | {_fmt(stepa_d.get('test_rows'))} | {_fmt(stepa_d.get('test_date_start'))} | {_fmt(stepa_d.get('test_date_end'))} | {_fmt(stepa_d.get('missing_ohlcv_count'))} |",
+    ])
+
+    stepb_rows = report.get("stepB", {}).get("rows", [])
+    lines.extend([
+        "",
+        "## StepB table",
+    ])
+    if stepb_rows:
+        lines.extend([
+            "| file | pred_col | non_null_ratio | coverage_ratio_over_test | mae | corr | status |",
+            "|---|---|---:|---:|---:|---:|---|",
+        ])
+        for r in stepb_rows:
+            lines.append(
+                f"| {r.get('file', 'NA')} | {r.get('pred_col', 'NA')} | {_fmt(r.get('non_null_ratio'))} | {_fmt(r.get('coverage_ratio_over_test'))} | {_fmt(r.get('mae'))} | {_fmt(r.get('corr'))} | {r.get('status', 'NA')} |"
+            )
+    else:
+        lines.append(f"- SKIP: {report.get('stepB', {}).get('summary')}")
+
+    lines.extend([
+        "",
+        "## StepE table",
     ])
 
     stepe_rows = report.get("stepE", {}).get("rows", [])
@@ -786,7 +840,7 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "## StepF router summary",
+        "## StepF table",
     ])
     stepf_rows = report.get("stepF", {}).get("rows", [])
     if stepf_rows:
@@ -981,6 +1035,11 @@ def main() -> None:
         json.dump(report, f, ensure_ascii=False, indent=2)
     with open(args.out_summary, "w", encoding="utf-8") as f:
         f.write(summary)
+
+    try:
+        _write_eval_tables(report, os.path.dirname(os.path.abspath(args.out_md)))
+    except Exception:
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

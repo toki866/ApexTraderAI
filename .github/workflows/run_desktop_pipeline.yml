@@ -1144,9 +1144,15 @@ jobs:
             @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_SUMMARY.txt'); Name = 'EVAL_SUMMARY.txt'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_SUMMARY.txt' },
             @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_REPORT.md'); Name = 'EVAL_REPORT.md'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_REPORT.md' },
             @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_REPORT.json' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepA.csv'); Name = 'EVAL_TABLE_stepA.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepA.csv' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepE.csv'); Name = 'EVAL_TABLE_stepE.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepE.csv' },
+            @{ Source = (Join-Path $outputRoot 'temp\eval\EVAL_TABLE_stepF.csv'); Name = 'EVAL_TABLE_stepF.csv'; Label = 'Eval'; Pattern = 'temp/eval/EVAL_TABLE_stepF.csv' },
             @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_SUMMARY.txt'); Name = 'EVAL_SUMMARY.txt'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_SUMMARY.txt' },
             @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'); Name = 'EVAL_REPORT.md'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_REPORT.md' },
-            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_REPORT.json' }
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.json'); Name = 'EVAL_REPORT.json'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_REPORT.json' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepA.csv'); Name = 'EVAL_TABLE_stepA.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepA.csv' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepE.csv'); Name = 'EVAL_TABLE_stepE.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepE.csv' },
+            @{ Source = (Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_TABLE_stepF.csv'); Name = 'EVAL_TABLE_stepF.csv'; Label = 'Eval'; Pattern = 'workspace/temp/eval/EVAL_TABLE_stepF.csv' }
           )
           foreach ($evalSpec in $evalSpecs) {
             if (-not (Test-Path $evalSpec.Source)) { continue }
@@ -1185,6 +1191,9 @@ jobs:
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_SUMMARY.txt')
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.md')
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.json')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepA.csv')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepE.csv')
+          $csvIndexLines.Add('- Eval :: temp/eval/EVAL_TABLE_stepF.csv')
           $csvIndexLines.Add('')
 
           if ($publishedCsv.Count -eq 0) {
