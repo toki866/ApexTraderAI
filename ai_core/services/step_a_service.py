@@ -96,6 +96,20 @@ def _norm_date(ts: pd.Timestamp) -> pd.Timestamp:
     return pd.to_datetime(ts).normalize()
 
 
+def snap_prev_by_prices(date: Any, available_dates_sorted: Any) -> pd.Timestamp:
+    """Snap to previous available trading date (floor). If none, use min."""
+    if available_dates_sorted is None or len(available_dates_sorted) == 0:
+        return _norm_date(pd.to_datetime(date))
+    ad = pd.Series(pd.to_datetime(available_dates_sorted, errors="coerce")).dropna().sort_values().drop_duplicates().reset_index(drop=True)
+    if len(ad) == 0:
+        return _norm_date(pd.to_datetime(date))
+    d = _norm_date(pd.to_datetime(date))
+    idx = ad.searchsorted(d, side="right") - 1
+    if idx < 0:
+        return _norm_date(pd.to_datetime(ad.iloc[0]))
+    return _norm_date(pd.to_datetime(ad.iloc[int(idx)]))
+
+
 class StepAService:
     def __init__(self, app_config: Any = None, /, **kwargs: Any):
         cfg = kwargs.get("app_config", app_config)
@@ -164,7 +178,8 @@ class StepAService:
             df = self._apply_pseudo_daily_row(df, pseudo_daily_row)
 
         # Split spec
-        split = self._resolve_split(date_range=date_range, kwargs=kwargs)
+        split = self._resolve_split(date_range=date_range, kwargs=kwargs, available_dates_sorted=df["Date"])
+        test_start_input = split.get("test_start_input", None)
         test_start = split["test_start"]
         train_start = split["train_start"]
         train_end = split["train_end"]
@@ -272,6 +287,7 @@ class StepAService:
                 df_full=df_feat_full,
                 df_train=df_feat_train,
                 df_test=df_feat_test_obs,  # observed window for reporting
+                test_start_input=test_start_input,
                 test_start=test_start,
                 train_start=train_start,
                 train_end=train_end,
@@ -343,6 +359,7 @@ class StepAService:
                 df_full=df_feat_full,
                 df_train=df_feat_full.iloc[0:0].copy(),
                 df_test=base_obs,
+                test_start_input=test_start_input,
                 test_start=test_start,
                 train_start=train_start,
                 train_end=train_end,
@@ -480,7 +497,7 @@ class StepAService:
         except Exception:
             return int(default)
 
-    def _resolve_split(self, date_range: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_split(self, date_range: Any, kwargs: Dict[str, Any], available_dates_sorted: Any = None) -> Dict[str, Any]:
         test_start = _to_dt(kwargs.get("test_start", None))
         if test_start is None:
             test_start = _to_dt(_get_attr(date_range, "test_start", None))
@@ -499,8 +516,12 @@ class StepAService:
         train_years = self._get_int(date_range, kwargs, "train_years", default=8)
         test_months = self._get_int(date_range, kwargs, "test_months", default=3)
 
-        if test_start is None:
+        if available_dates_sorted is None:
+            available_dates_sorted = []
+        available_dates_sorted = pd.Series(pd.to_datetime(available_dates_sorted, errors="coerce")).dropna().sort_values().drop_duplicates().reset_index(drop=True)
+        if len(available_dates_sorted) == 0:
             return {
+                "test_start_input": None if test_start is None else _norm_date(test_start),
                 "test_start": None,
                 "train_start": None,
                 "train_end": None,
@@ -509,16 +530,31 @@ class StepAService:
                 "test_months": test_months,
             }
 
-        test_start = _norm_date(test_start)
+        dmin = _norm_date(available_dates_sorted.iloc[0])
+        dmax = _norm_date(available_dates_sorted.iloc[-1])
 
-        if train_start is None:
-            train_start = test_start - pd.DateOffset(years=train_years)
-        if train_end is None:
-            train_end = test_start - pd.Timedelta(days=1)
-        if test_end is None:
-            test_end = test_start + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+        if test_start is None:
+            test_start_input = _norm_date(dmax - pd.DateOffset(months=test_months))
+        else:
+            test_start_input = _norm_date(test_start)
+
+        test_start = snap_prev_by_prices(test_start_input, available_dates_sorted)
+
+        train_start_raw = _norm_date(train_start) if train_start is not None else _norm_date(test_start - pd.DateOffset(years=train_years))
+        train_end_raw = _norm_date(train_end) if train_end is not None else _norm_date(test_start - pd.Timedelta(days=1))
+        test_end_raw = _norm_date(test_end) if test_end is not None else _norm_date(test_start + pd.DateOffset(months=test_months) - pd.Timedelta(days=1))
+
+        train_start = snap_prev_by_prices(train_start_raw, available_dates_sorted)
+        train_end = snap_prev_by_prices(train_end_raw, available_dates_sorted)
+        test_end = snap_prev_by_prices(test_end_raw, available_dates_sorted)
+
+        train_start = min(max(train_start, dmin), dmax)
+        train_end = min(max(train_end, dmin), dmax)
+        test_start = min(max(test_start, dmin), dmax)
+        test_end = min(max(test_end, dmin), dmax)
 
         return {
+            "test_start_input": test_start_input,
             "test_start": _norm_date(test_start),
             "train_start": _norm_date(train_start),
             "train_end": _norm_date(train_end),
@@ -706,6 +742,7 @@ class StepAService:
         df_full: pd.DataFrame,
         df_train: pd.DataFrame,
         df_test: pd.DataFrame,
+        test_start_input: Optional[pd.Timestamp],
         test_start: Optional[pd.Timestamp],
         train_start: Optional[pd.Timestamp],
         train_end: Optional[pd.Timestamp],
@@ -738,6 +775,7 @@ class StepAService:
             {"key": "future_end", "value": None if future_end is None else str(pd.to_datetime(future_end).date())},
             {"key": "train_years", "value": int(train_years)},
             {"key": "test_months", "value": int(test_months)},
+            {"key": "test_start_input", "value": None if test_start_input is None else str(test_start_input.date())},
             {"key": "train_start", "value": None if train_start is None else str(train_start.date())},
             {"key": "train_end", "value": None if train_end is None else str(train_end.date())},
             {"key": "test_start", "value": None if test_start is None else str(test_start.date())},

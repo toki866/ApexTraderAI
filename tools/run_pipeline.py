@@ -265,6 +265,22 @@ def _repo_root() -> Path:
     return get_repo_root()
 
 
+
+
+def snap_prev_by_prices(date, available_dates_sorted):
+    """Snap to previous available trading date (floor). If none, use min."""
+    import pandas as pd
+
+    if available_dates_sorted is None or len(available_dates_sorted) == 0:
+        return pd.to_datetime(date).normalize()
+    ad = pd.Series(pd.to_datetime(available_dates_sorted, errors="coerce")).dropna().sort_values().drop_duplicates().reset_index(drop=True)
+    if len(ad) == 0:
+        return pd.to_datetime(date).normalize()
+    d = pd.to_datetime(date).normalize()
+    idx = ad.searchsorted(d, side="right") - 1
+    if idx < 0:
+        return pd.to_datetime(ad.iloc[0]).normalize()
+    return pd.to_datetime(ad.iloc[int(idx)]).normalize()
 def _parse_steps(s: str) -> Tuple[str, ...]:
     default_steps: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
     canonical_order: Tuple[str, ...] = ("A", "B", "C", "DPRIME", "E", "F")
@@ -583,16 +599,29 @@ def _build_date_range(
             "Cannot build DateRange: no usable price dates found. Searched candidates:\n"
             f"{searched}"
         )
-    ts = pd.to_datetime(test_start) if test_start else pd.to_datetime(dates.iloc[-1]) - pd.DateOffset(months=test_months)
-    train_start = ts - pd.DateOffset(years=train_years)
-    train_end = ts - pd.Timedelta(days=1)
-    test_end = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
-    dmin = pd.to_datetime(dates.iloc[0])
-    dmax = pd.to_datetime(dates.iloc[-1])
-    train_start = max(train_start, dmin)
-    train_end = min(train_end, dmax)
-    ts = max(ts, dmin)
-    test_end = min(test_end, dmax)
+    dates_sorted = pd.to_datetime(dates, errors="coerce").dropna().sort_values().drop_duplicates().reset_index(drop=True)
+    dmin = pd.to_datetime(dates_sorted.iloc[0]).normalize()
+    dmax = pd.to_datetime(dates_sorted.iloc[-1]).normalize()
+
+    test_start_input = (
+        pd.to_datetime(test_start).normalize()
+        if test_start
+        else (pd.to_datetime(dates_sorted.iloc[-1]).normalize() - pd.DateOffset(months=test_months))
+    )
+    ts = snap_prev_by_prices(test_start_input, dates_sorted)
+
+    train_start_raw = ts - pd.DateOffset(years=train_years)
+    train_end_raw = ts - pd.Timedelta(days=1)
+    test_end_raw = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+
+    train_start = snap_prev_by_prices(train_start_raw, dates_sorted)
+    train_end = snap_prev_by_prices(train_end_raw, dates_sorted)
+    test_end = snap_prev_by_prices(test_end_raw, dates_sorted)
+
+    train_start = min(max(train_start, dmin), dmax)
+    train_end = min(max(train_end, dmin), dmax)
+    ts = min(max(ts, dmin), dmax)
+    test_end = min(max(test_end, dmin), dmax)
     kwargs = {"train_start": train_start, "train_end": train_end, "test_start": ts, "test_end": test_end}
     dr = DateRange(**kwargs)
     dr = _ensure_date_range_aliases(dr)
