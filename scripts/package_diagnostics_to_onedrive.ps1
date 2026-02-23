@@ -149,6 +149,7 @@ if (Test-Path $evalDir) {
     Get-ChildItem -Path $evalDir -File -Filter '*.md' -ErrorAction SilentlyContinue
     Get-ChildItem -Path $evalDir -File -Filter '*.json' -ErrorAction SilentlyContinue
     Get-ChildItem -Path $evalDir -File -Filter '*.txt' -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $evalDir -File -Filter '*.csv' -ErrorAction SilentlyContinue
     Get-ChildItem -Path $evalDir -File -Filter '*.png' -ErrorAction SilentlyContinue
   ) | Where-Object { $_ -ne $null }
 
