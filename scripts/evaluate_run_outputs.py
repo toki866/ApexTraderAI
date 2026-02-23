@@ -303,20 +303,32 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
     # StepA
     try:
+        train_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_train_{symbol}.csv"))
         prices_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
         if not prices_path:
             report["stepA"] = {"status": "SKIP", "summary": "stepA_prices_test file missing", "details": {}}
         else:
             px = _parse_date(_read_csv(prices_path), "Date")
             stepa_prices = px
+            px_train = _parse_date(_read_csv(train_path), "Date") if train_path else pd.DataFrame()
+            missing_ohlcv_test = int(sum(int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns))
+            missing_ohlcv_train = int(
+                sum(int(px_train[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px_train.columns)
+            )
             d = {
                 "path": prices_path,
+                "train_path": train_path,
+                "train_rows": int(len(px_train)) if train_path else 0,
                 "test_rows": int(len(px)),
+                "train_date_start": str(px_train["Date"].dropna().min().date())
+                if "Date" in px_train.columns and px_train["Date"].notna().any()
+                else None,
+                "train_date_end": str(px_train["Date"].dropna().max().date())
+                if "Date" in px_train.columns and px_train["Date"].notna().any()
+                else None,
                 "test_date_start": str(px["Date"].dropna().min().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
                 "test_date_end": str(px["Date"].dropna().max().date()) if "Date" in px.columns and px["Date"].notna().any() else None,
-                "missing_ohlcv_count": int(
-                    sum(int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns)
-                ),
+                "missing_ohlcv_count": missing_ohlcv_train + missing_ohlcv_test,
                 "ohlcv_missing": {c: int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns},
             }
             report["stepA"] = {"status": "OK", "summary": "prices_test evaluated", "details": d}
@@ -515,10 +527,13 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                         ret_col = "_ret_eval"
                         note = "ret missing: computed from equity pct_change"
                     split_col = _pick_col(df, ["Split"])
+                    split_policy = "all_rows" if split_col is None else "test_only"
                     metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col)
                     row = {
                         "file": os.path.basename(fpath),
                         **metrics,
+                        "rows": int(len(df)),
+                        "split_policy": split_policy,
                         "status": "OK" if metrics["test_days"] > 0 else "WARN",
                     }
                     merged_note = "; ".join([x for x in [note, reason] if x])
@@ -717,6 +732,89 @@ def render_summary(report: dict[str, Any]) -> str:
     return "\n".join(out_lines)
 
 
+def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
+    # StepE: agent-level table (sorted by equity_multiple desc).
+    step_e_rows = []
+    for row in report.get("stepE", {}).get("rows", []):
+        if row.get("status") == "SKIP":
+            continue
+        em = _to_float(row.get("equity_multiple"))
+        step_e_rows.append(
+            {
+                "agent": row.get("agent"),
+                "test_days": _to_int(row.get("test_days")),
+                "equity_multiple": em,
+                "return_pct": None if em is None else (em - 1.0) * 100.0,
+                "max_dd_pct": None if _to_float(row.get("max_dd")) is None else _to_float(row.get("max_dd")) * 100.0,
+                "sharpe": _to_float(row.get("sharpe")),
+                "mean_ret": _to_float(row.get("mean_ret")),
+                "std_ret": _to_float(row.get("std_ret")),
+            }
+        )
+
+    df_step_e = pd.DataFrame(step_e_rows)
+    step_e_cols = ["agent", "test_days", "equity_multiple", "return_pct", "max_dd_pct", "sharpe", "mean_ret", "std_ret"]
+    if df_step_e.empty:
+        df_step_e = pd.DataFrame(columns=step_e_cols)
+    else:
+        df_step_e = df_step_e.sort_values(by=["equity_multiple"], ascending=False, na_position="last")
+        df_step_e = df_step_e[step_e_cols]
+    df_step_e.to_csv(os.path.join(out_dir, "EVAL_TABLE_stepE.csv"), index=False)
+
+    # StepF: router-level table.
+    step_f_rows = []
+    for row in report.get("stepF", {}).get("rows", []):
+        if row.get("status") == "SKIP":
+            continue
+        em = _to_float(row.get("equity_multiple"))
+        step_f_rows.append(
+            {
+                "equity_multiple": em,
+                "return_pct": None if em is None else (em - 1.0) * 100.0,
+                "max_dd_pct": None if _to_float(row.get("max_dd")) is None else _to_float(row.get("max_dd")) * 100.0,
+                "sharpe": _to_float(row.get("sharpe")),
+                "rows": _to_int(row.get("rows", row.get("test_days"))),
+                "split_policy": row.get("split_policy", "test_only"),
+            }
+        )
+    df_step_f = pd.DataFrame(step_f_rows)
+    step_f_cols = ["equity_multiple", "return_pct", "max_dd_pct", "sharpe", "rows", "split_policy"]
+    if df_step_f.empty:
+        df_step_f = pd.DataFrame(columns=step_f_cols)
+    else:
+        df_step_f = df_step_f[step_f_cols]
+    df_step_f.to_csv(os.path.join(out_dir, "EVAL_TABLE_stepF.csv"), index=False)
+
+    # StepA: split-range table.
+    stepa = report.get("stepA", {})
+    d = stepa.get("details", {}) if isinstance(stepa, dict) else {}
+    step_a_rows = [
+        {
+            "symbol": report.get("symbol"),
+            "mode": report.get("mode"),
+            "train_start": d.get("train_date_start"),
+            "train_end": d.get("train_date_end"),
+            "test_start": d.get("test_date_start"),
+            "test_end": d.get("test_date_end"),
+            "rows_train": d.get("train_rows"),
+            "rows_test": d.get("test_rows"),
+            "missing_ohlcv": d.get("missing_ohlcv_count"),
+        }
+    ]
+    step_a_cols = [
+        "symbol",
+        "mode",
+        "train_start",
+        "train_end",
+        "test_start",
+        "test_end",
+        "rows_train",
+        "rows_test",
+        "missing_ohlcv",
+    ]
+    pd.DataFrame(step_a_rows, columns=step_a_cols).to_csv(os.path.join(out_dir, "EVAL_TABLE_stepA.csv"), index=False)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", required=True)
@@ -753,6 +851,12 @@ def main() -> None:
         json.dump(report, f, ensure_ascii=False, indent=2)
     with open(args.out_summary, "w", encoding="utf-8") as f:
         f.write(summary)
+
+    try:
+        _write_eval_tables(report, out_dir=os.path.dirname(os.path.abspath(args.out_md)))
+    except Exception:
+        # Best-effort evaluator: table export failures must not break workflow.
+        pass
 
 
 if __name__ == "__main__":
