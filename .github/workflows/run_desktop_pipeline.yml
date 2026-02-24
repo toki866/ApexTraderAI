@@ -1219,6 +1219,32 @@ jobs:
             exit 0
           }
 
+      - name: Generate public ONE_TAP/metrics report (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) { $outputRoot = 'output' }
+
+          $publicDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
+          $errorLog = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          python tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[WARN] make_public_run_report failed with exit code $LASTEXITCODE"
+            exit 0
+          }
+
       - name: Upload CSV report artifact
         if: always()
         continue-on-error: true
@@ -1273,6 +1299,10 @@ jobs:
 
           $runsDir = Join-Path $diagRepo 'runs'
           $null = New-Item -Path $runsDir -ItemType Directory -Force
+          $publicRunDir = Join-Path $runsDir '${{ github.run_id }}'
+          $null = New-Item -Path $publicRunDir -ItemType Directory -Force
+          $latestDir = Join-Path $diagRepo 'latest'
+          $null = New-Item -Path $latestDir -ItemType Directory -Force
 
           $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
           $shortSha = ('${{ github.sha }}').Substring(0, 7)
@@ -1320,6 +1350,25 @@ jobs:
             ("- diag_report_index={0}" -f $diagReportIndexUrl),
             ("- diag_report_path={0}" -f $diagReportIndexRel)
           )
+
+          $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
+          $publicOneTapSource = Join-Path $publicReportDir 'ONE_TAP.md'
+          $publicMetricsSource = Join-Path $publicReportDir 'metrics_summary.csv'
+          if (Test-Path $publicOneTapSource) {
+            Copy-Item -Path $publicOneTapSource -Destination (Join-Path $publicRunDir 'ONE_TAP.md') -Force
+            Copy-Item -Path $publicOneTapSource -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
+          } else {
+            '[WARN] ONE_TAP.md not found in public_report.' | Set-Content -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Encoding UTF8
+            Copy-Item -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
+          }
+
+          if (Test-Path $publicMetricsSource) {
+            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          } else {
+            'status,detail`nnot_found,metrics_summary.csv not found in public_report' | Set-Content -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Encoding UTF8
+            Copy-Item -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          }
 
           $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
           if (Test-Path $evalMdSource) {
@@ -1644,6 +1693,9 @@ jobs:
             Write-Host "Report saved to diag-logs: $reportRelPath"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Report saved to diag-logs: $reportRelPath"
           }
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public ONE_TAP raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/ONE_TAP.md"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/metrics_summary.csv"
 
       - name: Publish diagnostics to Issue #50 (always)
         if: always()
@@ -3047,6 +3099,32 @@ jobs:
             exit 0
           }
 
+      - name: Generate public ONE_TAP/metrics report (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) { $outputRoot = 'output' }
+
+          $publicDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
+          $errorLog = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+
+          python tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[WARN] make_public_run_report failed with exit code $LASTEXITCODE"
+            exit 0
+          }
+
       - name: Upload CSV report artifact
         if: always()
         continue-on-error: true
@@ -3101,6 +3179,10 @@ jobs:
 
           $runsDir = Join-Path $diagRepo 'runs'
           $null = New-Item -Path $runsDir -ItemType Directory -Force
+          $publicRunDir = Join-Path $runsDir '${{ github.run_id }}'
+          $null = New-Item -Path $publicRunDir -ItemType Directory -Force
+          $latestDir = Join-Path $diagRepo 'latest'
+          $null = New-Item -Path $latestDir -ItemType Directory -Force
 
           $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
           $shortSha = ('${{ github.sha }}').Substring(0, 7)
@@ -3130,6 +3212,25 @@ jobs:
               ('run_id=${{ github.run_id }}'),
               ('run_attempt=${{ github.run_attempt }}')
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
+          }
+
+          $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
+          $publicOneTapSource = Join-Path $publicReportDir 'ONE_TAP.md'
+          $publicMetricsSource = Join-Path $publicReportDir 'metrics_summary.csv'
+          if (Test-Path $publicOneTapSource) {
+            Copy-Item -Path $publicOneTapSource -Destination (Join-Path $publicRunDir 'ONE_TAP.md') -Force
+            Copy-Item -Path $publicOneTapSource -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
+          } else {
+            '[WARN] ONE_TAP.md not found in public_report.' | Set-Content -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Encoding UTF8
+            Copy-Item -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
+          }
+
+          if (Test-Path $publicMetricsSource) {
+            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          } else {
+            'status,detail`nnot_found,metrics_summary.csv not found in public_report' | Set-Content -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Encoding UTF8
+            Copy-Item -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
           }
 
           $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
@@ -3455,6 +3556,9 @@ jobs:
             Write-Host "Report saved to diag-logs: $reportRelPath"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Report saved to diag-logs: $reportRelPath"
           }
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public ONE_TAP raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/ONE_TAP.md"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/metrics_summary.csv"
 
       - name: Publish diagnostics to Issue #50 (always)
         if: always()
