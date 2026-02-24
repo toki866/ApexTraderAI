@@ -1187,7 +1187,7 @@ jobs:
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
-      - name: Generate GitHub-viewable run report (best effort)
+      - name: Generate CSV report (md/html + png)
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -1202,30 +1202,31 @@ jobs:
               $outputRoot = Join-Path $runDir 'output'
             }
           }
-
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            Write-Warning '[WARN] report generation skipped: output_root not found.'
-            exit 0
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $outputRoot = 'output'
           }
 
-          $symbols = '${{ inputs.symbols }}'
-          $symbol = 'SOXL'
-          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
-            $symbol = ($symbols -split ',')[0].Trim()
-            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-          }
           $mode = '${{ env.MODE }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
-          $diagDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish'
-          $reportDir = Join-Path $diagDir 'report'
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $null = New-Item -Path $reportDir -ItemType Directory -Force
 
-          python tools/generate_run_report.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-dir "$reportDir"
+          python -V
+          python tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "[WARN] generate_run_report failed with exit code $LASTEXITCODE"
+            Write-Warning "[WARN] make_run_csv_report failed with exit code $LASTEXITCODE"
             exit 0
           }
+
+      - name: Upload CSV report artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-report-${{ env.MODE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: report/**
 
       - name: Checkout diag-logs branch workspace (best effort)
         if: always()
@@ -1281,13 +1282,23 @@ jobs:
           $csvOutDir = Join-Path $runFolder 'csv'
           $null = New-Item -Path $csvOutDir -ItemType Directory -Force
 
-          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish\report'
+          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $reportDestDir = Join-Path $runFolder 'report'
           if (Test-Path $reportSourceDir) {
             Copy-Item -Path $reportSourceDir -Destination $reportDestDir -Recurse -Force
           } else {
             Write-Warning "[WARN] report directory missing: $reportSourceDir"
           }
+
+          $reportsRoot = Join-Path $diagRepo 'reports'
+          $reportsRunDir = Join-Path $reportsRoot ("${{ github.run_id }}_${{ github.run_attempt }}")
+          $reportsModeDir = Join-Path $reportsRunDir '${{ env.MODE }}'
+          $null = New-Item -Path $reportsModeDir -ItemType Directory -Force
+          if (Test-Path $reportSourceDir) {
+            Copy-Item -Path (Join-Path $reportSourceDir '*') -Destination $reportsModeDir -Recurse -Force
+          }
+          $diagReportIndexRel = "reports/${{ github.run_id }}_${{ github.run_attempt }}/${{ env.MODE }}/index.md"
+          $diagReportIndexUrl = "${{ github.server_url }}/${{ github.repository }}/blob/diag-logs/$diagReportIndexRel"
 
           $oneTapSource = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $oneTapDest = Join-Path $runFolder 'ONE_TAP_ERROR_REPORT.txt'
@@ -1302,6 +1313,13 @@ jobs:
               ('run_attempt=${{ github.run_attempt }}')
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
           }
+
+          Add-Content -Path $oneTapDest -Encoding UTF8 -Value @(
+            '',
+            '[CSV_REPORT]',
+            ("- diag_report_index={0}" -f $diagReportIndexUrl),
+            ("- diag_report_path={0}" -f $diagReportIndexRel)
+          )
 
           $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
           if (Test-Path $evalMdSource) {
@@ -2997,7 +3015,7 @@ jobs:
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
-      - name: Generate GitHub-viewable run report (best effort)
+      - name: Generate CSV report (md/html + png)
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -3012,30 +3030,31 @@ jobs:
               $outputRoot = Join-Path $runDir 'output'
             }
           }
-
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            Write-Warning '[WARN] report generation skipped: output_root not found.'
-            exit 0
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $outputRoot = 'output'
           }
 
-          $symbols = '${{ inputs.symbols }}'
-          $symbol = 'SOXL'
-          if (-not [string]::IsNullOrWhiteSpace($symbols)) {
-            $symbol = ($symbols -split ',')[0].Trim()
-            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-          }
           $mode = '${{ env.MODE }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
-          $diagDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish'
-          $reportDir = Join-Path $diagDir 'report'
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $null = New-Item -Path $reportDir -ItemType Directory -Force
 
-          python tools/generate_run_report.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-dir "$reportDir"
+          python -V
+          python tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "[WARN] generate_run_report failed with exit code $LASTEXITCODE"
+            Write-Warning "[WARN] make_run_csv_report failed with exit code $LASTEXITCODE"
             exit 0
           }
+
+      - name: Upload CSV report artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-report-${{ env.MODE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: report/**
 
       - name: Checkout diag-logs branch workspace (best effort)
         if: always()
@@ -3091,7 +3110,7 @@ jobs:
           $csvOutDir = Join-Path $runFolder 'csv'
           $null = New-Item -Path $csvOutDir -ItemType Directory -Force
 
-          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'temp\diag_publish\report'
+          $reportSourceDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $reportDestDir = Join-Path $runFolder 'report'
           if (Test-Path $reportSourceDir) {
             Copy-Item -Path $reportSourceDir -Destination $reportDestDir -Recurse -Force
