@@ -1049,6 +1049,7 @@ jobs:
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
           $null = New-Item -Path $artifactRoot -ItemType Directory -Force
           "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_zip_path=" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
           $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
 
@@ -1123,25 +1124,24 @@ jobs:
             }
           }
 
-          $zipInputs = $zipInputs | Sort-Object -Unique
+          $zipInputs = @($zipInputs) |
+            Where-Object { $_ -and ($_ -ne '') } |
+            ForEach-Object { $_.ToString().Trim() } |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
+            ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
+            Sort-Object -Unique
 
-          if ($zipInputs.Count -eq 0) {
-            $fallbackLog = Join-Path $artifactRoot 'actions_logs_missing.txt'
-            @(
-              '[WARN] No log files were available to zip.',
-              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
-            ) | Set-Content -Path $fallbackLog -Encoding UTF8
-            $zipInputs += $fallbackLog
+          if (-not $zipInputs -or $zipInputs.Count -eq 0) {
+            Write-Host "[stage] No inputs to zip. Skip Compress-Archive and continue."
+            exit 0
           }
 
-          try {
-            Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
-            Write-Host "Created logs archive: $actionsLogsZip"
-          } catch {
-            $err = $_ | Out-String
-            Write-Warning "Compress-Archive failed: $err"
-            Set-Content -Path (Join-Path $artifactRoot 'actions_logs_zip_failed.txt') -Value $err -Encoding UTF8
-          }
+          Write-Host "[stage] zipInputs count=$($zipInputs.Count)"
+          Write-Host "[stage] zipPath=$actionsLogsZip"
+
+          Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
+          "artifact_zip_path=$actionsLogsZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Created logs archive: $actionsLogsZip"
 
           Write-Host "Staged artifacts under: $artifactRoot"
 
@@ -1152,7 +1152,7 @@ jobs:
         with:
           name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: ${{ steps.stage_artifacts.outputs.artifact_path }}
+          path: ${{ steps.stage_artifacts.outputs.artifact_zip_path }}
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -2861,6 +2861,8 @@ jobs:
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'
           $null = New-Item -Path $artifactRoot -ItemType Directory -Force
+          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_zip_path=" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $workspaceLogRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts\logs'
           $null = New-Item -Path $workspaceLogRoot -ItemType Directory -Force
 
@@ -2934,19 +2936,24 @@ jobs:
             }
           }
 
-          if ($zipInputs.Count -eq 0) {
-            $fallbackLog = Join-Path $artifactRoot 'actions_logs_missing.txt'
-            @(
-              '[WARN] No log files were available to zip.',
-              ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
-            ) | Set-Content -Path $fallbackLog -Encoding UTF8
-            $zipInputs += $fallbackLog
+          $zipInputs = @($zipInputs) |
+            Where-Object { $_ -and ($_ -ne '') } |
+            ForEach-Object { $_.ToString().Trim() } |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
+            ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
+            Sort-Object -Unique
+
+          if (-not $zipInputs -or $zipInputs.Count -eq 0) {
+            Write-Host "[stage] No inputs to zip. Skip Compress-Archive and continue."
+            exit 0
           }
 
-          Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
-          Write-Host "Created logs archive: $actionsLogsZip"
+          Write-Host "[stage] zipInputs count=$($zipInputs.Count)"
+          Write-Host "[stage] zipPath=$actionsLogsZip"
 
-          "artifact_path=$artifactRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Compress-Archive -Path $zipInputs -DestinationPath $actionsLogsZip -Force
+          "artifact_zip_path=$actionsLogsZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Created logs archive: $actionsLogsZip"
           Write-Host "Staged artifacts under: $artifactRoot"
 
       - name: Upload run artifacts
@@ -2955,7 +2962,7 @@ jobs:
         with:
           name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
+          path: ${{ steps.stage_artifacts.outputs.artifact_zip_path }}
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
