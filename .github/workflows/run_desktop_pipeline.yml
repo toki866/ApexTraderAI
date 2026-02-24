@@ -579,7 +579,7 @@ jobs:
 
       - name: Compute derived date window (data_start/data_end)
         if: ${{ steps.prep_repo.outcome == 'success' }}
-        shell: pwsh
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Stop'
           $testStart = [datetime]::Parse("${{ inputs.test_start_date }}")
@@ -2392,7 +2392,7 @@ jobs:
 
       - name: Compute derived date window (data_start/data_end)
         if: ${{ steps.prep_repo.outcome == 'success' }}
-        shell: pwsh
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Stop'
           $testStart = [datetime]::Parse("${{ inputs.test_start_date }}")
