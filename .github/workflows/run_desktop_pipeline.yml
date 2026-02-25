@@ -39,6 +39,59 @@ on:
         required: true
         default: true
         type: boolean
+      steps:
+        description: "Pipeline steps to run (comma-separated). Standard flow is A,B,C,DPRIME,E,F. StepD is deprecated and D' (DPRIME) is used instead."
+        required: false
+        default: ""
+        type: string
+      run_stepA:
+        description: "Run StepA"
+        required: true
+        default: true
+        type: boolean
+      run_stepB:
+        description: "Run StepB"
+        required: true
+        default: true
+        type: boolean
+      run_stepC:
+        description: "Run StepC"
+        required: true
+        default: true
+        type: boolean
+      run_stepDPRIME:
+        description: "Run StepDPRIME"
+        required: true
+        default: true
+        type: boolean
+      run_stepE:
+        description: "Run StepE"
+        required: true
+        default: true
+        type: boolean
+      run_stepF:
+        description: "Run StepF"
+        required: true
+        default: true
+        type: boolean
+      resume_from:
+        description: "Resume from this step (run selected step and later steps only)"
+        required: true
+        default: "none"
+        type: choice
+        options:
+          - none
+          - A
+          - B
+          - C
+          - DPRIME
+          - E
+          - F
+      skip_stepe:
+        description: "Debug only: skip StepE (1=true, 0=false)"
+        required: true
+        default: false
+        type: boolean
       diag_keep_latest:
         description: "How many latest diag-logs runs to keep (older runs deleted from diag-logs branch)"
         required: true
@@ -465,16 +518,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
-          $manualSteps = ''.Trim()
-          $resumeFrom = 'none'.Trim()
+          $manualSteps = '${{ inputs.steps }}'.Trim()
+          $resumeFrom = '${{ inputs.resume_from }}'.Trim()
 
-          $runStepA = $true
-          $runStepB = $true
-          $runStepC = $true
-          $runStepDPrime = $true
-          $runStepE = $true
-          $runStepF = $true
-          $skipStepEInput = $false
+          $runStepA = ('${{ inputs.run_stepA }}' -eq 'true')
+          $runStepB = ('${{ inputs.run_stepB }}' -eq 'true')
+          $runStepC = ('${{ inputs.run_stepC }}' -eq 'true')
+          $runStepDPrime = ('${{ inputs.run_stepDPRIME }}' -eq 'true')
+          $runStepE = ('${{ inputs.run_stepE }}' -eq 'true')
+          $runStepF = ('${{ inputs.run_stepF }}' -eq 'true')
+          $skipStepEInput = ('${{ inputs.skip_stepe }}' -eq 'true')
           $effectiveSkipStepE = $skipStepEInput -or (-not $runStepE)
 
           $allSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
@@ -2463,16 +2516,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
-          $manualSteps = ''.Trim()
-          $resumeFrom = 'none'.Trim()
+          $manualSteps = '${{ inputs.steps }}'.Trim()
+          $resumeFrom = '${{ inputs.resume_from }}'.Trim()
 
-          $runStepA = $true
-          $runStepB = $true
-          $runStepC = $true
-          $runStepDPrime = $true
-          $runStepE = $true
-          $runStepF = $true
-          $skipStepEInput = $false
+          $runStepA = ('${{ inputs.run_stepA }}' -eq 'true')
+          $runStepB = ('${{ inputs.run_stepB }}' -eq 'true')
+          $runStepC = ('${{ inputs.run_stepC }}' -eq 'true')
+          $runStepDPrime = ('${{ inputs.run_stepDPRIME }}' -eq 'true')
+          $runStepE = ('${{ inputs.run_stepE }}' -eq 'true')
+          $runStepF = ('${{ inputs.run_stepF }}' -eq 'true')
+          $skipStepEInput = ('${{ inputs.skip_stepe }}' -eq 'true')
           $effectiveSkipStepE = $skipStepEInput -or (-not $runStepE)
 
           $allSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
