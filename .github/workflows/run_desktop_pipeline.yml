@@ -2048,6 +2048,191 @@ jobs:
           if-no-files-found: warn
           path: _diagnostics/**/*
 
+      - name: Build run_reports bundle (always)
+        if: always()
+        id: run_reports_bundle
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:GITHUB_WORKSPACE
+
+          function Ensure-ParentDir {
+            param([string]$Path)
+            $parent = Split-Path -Parent $Path
+            if ($parent -and -not (Test-Path $parent)) {
+              New-Item -Path $parent -ItemType Directory -Force | Out-Null
+            }
+          }
+
+          function Resolve-FirstMatch {
+            param(
+              [string[]]$RootDirs,
+              [string[]]$FileNames
+            )
+            foreach ($root in $RootDirs) {
+              if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) { continue }
+              foreach ($name in $FileNames) {
+                $hit = Get-ChildItem -Path $root -Recurse -File -Filter $name -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1
+                if ($hit) { return $hit.FullName }
+              }
+            }
+            return $null
+          }
+
+          $runReportsRoot = Join-Path $env:GITHUB_WORKSPACE 'run_reports'
+          $latestDir = Join-Path $runReportsRoot 'latest'
+          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $historyDir = Join-Path (Join-Path $runReportsRoot 'runs') ("${{ github.run_id }}_${{ github.run_attempt }}_$timestamp")
+          New-Item -Path $latestDir -ItemType Directory -Force | Out-Null
+          New-Item -Path $historyDir -ItemType Directory -Force | Out-Null
+
+          $candidateRoots = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'),
+            (Join-Path $env:GITHUB_WORKSPACE '_diagnostics'),
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs'),
+            (Join-Path $env:GITHUB_WORKSPACE 'report'),
+            (Join-Path $env:GITHUB_WORKSPACE 'public_report'),
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\eval'),
+            (Join-Path $env:RUNNER_TEMP 'diag_out'),
+            '${{ steps.resolve_artifacts.outputs.run_dir }}',
+            '${{ steps.resolve_artifacts.outputs.output_root }}',
+            $env:REPO_ROOT
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+          $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
+          $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+
+          $latestMetricsMd = Join-Path $latestDir 'metrics_summary.md'
+          $latestMetricsCsv = Join-Path $latestDir 'metrics_summary.csv'
+          $latestErrSummary = Join-Path $latestDir 'error_summary.txt'
+          $latestRunMeta = Join-Path $latestDir 'run_meta.json'
+
+          if ($metricsMdSource -and (Test-Path $metricsMdSource)) {
+            Copy-Item -Path $metricsMdSource -Destination $latestMetricsMd -Force
+          } else {
+            Set-Content -Path $latestMetricsMd -Encoding UTF8 -Value "not found: metrics_summary.md"
+          }
+
+          if ($metricsCsvSource -and (Test-Path $metricsCsvSource)) {
+            Copy-Item -Path $metricsCsvSource -Destination $latestMetricsCsv -Force
+          } else {
+            Set-Content -Path $latestMetricsCsv -Encoding UTF8 -Value "not found: metrics_summary.csv"
+          }
+
+          $jobStatus = '${{ job.status }}'
+          if ($jobStatus -ne 'success') {
+            $tailLines = [System.Collections.Generic.List[string]]::new()
+            $tailLines.Add(("job.status={0}" -f $jobStatus))
+            foreach ($cand in @(
+              (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'),
+              '${{ steps.resolve_artifacts.outputs.run_log_path }}',
+              (Join-Path $env:RUNNER_TEMP 'diag_out\workflow_console.log'),
+              (Join-Path $env:RUNNER_TEMP 'diag_out\workflow_tail.txt')
+            )) {
+              if ($cand -and (Test-Path $cand)) {
+                $tailLines.Add('')
+                $tailLines.Add(("=== tail: {0} ===" -f $cand))
+                $tailLines.AddRange((Get-Content -Path $cand -Tail 120 -ErrorAction SilentlyContinue))
+              }
+            }
+            if ($tailLines.Count -le 1) {
+              $tailLines.Add('no log tail source found')
+            }
+            $tailLines | Set-Content -Path $latestErrSummary -Encoding UTF8
+          } else {
+            Set-Content -Path $latestErrSummary -Encoding UTF8 -Value 'success (no error)'
+          }
+
+          $meta = [ordered]@{
+            run_id = '${{ github.run_id }}'
+            attempt = '${{ github.run_attempt }}'
+            sha = '${{ github.sha }}'
+            status = $jobStatus
+            timestamp = (Get-Date).ToUniversalTime().ToString('o')
+            mode = '${{ env.MODE }}'
+            symbols = '${{ inputs.symbols }}'
+          }
+          $meta | ConvertTo-Json | Set-Content -Path $latestRunMeta -Encoding UTF8
+
+          foreach ($file in @('metrics_summary.md','metrics_summary.csv','error_summary.txt','run_meta.json')) {
+            Copy-Item -Path (Join-Path $latestDir $file) -Destination (Join-Path $historyDir $file) -Force
+          }
+
+          $publishRoot = Join-Path $env:RUNNER_TEMP 'run_reports_publish'
+          if (Test-Path $publishRoot) { Remove-Item -Path $publishRoot -Recurse -Force }
+          New-Item -Path $publishRoot -ItemType Directory -Force | Out-Null
+          Copy-Item -Path $runReportsRoot -Destination (Join-Path $publishRoot 'run_reports') -Recurse -Force
+
+          "publish_dir=$publishRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+            '',
+            '### diag-logs fixed paths (run_reports/latest)',
+            '- diag-logs/run_reports/latest/metrics_summary.md',
+            '- diag-logs/run_reports/latest/error_summary.txt'
+          )
+
+      - name: Upload run_reports artifact (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: run_reports/**
+
+      - name: Push run_reports to diag-logs branch (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $publishDir = '${{ steps.run_reports_bundle.outputs.publish_dir }}'
+          if ([string]::IsNullOrWhiteSpace($publishDir) -or -not (Test-Path $publishDir)) {
+            $publishDir = $env:GITHUB_WORKSPACE
+          }
+          $sourceRunReports = Join-Path $publishDir 'run_reports'
+          if (-not (Test-Path $sourceRunReports)) {
+            Write-Warning "run_reports source not found at $sourceRunReports"
+            exit 0
+          }
+
+          $diagRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs-run-reports'
+          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
+          New-Item -Path $diagRepo -ItemType Directory -Force | Out-Null
+          Set-Location $diagRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          cmd /c "git fetch origin"
+          if ($LASTEXITCODE -eq 0 -and (git branch -r | Select-String -SimpleMatch 'origin/diag-logs')) {
+            git checkout -B diag-logs origin/diag-logs
+          } else {
+            git checkout --orphan diag-logs
+            cmd /c "git rm -rf . 1>nul 2>nul"
+          }
+
+          if (Test-Path (Join-Path $diagRepo 'run_reports')) {
+            Remove-Item -Path (Join-Path $diagRepo 'run_reports') -Recurse -Force
+          }
+          Copy-Item -Path $sourceRunReports -Destination (Join-Path $diagRepo 'run_reports') -Recurse -Force
+
+          git add run_reports
+          cmd /c "git diff --cached --quiet"
+          if ($LASTEXITCODE -ne 0) {
+            $msg = "diag: update run_reports run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}"
+            git commit -m $msg
+            git push -u origin diag-logs
+          } else {
+            Write-Host 'No run_reports changes to push.'
+          }
+
       - name: Fail run if repo prepare failed
         if: ${{ always() && steps.prep_repo.outcome == 'failure' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -3968,6 +4153,191 @@ jobs:
           name: diagnostics
           if-no-files-found: warn
           path: _diagnostics/**/*
+
+      - name: Build run_reports bundle (always)
+        if: always()
+        id: run_reports_bundle
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location $env:GITHUB_WORKSPACE
+
+          function Ensure-ParentDir {
+            param([string]$Path)
+            $parent = Split-Path -Parent $Path
+            if ($parent -and -not (Test-Path $parent)) {
+              New-Item -Path $parent -ItemType Directory -Force | Out-Null
+            }
+          }
+
+          function Resolve-FirstMatch {
+            param(
+              [string[]]$RootDirs,
+              [string[]]$FileNames
+            )
+            foreach ($root in $RootDirs) {
+              if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) { continue }
+              foreach ($name in $FileNames) {
+                $hit = Get-ChildItem -Path $root -Recurse -File -Filter $name -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1
+                if ($hit) { return $hit.FullName }
+              }
+            }
+            return $null
+          }
+
+          $runReportsRoot = Join-Path $env:GITHUB_WORKSPACE 'run_reports'
+          $latestDir = Join-Path $runReportsRoot 'latest'
+          $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $historyDir = Join-Path (Join-Path $runReportsRoot 'runs') ("${{ github.run_id }}_${{ github.run_attempt }}_$timestamp")
+          New-Item -Path $latestDir -ItemType Directory -Force | Out-Null
+          New-Item -Path $historyDir -ItemType Directory -Force | Out-Null
+
+          $candidateRoots = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\desktop_artifacts'),
+            (Join-Path $env:GITHUB_WORKSPACE '_diagnostics'),
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs'),
+            (Join-Path $env:GITHUB_WORKSPACE 'report'),
+            (Join-Path $env:GITHUB_WORKSPACE 'public_report'),
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\eval'),
+            (Join-Path $env:RUNNER_TEMP 'diag_out'),
+            '${{ steps.resolve_artifacts.outputs.run_dir }}',
+            '${{ steps.resolve_artifacts.outputs.output_root }}',
+            $env:REPO_ROOT
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+          $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
+          $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+
+          $latestMetricsMd = Join-Path $latestDir 'metrics_summary.md'
+          $latestMetricsCsv = Join-Path $latestDir 'metrics_summary.csv'
+          $latestErrSummary = Join-Path $latestDir 'error_summary.txt'
+          $latestRunMeta = Join-Path $latestDir 'run_meta.json'
+
+          if ($metricsMdSource -and (Test-Path $metricsMdSource)) {
+            Copy-Item -Path $metricsMdSource -Destination $latestMetricsMd -Force
+          } else {
+            Set-Content -Path $latestMetricsMd -Encoding UTF8 -Value "not found: metrics_summary.md"
+          }
+
+          if ($metricsCsvSource -and (Test-Path $metricsCsvSource)) {
+            Copy-Item -Path $metricsCsvSource -Destination $latestMetricsCsv -Force
+          } else {
+            Set-Content -Path $latestMetricsCsv -Encoding UTF8 -Value "not found: metrics_summary.csv"
+          }
+
+          $jobStatus = '${{ job.status }}'
+          if ($jobStatus -ne 'success') {
+            $tailLines = [System.Collections.Generic.List[string]]::new()
+            $tailLines.Add(("job.status={0}" -f $jobStatus))
+            foreach ($cand in @(
+              (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'),
+              '${{ steps.resolve_artifacts.outputs.run_log_path }}',
+              (Join-Path $env:RUNNER_TEMP 'diag_out\workflow_console.log'),
+              (Join-Path $env:RUNNER_TEMP 'diag_out\workflow_tail.txt')
+            )) {
+              if ($cand -and (Test-Path $cand)) {
+                $tailLines.Add('')
+                $tailLines.Add(("=== tail: {0} ===" -f $cand))
+                $tailLines.AddRange((Get-Content -Path $cand -Tail 120 -ErrorAction SilentlyContinue))
+              }
+            }
+            if ($tailLines.Count -le 1) {
+              $tailLines.Add('no log tail source found')
+            }
+            $tailLines | Set-Content -Path $latestErrSummary -Encoding UTF8
+          } else {
+            Set-Content -Path $latestErrSummary -Encoding UTF8 -Value 'success (no error)'
+          }
+
+          $meta = [ordered]@{
+            run_id = '${{ github.run_id }}'
+            attempt = '${{ github.run_attempt }}'
+            sha = '${{ github.sha }}'
+            status = $jobStatus
+            timestamp = (Get-Date).ToUniversalTime().ToString('o')
+            mode = '${{ env.MODE }}'
+            symbols = '${{ inputs.symbols }}'
+          }
+          $meta | ConvertTo-Json | Set-Content -Path $latestRunMeta -Encoding UTF8
+
+          foreach ($file in @('metrics_summary.md','metrics_summary.csv','error_summary.txt','run_meta.json')) {
+            Copy-Item -Path (Join-Path $latestDir $file) -Destination (Join-Path $historyDir $file) -Force
+          }
+
+          $publishRoot = Join-Path $env:RUNNER_TEMP 'run_reports_publish'
+          if (Test-Path $publishRoot) { Remove-Item -Path $publishRoot -Recurse -Force }
+          New-Item -Path $publishRoot -ItemType Directory -Force | Out-Null
+          Copy-Item -Path $runReportsRoot -Destination (Join-Path $publishRoot 'run_reports') -Recurse -Force
+
+          "publish_dir=$publishRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+            '',
+            '### diag-logs fixed paths (run_reports/latest)',
+            '- diag-logs/run_reports/latest/metrics_summary.md',
+            '- diag-logs/run_reports/latest/error_summary.txt'
+          )
+
+      - name: Upload run_reports artifact (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: run_reports/**
+
+      - name: Push run_reports to diag-logs branch (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $publishDir = '${{ steps.run_reports_bundle.outputs.publish_dir }}'
+          if ([string]::IsNullOrWhiteSpace($publishDir) -or -not (Test-Path $publishDir)) {
+            $publishDir = $env:GITHUB_WORKSPACE
+          }
+          $sourceRunReports = Join-Path $publishDir 'run_reports'
+          if (-not (Test-Path $sourceRunReports)) {
+            Write-Warning "run_reports source not found at $sourceRunReports"
+            exit 0
+          }
+
+          $diagRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\diag-logs-run-reports'
+          if (Test-Path $diagRepo) { Remove-Item -Path $diagRepo -Recurse -Force }
+          New-Item -Path $diagRepo -ItemType Directory -Force | Out-Null
+          Set-Location $diagRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          cmd /c "git fetch origin"
+          if ($LASTEXITCODE -eq 0 -and (git branch -r | Select-String -SimpleMatch 'origin/diag-logs')) {
+            git checkout -B diag-logs origin/diag-logs
+          } else {
+            git checkout --orphan diag-logs
+            cmd /c "git rm -rf . 1>nul 2>nul"
+          }
+
+          if (Test-Path (Join-Path $diagRepo 'run_reports')) {
+            Remove-Item -Path (Join-Path $diagRepo 'run_reports') -Recurse -Force
+          }
+          Copy-Item -Path $sourceRunReports -Destination (Join-Path $diagRepo 'run_reports') -Recurse -Force
+
+          git add run_reports
+          cmd /c "git diff --cached --quiet"
+          if ($LASTEXITCODE -ne 0) {
+            $msg = "diag: update run_reports run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}"
+            git commit -m $msg
+            git push -u origin diag-logs
+          } else {
+            Write-Host 'No run_reports changes to push.'
+          }
 
       - name: Fail run if repo prepare failed
         if: ${{ always() && steps.prep_repo.outcome == 'failure' }}
