@@ -1216,18 +1216,43 @@ jobs:
 
           python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
+          $metricsOutDir = Join-Path $env:GITHUB_WORKSPACE 'temp\report'
+          $null = New-Item -Path $metricsOutDir -ItemType Directory -Force
+          $metricsMd = Join-Path $metricsOutDir 'metrics_summary.md'
+          $metricsCsv = Join-Path $metricsOutDir 'metrics_summary.csv'
+          $repoMetricsMd = Join-Path $env:REPO_ROOT 'reports\metrics_summary.md'
+          $repoMetricsCsv = Join-Path $env:REPO_ROOT 'reports\metrics_summary.csv'
+
+          if (Test-Path $repoMetricsMd) {
+            Copy-Item -Path $repoMetricsMd -Destination $metricsMd -Force
+          } else {
+            @(
+              '| metric | value |',
+              '| --- | --- |',
+              '| status | not generated |'
+            ) | Set-Content -Path $metricsMd -Encoding UTF8
+          }
+
+          if (Test-Path $repoMetricsCsv) {
+            Copy-Item -Path $repoMetricsCsv -Destination $metricsCsv -Force
+          } else {
+            'metric,value`nstatus,not generated' | Set-Content -Path $metricsCsv -Encoding UTF8
+          }
+
       - name: Publish metrics to Job Summary
         if: always()
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference='Continue'
-          Set-Location $env:REPO_ROOT
-          Add-Content $env:GITHUB_STEP_SUMMARY "## Metrics Summary"
-          if (Test-Path 'reports/metrics_summary.md') {
-            Get-Content 'reports/metrics_summary.md' | Add-Content $env:GITHUB_STEP_SUMMARY
+          $metricsMd = Join-Path $env:GITHUB_WORKSPACE 'temp\report\metrics_summary.md'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Metrics Summary"
+          if (Test-Path $metricsMd) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (Get-Content -Raw $metricsMd)
           } else {
-            Add-Content $env:GITHUB_STEP_SUMMARY 'No evaluation CSV found'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| metric | value |'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| --- | --- |'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| status | not generated |'
           }
 
       - name: Generate CSV report (md/html + png)
@@ -1295,7 +1320,10 @@ jobs:
         with:
           name: desktop-report-${{ env.MODE }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: report/**
+          path: |
+            report/**
+            temp/report/metrics_summary.md
+            temp/report/metrics_summary.csv
 
       - name: Checkout diag-logs branch workspace (best effort)
         if: always()
@@ -1413,7 +1441,9 @@ jobs:
 
           $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
           $publicOneTapSource = Join-Path $publicReportDir 'ONE_TAP.md'
-          $publicMetricsSource = Join-Path $publicReportDir 'metrics_summary.csv'
+          $metricsSummaryDir = Join-Path $env:GITHUB_WORKSPACE 'temp\report'
+          $metricsSummaryMdSource = Join-Path $metricsSummaryDir 'metrics_summary.md'
+          $metricsSummaryCsvSource = Join-Path $metricsSummaryDir 'metrics_summary.csv'
           if (Test-Path $publicOneTapSource) {
             Copy-Item -Path $publicOneTapSource -Destination (Join-Path $publicRunDir 'ONE_TAP.md') -Force
             Copy-Item -Path $publicOneTapSource -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
@@ -1422,12 +1452,28 @@ jobs:
             Copy-Item -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
           }
 
-          if (Test-Path $publicMetricsSource) {
-            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
-            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          if (Test-Path $metricsSummaryCsvSource) {
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $runFolder 'metrics_summary.csv') -Force
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
           } else {
-            'status,detail`nnot_found,metrics_summary.csv not found in public_report' | Set-Content -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Encoding UTF8
-            Copy-Item -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+            'metric,value`nstatus,not generated' | Set-Content -Path (Join-Path $runFolder 'metrics_summary.csv') -Encoding UTF8
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.csv') -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          }
+
+          if (Test-Path $metricsSummaryMdSource) {
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $runFolder 'metrics_summary.md') -Force
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $publicRunDir 'metrics_summary.md') -Force
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $latestDir 'metrics_summary.md') -Force
+          } else {
+            @(
+              '| metric | value |',
+              '| --- | --- |',
+              '| status | not generated |'
+            ) | Set-Content -Path (Join-Path $runFolder 'metrics_summary.md') -Encoding UTF8
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.md') -Destination (Join-Path $publicRunDir 'metrics_summary.md') -Force
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.md') -Destination (Join-Path $latestDir 'metrics_summary.md') -Force
           }
 
           $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
@@ -1782,6 +1828,11 @@ jobs:
               ? fs.readFileSync(evalPath, 'utf8')
               : '(EVAL_SUMMARY.txt missing)';
 
+            const metricsSummaryPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'report', 'metrics_summary.md');
+            let metricsSummaryMd = fs.existsSync(metricsSummaryPath)
+              ? fs.readFileSync(metricsSummaryPath, 'utf8')
+              : '| metric | value |\n| --- | --- |\n| status | not generated |';
+
             function findFirstFileByName(rootDir, targetName) {
               const stack = [rootDir];
               while (stack.length > 0) {
@@ -1894,10 +1945,10 @@ jobs:
             const metricsMdRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.md`;
             const metricsCsvRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.csv`;
             const metricsPlotPrefix = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/plots`;
-            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Metrics Summary (copy-paste)\n\`\`\`markdown\n${metricsSummaryMd}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
             const maxIssueBody = 60000;
             if (body.length > maxIssueBody) {
-              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Metrics Summary (copy-paste)\n\`\`\`markdown\n${metricsSummaryMd}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
               const suffix = `\n\`\`\`\n`;
               const reserve = fixedPrefix.length + suffix.length;
               const allowedReportLen = Math.max(0, maxIssueBody - reserve);
@@ -3160,18 +3211,43 @@ jobs:
 
           python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
+          $metricsOutDir = Join-Path $env:GITHUB_WORKSPACE 'temp\report'
+          $null = New-Item -Path $metricsOutDir -ItemType Directory -Force
+          $metricsMd = Join-Path $metricsOutDir 'metrics_summary.md'
+          $metricsCsv = Join-Path $metricsOutDir 'metrics_summary.csv'
+          $repoMetricsMd = Join-Path $env:REPO_ROOT 'reports\metrics_summary.md'
+          $repoMetricsCsv = Join-Path $env:REPO_ROOT 'reports\metrics_summary.csv'
+
+          if (Test-Path $repoMetricsMd) {
+            Copy-Item -Path $repoMetricsMd -Destination $metricsMd -Force
+          } else {
+            @(
+              '| metric | value |',
+              '| --- | --- |',
+              '| status | not generated |'
+            ) | Set-Content -Path $metricsMd -Encoding UTF8
+          }
+
+          if (Test-Path $repoMetricsCsv) {
+            Copy-Item -Path $repoMetricsCsv -Destination $metricsCsv -Force
+          } else {
+            'metric,value`nstatus,not generated' | Set-Content -Path $metricsCsv -Encoding UTF8
+          }
+
       - name: Publish metrics to Job Summary
         if: always()
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference='Continue'
-          Set-Location $env:REPO_ROOT
-          Add-Content $env:GITHUB_STEP_SUMMARY "## Metrics Summary"
-          if (Test-Path 'reports/metrics_summary.md') {
-            Get-Content 'reports/metrics_summary.md' | Add-Content $env:GITHUB_STEP_SUMMARY
+          $metricsMd = Join-Path $env:GITHUB_WORKSPACE 'temp\report\metrics_summary.md'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Metrics Summary"
+          if (Test-Path $metricsMd) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (Get-Content -Raw $metricsMd)
           } else {
-            Add-Content $env:GITHUB_STEP_SUMMARY 'No evaluation CSV found'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| metric | value |'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| --- | --- |'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '| status | not generated |'
           }
 
       - name: Generate CSV report (md/html + png)
@@ -3239,7 +3315,10 @@ jobs:
         with:
           name: desktop-report-${{ env.MODE }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
-          path: report/**
+          path: |
+            report/**
+            temp/report/metrics_summary.md
+            temp/report/metrics_summary.csv
 
       - name: Checkout diag-logs branch workspace (best effort)
         if: always()
@@ -3334,7 +3413,9 @@ jobs:
 
           $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
           $publicOneTapSource = Join-Path $publicReportDir 'ONE_TAP.md'
-          $publicMetricsSource = Join-Path $publicReportDir 'metrics_summary.csv'
+          $metricsSummaryDir = Join-Path $env:GITHUB_WORKSPACE 'temp\report'
+          $metricsSummaryMdSource = Join-Path $metricsSummaryDir 'metrics_summary.md'
+          $metricsSummaryCsvSource = Join-Path $metricsSummaryDir 'metrics_summary.csv'
           if (Test-Path $publicOneTapSource) {
             Copy-Item -Path $publicOneTapSource -Destination (Join-Path $publicRunDir 'ONE_TAP.md') -Force
             Copy-Item -Path $publicOneTapSource -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
@@ -3343,12 +3424,28 @@ jobs:
             Copy-Item -Path (Join-Path $publicRunDir 'ONE_TAP.md') -Destination (Join-Path $latestDir 'ONE_TAP.md') -Force
           }
 
-          if (Test-Path $publicMetricsSource) {
-            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
-            Copy-Item -Path $publicMetricsSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          if (Test-Path $metricsSummaryCsvSource) {
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $runFolder 'metrics_summary.csv') -Force
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path $metricsSummaryCsvSource -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
           } else {
-            'status,detail`nnot_found,metrics_summary.csv not found in public_report' | Set-Content -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Encoding UTF8
-            Copy-Item -Path (Join-Path $publicRunDir 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+            'metric,value`nstatus,not generated' | Set-Content -Path (Join-Path $runFolder 'metrics_summary.csv') -Encoding UTF8
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.csv') -Destination (Join-Path $publicRunDir 'metrics_summary.csv') -Force
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.csv') -Destination (Join-Path $latestDir 'metrics_summary.csv') -Force
+          }
+
+          if (Test-Path $metricsSummaryMdSource) {
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $runFolder 'metrics_summary.md') -Force
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $publicRunDir 'metrics_summary.md') -Force
+            Copy-Item -Path $metricsSummaryMdSource -Destination (Join-Path $latestDir 'metrics_summary.md') -Force
+          } else {
+            @(
+              '| metric | value |',
+              '| --- | --- |',
+              '| status | not generated |'
+            ) | Set-Content -Path (Join-Path $runFolder 'metrics_summary.md') -Encoding UTF8
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.md') -Destination (Join-Path $publicRunDir 'metrics_summary.md') -Force
+            Copy-Item -Path (Join-Path $runFolder 'metrics_summary.md') -Destination (Join-Path $latestDir 'metrics_summary.md') -Force
           }
 
           $evalMdSource = Join-Path $env:GITHUB_WORKSPACE 'temp\eval\EVAL_REPORT.md'
@@ -3703,6 +3800,11 @@ jobs:
               ? fs.readFileSync(evalPath, 'utf8')
               : '(EVAL_SUMMARY.txt missing)';
 
+            const metricsSummaryPath = path.join(process.env.GITHUB_WORKSPACE, 'temp', 'report', 'metrics_summary.md');
+            let metricsSummaryMd = fs.existsSync(metricsSummaryPath)
+              ? fs.readFileSync(metricsSummaryPath, 'utf8')
+              : '| metric | value |\n| --- | --- |\n| status | not generated |';
+
             function findFirstFileByName(rootDir, targetName) {
               const stack = [rootDir];
               while (stack.length > 0) {
@@ -3815,10 +3917,10 @@ jobs:
             const metricsMdRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.md`;
             const metricsCsvRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.csv`;
             const metricsPlotPrefix = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/plots`;
-            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Metrics Summary (copy-paste)\n\`\`\`markdown\n${metricsSummaryMd}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
             const maxIssueBody = 60000;
             if (body.length > maxIssueBody) {
-              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Metrics Summary (copy-paste)\n\`\`\`markdown\n${metricsSummaryMd}\n\`\`\`\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
               const suffix = `\n\`\`\`\n`;
               const reserve = fixedPrefix.length + suffix.length;
               const allowedReportLen = Math.max(0, maxIssueBody - reserve);
