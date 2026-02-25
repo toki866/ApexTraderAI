@@ -1099,6 +1099,11 @@ jobs:
             Copy-Item -Path $zipPath -Destination (Join-Path $artifactRoot (Split-Path -Path $zipPath -Leaf)) -Force
           }
 
+          $repoReports = Join-Path $env:REPO_ROOT 'reports'
+          if (Test-Path $repoReports) {
+            Copy-Item -Path $repoReports -Destination (Join-Path $artifactRoot 'reports') -Recurse -Force
+          }
+
           $actionsLogsZip = Join-Path $artifactRoot 'actions_logs.zip'
           if (Test-Path $actionsLogsZip) {
             Remove-Item -Path $actionsLogsZip -Force
@@ -1152,7 +1157,7 @@ jobs:
         with:
           name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: ${{ steps.stage_artifacts.outputs.artifact_zip_path }}
+          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -1186,6 +1191,44 @@ jobs:
 
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
+
+      - name: Generate metrics table
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          OUTPUT_ROOT: output
+          MODE: ${{ env.MODE }}
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $outputRoot = $env:OUTPUT_ROOT
+          }
+
+          python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
+
+      - name: Publish metrics to Job Summary
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Metrics Summary"
+          if (Test-Path 'reports/metrics_summary.md') {
+            Get-Content 'reports/metrics_summary.md' | Add-Content $env:GITHUB_STEP_SUMMARY
+          } else {
+            Add-Content $env:GITHUB_STEP_SUMMARY 'No evaluation CSV found'
+          }
 
       - name: Generate CSV report (md/html + png)
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -1344,12 +1387,29 @@ jobs:
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
           }
 
+          $metricsMdRaw = "https://raw.githubusercontent.com/${{ github.repository }}/diag-logs/latest/reports/metrics_summary.md"
+          $metricsCsvRaw = "https://raw.githubusercontent.com/${{ github.repository }}/diag-logs/latest/reports/metrics_summary.csv"
+          $metricsPlotsRaw = "https://raw.githubusercontent.com/${{ github.repository }}/diag-logs/latest/reports/plots"
           Add-Content -Path $oneTapDest -Encoding UTF8 -Value @(
             '',
             '[CSV_REPORT]',
             ("- diag_report_index={0}" -f $diagReportIndexUrl),
-            ("- diag_report_path={0}" -f $diagReportIndexRel)
+            ("- diag_report_path={0}" -f $diagReportIndexRel),
+            ("- metrics_md={0}" -f $metricsMdRaw),
+            ("- metrics_csv={0}" -f $metricsCsvRaw),
+            ("- metrics_plots={0}" -f $metricsPlotsRaw)
           )
+
+          $reportMetricsDir = Join-Path $env:REPO_ROOT 'reports'
+          $runReportsDir = Join-Path $runFolder 'reports'
+          $latestReportsDir = Join-Path $latestDir 'reports'
+          $null = New-Item -Path $latestReportsDir -ItemType Directory -Force
+          if (Test-Path $reportMetricsDir) {
+            Copy-Item -Path $reportMetricsDir -Destination $runReportsDir -Recurse -Force
+            Copy-Item -Path (Join-Path $reportMetricsDir '*') -Destination $latestReportsDir -Recurse -Force
+          } else {
+            '[WARN] reports directory missing.' | Set-Content -Path (Join-Path $latestReportsDir 'metrics_summary.md') -Encoding UTF8
+          }
 
           $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
           $publicOneTapSource = Join-Path $publicReportDir 'ONE_TAP.md'
@@ -1695,7 +1755,8 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public ONE_TAP raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/ONE_TAP.md"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/metrics_summary.csv"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.csv"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics markdown raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.md"
 
       - name: Publish diagnostics to Issue #50 (always)
         if: always()
@@ -1830,10 +1891,13 @@ jobs:
               ? 'runs/LATEST_CSV.md'
               : `runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
             const evalUrl = `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/${evalPathInBranch}`;
-            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const metricsMdRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.md`;
+            const metricsCsvRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.csv`;
+            const metricsPlotPrefix = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/plots`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
             const maxIssueBody = 60000;
             if (body.length > maxIssueBody) {
-              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
               const suffix = `\n\`\`\`\n`;
               const reserve = fixedPrefix.length + suffix.length;
               const allowedReportLen = Math.max(0, maxIssueBody - reserve);
@@ -2982,6 +3046,11 @@ jobs:
             Copy-Item -Path $zipPath -Destination (Join-Path $artifactRoot (Split-Path -Path $zipPath -Leaf)) -Force
           }
 
+          $repoReports = Join-Path $env:REPO_ROOT 'reports'
+          if (Test-Path $repoReports) {
+            Copy-Item -Path $repoReports -Destination (Join-Path $artifactRoot 'reports') -Recurse -Force
+          }
+
           $actionsLogsZip = Join-Path $artifactRoot 'actions_logs.zip'
           if (Test-Path $actionsLogsZip) {
             Remove-Item -Path $actionsLogsZip -Force
@@ -3032,7 +3101,7 @@ jobs:
         with:
           name: desktop-run-${{ env.MODE }}-${{ steps.resolve_artifacts.outputs.run_id || github.run_id }}
           if-no-files-found: warn
-          path: ${{ steps.stage_artifacts.outputs.artifact_zip_path }}
+          path: ${{ steps.stage_artifacts.outputs.artifact_path }}\**
 
       - name: Evaluate outputs (StepA/StepE best-effort) and write report
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -3066,6 +3135,44 @@ jobs:
 
           python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
+
+      - name: Generate metrics table
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          OUTPUT_ROOT: output
+          MODE: ${{ env.MODE }}
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+            if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
+              $outputRoot = Join-Path $runDir 'output'
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $outputRoot = $env:OUTPUT_ROOT
+          }
+
+          python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
+
+      - name: Publish metrics to Job Summary
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference='Continue'
+          Set-Location $env:REPO_ROOT
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Metrics Summary"
+          if (Test-Path 'reports/metrics_summary.md') {
+            Get-Content 'reports/metrics_summary.md' | Add-Content $env:GITHUB_STEP_SUMMARY
+          } else {
+            Add-Content $env:GITHUB_STEP_SUMMARY 'No evaluation CSV found'
+          }
 
       - name: Generate CSV report (md/html + png)
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -3212,6 +3319,17 @@ jobs:
               ('run_id=${{ github.run_id }}'),
               ('run_attempt=${{ github.run_attempt }}')
             ) | Set-Content -Path $oneTapDest -Encoding UTF8
+          }
+
+          $reportMetricsDir = Join-Path $env:REPO_ROOT 'reports'
+          $runReportsDir = Join-Path $runFolder 'reports'
+          $latestReportsDir = Join-Path $latestDir 'reports'
+          $null = New-Item -Path $latestReportsDir -ItemType Directory -Force
+          if (Test-Path $reportMetricsDir) {
+            Copy-Item -Path $reportMetricsDir -Destination $runReportsDir -Recurse -Force
+            Copy-Item -Path (Join-Path $reportMetricsDir '*') -Destination $latestReportsDir -Recurse -Force
+          } else {
+            '[WARN] reports directory missing.' | Set-Content -Path (Join-Path $latestReportsDir 'metrics_summary.md') -Encoding UTF8
           }
 
           $publicReportDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
@@ -3558,7 +3676,8 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public ONE_TAP raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/ONE_TAP.md"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/metrics_summary.csv"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.csv"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Public metrics markdown raw: https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.md"
 
       - name: Publish diagnostics to Issue #50 (always)
         if: always()
@@ -3693,10 +3812,13 @@ jobs:
               ? 'runs/LATEST_CSV.md'
               : `runs/${diagRunFolder}/csv/EVAL_REPORT.md`;
             const evalUrl = `${context.serverUrl}/${owner}/${repo}/blob/diag-logs/${evalPathInBranch}`;
-            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
+            const metricsMdRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.md`;
+            const metricsCsvRawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/metrics_summary.csv`;
+            const metricsPlotPrefix = `https://raw.githubusercontent.com/${owner}/${repo}/diag-logs/latest/reports/plots`;
+            let body = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n${report}\n\`\`\`\n`;
             const maxIssueBody = 60000;
             if (body.length > maxIssueBody) {
-              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
+              const fixedPrefix = `Run: ${runUrl}\nSHA: ${context.sha}\nAttempt: ${attempt}\ndiag-logs csv_index: ${csvIndexUrl}\nmetrics_md: ${metricsMdRawUrl}\nmetrics_csv: ${metricsCsvRawUrl}\nmetrics_plots_dir: ${metricsPlotPrefix}\n\n## Evaluation Summary\ndiag-logs: [${evalPathInBranch}](${evalUrl})\n\n\`\`\`text\n${evalTxt}\n\`\`\`\n\n## StepE Top 10 (EVAL_TABLE_stepE.csv)\n${stepETableMd}\n\n## StepF Summary (EVAL_TABLE_stepF.csv)\n${stepFTableMd}\n\n\`\`\`text\n`;
               const suffix = `\n\`\`\`\n`;
               const reserve = fixedPrefix.length + suffix.length;
               const allowedReportLen = Math.max(0, maxIssueBody - reserve);
