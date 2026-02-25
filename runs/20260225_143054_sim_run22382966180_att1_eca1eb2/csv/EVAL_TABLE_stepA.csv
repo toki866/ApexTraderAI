@@ -1,0 +1,2 @@
+status,summary,test_rows,test_date_start,test_date_end,missing_ohlcv_count,path
+OK,prices_test evaluated,63,2022-01-03,2022-04-01,0,C:\work\apex_work\runs\20260225_140111\output\stepA\sim\stepA_prices_test_SOXL.csv
