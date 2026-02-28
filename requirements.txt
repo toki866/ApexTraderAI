@@ -3,3 +3,5 @@ pandas
 PyYAML
 yfinance
 matplotlib
+scikit-learn
+hdbscan
