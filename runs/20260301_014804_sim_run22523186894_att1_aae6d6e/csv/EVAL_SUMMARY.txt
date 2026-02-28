@@ -1,0 +1,38 @@
+status=OK
+StepA:
+  test_rows=63
+  test_date_start=2022-01-03 test_date_end=2022-04-01
+  missing_ohlcv_count=0
+StepB:
+  prediction_files_found=3
+    - stepB_pred_close_mamba_SOXL.csv
+    - stepB_pred_path_mamba_SOXL.csv
+    - stepB_pred_time_all_SOXL.csv
+  stepB_pred_close_mamba_SOXL.csv::Pred_Close_MAMBA nn_ratio=0.9384 first_valid_date=2014-07-09 coverage_ratio_over_test=1.0000 mae=5.2983 corr=0.8719
+  stepB_pred_time_all_SOXL.csv::Pred_Close_MAMBA nn_ratio=0.9384 first_valid_date=2014-07-09 coverage_ratio_over_test=1.0000 mae=5.2983 corr=0.8719
+DPrime:
+  status=OK summary=D' state/embeddings found
+  state_count=20 embeddings_count=40
+StepE:
+  dprime_all_features_3scale::stepE_daily_log_dprime_all_features_3scale_SOXL.csv test_days=63 equity_multiple=58.1835 max_dd=-0.0049 mean_ret=0.0686 std_ret=0.0470 sharpe=23.1861
+  dprime_all_features_h01::stepE_daily_log_dprime_all_features_h01_SOXL.csv test_days=63 equity_multiple=60.1469 max_dd=-0.0032 mean_ret=0.0691 std_ret=0.0463 sharpe=23.6884
+  dprime_all_features_h02::stepE_daily_log_dprime_all_features_h02_SOXL.csv test_days=63 equity_multiple=60.0792 max_dd=-0.0013 mean_ret=0.0691 std_ret=0.0463 sharpe=23.6782
+  dprime_all_features_h03::stepE_daily_log_dprime_all_features_h03_SOXL.csv test_days=63 equity_multiple=59.6323 max_dd=-0.0041 mean_ret=0.0690 std_ret=0.0465 sharpe=23.5602
+  dprime_bnf_3scale::stepE_daily_log_dprime_bnf_3scale_SOXL.csv test_days=63 equity_multiple=57.1434 max_dd=-0.0044 mean_ret=0.0683 std_ret=0.0474 sharpe=22.8958
+  dprime_bnf_h01::stepE_daily_log_dprime_bnf_h01_SOXL.csv test_days=63 equity_multiple=60.7977 max_dd=-0.0017 mean_ret=0.0693 std_ret=0.0461 sharpe=23.8721
+  dprime_bnf_h02::stepE_daily_log_dprime_bnf_h02_SOXL.csv test_days=63 equity_multiple=60.6127 max_dd=-0.0017 mean_ret=0.0693 std_ret=0.0462 sharpe=23.8198
+  dprime_mix_3scale::stepE_daily_log_dprime_mix_3scale_SOXL.csv test_days=63 equity_multiple=57.7353 max_dd=-0.0174 mean_ret=0.0685 std_ret=0.0472 sharpe=23.0254
+  dprime_mix_h01::stepE_daily_log_dprime_mix_h01_SOXL.csv test_days=63 equity_multiple=58.8024 max_dd=-0.0025 mean_ret=0.0688 std_ret=0.0467 sharpe=23.3615
+  dprime_mix_h02::stepE_daily_log_dprime_mix_h02_SOXL.csv test_days=63 equity_multiple=58.4291 max_dd=-0.0039 mean_ret=0.0687 std_ret=0.0469 sharpe=23.2507
+StepF:
+  stepF_equity_marl_SOXL.csv test_days=63 equity_multiple=61.3149 max_dd=-0.0016 mean_ret=0.0687 std_ret=0.0472 sharpe=23.1177
+    note=Split missing: evaluated all rows as test
+Diversity:
+  status=OK max_corr=0.9947 max_match_ratio=0.0952 pairs_over_0_9999=0/45 identical_all_agents=False
+  summary=agent positions look diverse
+PLOTS:
+  equity_stepE_topN.png exists=yes
+  equity_stepF.png exists=yes
+  bar_stepE_return.png exists=yes
+  scatter_stepE_dd_vs_ret.png exists=yes
+  note=StepF_vs_best_StepE: StepF(61.3149) は best StepE(60.7977) に勝ってる
