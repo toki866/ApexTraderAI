@@ -209,8 +209,10 @@ class StepDPrimeService:
         stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
         stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
         legacy_dir = Path(cfg.legacy_stepDprime_root) if cfg.legacy_stepDprime_root else out_root / "stepD_prime" / mode
+        emb_dir = legacy_dir / "embeddings"
         stepd_dir.mkdir(parents=True, exist_ok=True)
         legacy_dir.mkdir(parents=True, exist_ok=True)
+        emb_dir.mkdir(parents=True, exist_ok=True)
 
         split = _read_split_summary(stepa_dir, cfg.symbol)
         tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
@@ -343,6 +345,33 @@ class StepDPrimeService:
             lp_te = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_test.csv"
             df_tr.to_csv(lp_tr, index=False)
             df_te.to_csv(lp_te, index=False)
+
+            emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
+
+            def _to_emb_df(df_state: pd.DataFrame) -> pd.DataFrame:
+                out = pd.DataFrame({"Date": pd.to_datetime(df_state["Date"], errors="coerce").dt.strftime("%Y-%m-%d")})
+                for i, c in enumerate(emb_cols):
+                    out[f"emb_{i:03d}"] = pd.to_numeric(df_state[c], errors="coerce").astype(float)
+                return out
+
+            df_emb_tr = _to_emb_df(df_tr)
+            df_emb_te = _to_emb_df(df_te)
+            df_emb_all = pd.concat([df_emb_tr, df_emb_te], axis=0, ignore_index=True)
+            df_emb_all["Date"] = pd.to_datetime(df_emb_all["Date"], errors="coerce")
+            df_emb_all = (
+                df_emb_all.dropna(subset=["Date"])
+                .sort_values("Date")
+                .drop_duplicates(subset=["Date"], keep="last")
+                .reset_index(drop=True)
+            )
+            df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
+
+            ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
+            ep_te = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_test.csv"
+            ep_all = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
+            df_emb_tr.to_csv(ep_tr, index=False)
+            df_emb_te.to_csv(ep_te, index=False)
+            df_emb_all.to_csv(ep_all, index=False)
 
             results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 

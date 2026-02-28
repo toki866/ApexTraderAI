@@ -220,8 +220,8 @@ class StepEService:
             print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
 
         # Prepare tensors
-        X_train, yret_train, cc_ret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
-        X_test, yret_test, cc_ret_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
+        X_train, r_soxl_train, r_soxs_train, cc_ret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
+        X_test, r_soxl_test, r_soxs_test, cc_ret_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
 
         # Standardize based on train
         mu = X_train.mean(axis=0)
@@ -241,8 +241,10 @@ class StepEService:
         # include pos_prev as an extra input feature (stateful)
         X_train_t = torch.tensor(X_train_s, dtype=torch.float32, device=device)
         X_test_t = torch.tensor(X_test_s, dtype=torch.float32, device=device)
-        r_train_t = torch.tensor(yret_train, dtype=torch.float32, device=device)
-        r_test_t = torch.tensor(yret_test, dtype=torch.float32, device=device)
+        r_soxl_train_t = torch.tensor(r_soxl_train, dtype=torch.float32, device=device)
+        r_soxl_test_t = torch.tensor(r_soxl_test, dtype=torch.float32, device=device)
+        r_soxs_train_t = torch.tensor(r_soxs_train, dtype=torch.float32, device=device)
+        r_soxs_test_t = torch.tensor(r_soxs_test, dtype=torch.float32, device=device)
 
         net = DiffPolicyNet(in_dim=X_train_t.shape[1] + 1, hidden_dim=int(cfg.hidden_dim)).to(device)
         opt = torch.optim.AdamW(net.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
@@ -258,41 +260,55 @@ class StepEService:
         def _smooth_abs(x: torch.Tensor) -> torch.Tensor:
             return torch.sqrt(x * x + float(cfg.smooth_abs_eps))
 
-        def _rollout(net_: DiffPolicyNet, X_: torch.Tensor, r_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        def _rollout(
+            net_: DiffPolicyNet,
+            X_: torch.Tensor,
+            r_soxl_: torch.Tensor,
+            r_soxs_: torch.Tensor,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """
             Sequential rollout with differentiable pos_prev dependency.
             Returns:
-              ret_net: (T,) daily net returns
+              reward_next: (T,) daily net returns
               pos:     (T,) positions
               cost:    (T,) transaction cost component
             """
             T = X_.shape[0]
             pos_prev = torch.zeros((), device=X_.device)
             pos_list = []
-            ret_list = []
+            reward_list = []
+            gross_list = []
             cost_list = []
             cost_k = float(cfg.trade_cost_bps) * 1e-4
             for t in range(T):
                 xt = torch.cat([X_[t], pos_prev.unsqueeze(0)], dim=0)
                 mu_t = net_(xt)
                 pos_t = torch.tanh(mu_t) * float(cfg.pos_limit)
+                gross = torch.relu(pos_t) * r_soxl_[t] + torch.relu(-pos_t) * r_soxs_[t]
                 # transaction cost on position change
                 cost = cost_k * _smooth_abs(pos_t - pos_prev)
-                ret_net = pos_t * r_[t] - cost - float(cfg.pos_l2) * (pos_t * pos_t)
+                reward_next = gross - cost - float(cfg.pos_l2) * (pos_t * pos_t)
                 pos_list.append(pos_t)
-                ret_list.append(ret_net)
+                reward_list.append(reward_next)
+                gross_list.append(gross)
                 cost_list.append(cost)
                 pos_prev = pos_t
             pos = torch.stack(pos_list, dim=0)
-            ret_net = torch.stack(ret_list, dim=0)
+            reward_next = torch.stack(reward_list, dim=0)
+            gross = torch.stack(gross_list, dim=0)
             cost = torch.stack(cost_list, dim=0)
-            return ret_net, pos, cost
+            return reward_next, pos, cost, gross
 
         for ep in range(1, int(cfg.epochs) + 1):
             net.train()
             opt.zero_grad()
 
-            ret_fit, _, _ = _rollout(net, X_train_t[:n_fit], r_train_t[:n_fit])
+            ret_fit, _, _, _ = _rollout(
+                net,
+                X_train_t[:n_fit],
+                r_soxl_train_t[:n_fit],
+                r_soxs_train_t[:n_fit],
+            )
             # maximize log equity: sum log(1+ret)
             obj = -torch.log1p(ret_fit).mean()
             obj.backward()
@@ -302,7 +318,12 @@ class StepEService:
             # validation
             net.eval()
             with torch.no_grad():
-                ret_val, _, _ = _rollout(net, X_train_t[n_fit:], r_train_t[n_fit:])
+                ret_val, _, _, _ = _rollout(
+                    net,
+                    X_train_t[n_fit:],
+                    r_soxl_train_t[n_fit:],
+                    r_soxs_train_t[n_fit:],
+                )
                 val_loss = float((-torch.log1p(ret_val).mean()).item())
 
             if cfg.verbose:
@@ -325,19 +346,31 @@ class StepEService:
         # Evaluate on full train + test for daily log
         net.eval()
         with torch.no_grad():
-            ret_tr_full, pos_tr_full, cost_tr_full = _rollout(net, X_train_t, r_train_t)
-            ret_te_full, pos_te_full, cost_te_full = _rollout(net, X_test_t, r_test_t)
+            ret_tr_full, pos_tr_full, cost_tr_full, gross_tr_full = _rollout(net, X_train_t, r_soxl_train_t, r_soxs_train_t)
+            ret_te_full, pos_te_full, cost_te_full, gross_te_full = _rollout(net, X_test_t, r_soxl_test_t, r_soxs_test_t)
+
+        reward_next_arr = torch.cat([ret_tr_full, ret_te_full], dim=0).cpu().numpy().astype(float)
+        pos_arr = torch.cat([pos_tr_full, pos_te_full], dim=0).cpu().numpy().astype(float)
+        cost_arr = torch.cat([cost_tr_full, cost_te_full], dim=0).cpu().numpy().astype(float)
+        gross_arr = torch.cat([gross_tr_full, gross_te_full], dim=0).cpu().numpy().astype(float)
+        cc_soxl = np.concatenate([r_soxl_train, r_soxl_test]).astype(float)
+        cc_soxs = np.concatenate([r_soxs_train, r_soxs_test]).astype(float)
 
         df_log = pd.DataFrame({
             "Date": pd.to_datetime(list(dates_train) + list(dates_test)),
             "Split": (["train"] * len(dates_train)) + (["test"] * len(dates_test)),
-            "pos": torch.cat([pos_tr_full, pos_te_full], dim=0).cpu().numpy().astype(float),
-            "ret": torch.cat([ret_tr_full, ret_te_full], dim=0).cpu().numpy().astype(float),
-            "cc_ret_next": np.concatenate([cc_ret_train, cc_ret_test]).astype(float),
-            "cost": torch.cat([cost_tr_full, cost_te_full], dim=0).cpu().numpy().astype(float),
+            "pos": pos_arr,
+            "reward_next": reward_next_arr,
+            "cc_ret_next_soxl": cc_soxl,
+            "cc_ret_next_soxs": cc_soxs,
+            "cost": cost_arr,
         })
         df_log["ratio"] = df_log["pos"]
-        df_log["reward_next"] = df_log["ret"]
+        df_log["abs_ratio"] = df_log["ratio"].abs()
+        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["cc_ret_next_soxl"], np.where(df_log["ratio"] < -1e-8, df_log["cc_ret_next_soxs"], 0.0))
+        df_log["underlying"] = np.where(df_log["ratio"] > 1e-8, "SOXL", np.where(df_log["ratio"] < -1e-8, "SOXS", "NONE"))
+        df_log["gross"] = gross_arr
+        df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
         df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
 
         # Also provide Action/Position columns for StepF compatibility
@@ -345,7 +378,7 @@ class StepEService:
         df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
 
         # Test-only equity file (kept small)
-        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity"]].copy().reset_index(drop=True)
+        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity", "reward_next"]].copy().reset_index(drop=True)
         # Reset equity at the start of the test window (initial capital = 1.0)
         if len(df_eq) > 0:
             df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
@@ -397,16 +430,26 @@ class StepEService:
 
     def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
+        df_soxs = self._load_symbol_prices(out_root=out_root, mode=mode, symbol="SOXS", required=False)
+        if df_soxs.empty and symbol.upper() == "SOXS":
+            df_soxs = df_prices[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
+        elif not df_soxs.empty:
+            df_soxs = df_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
 
         if cfg.use_dprime_state:
             df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol)
             df = df_state.merge(
-                df_prices[["Date", "Open", "High", "Low", "Close", "Volume"]],
+                df_prices[["Date", "Open", "High", "Low", "Close", "Volume", "price_exec"]],
                 on="Date",
                 how="left",
             )
         else:
             df = df_prices.copy()
+
+        if not df_soxs.empty:
+            df = df.merge(df_soxs, on="Date", how="left")
+        else:
+            df["price_exec_soxs"] = np.nan
         used_manifest: dict[str, object] = {}
 
         if not cfg.use_dprime_state:
@@ -453,14 +496,45 @@ class StepEService:
         return df, used_manifest
 
     def _load_stepA_prices(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+        df = self._load_symbol_prices(out_root=out_root, mode=mode, symbol=symbol, required=True)
+        return df.sort_values("Date").reset_index(drop=True)
+
+    def _price_col_name(self, df: pd.DataFrame) -> str:
+        for c in ("P_eff", "Close_eff", "price_eff", "close_eff", "Close"):
+            if c in df.columns:
+                return c
+        raise KeyError("No usable price column found. Expected one of P_eff/Close_eff/Close.")
+
+    def _load_symbol_prices(self, out_root: Path, mode: str, symbol: str, required: bool = True) -> pd.DataFrame:
         base = out_root / "stepA" / mode
         p_tr = base / f"stepA_prices_train_{symbol}.csv"
         p_te = base / f"stepA_prices_test_{symbol}.csv"
-        if not (p_tr.exists() and p_te.exists()):
-            raise FileNotFoundError(f"Missing StepA prices: {p_tr} / {p_te}")
-        df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        return df.sort_values("Date").reset_index(drop=True)
+        frames = []
+        if p_tr.exists() and p_te.exists():
+            frames = [pd.read_csv(p_tr), pd.read_csv(p_te)]
+        else:
+            roots = []
+            for attr in ("data_dir", "data_root"):
+                v = getattr(self.app_config, attr, None)
+                if v:
+                    roots.append(Path(v))
+            for root in roots:
+                cand = root / f"prices_{symbol}.csv"
+                if cand.exists():
+                    frames = [pd.read_csv(cand)]
+                    break
+        if not frames:
+            if required:
+                raise FileNotFoundError(f"Missing prices for {symbol} in StepA output and app_config data roots")
+            return pd.DataFrame(columns=["Date", "price_exec"])
+
+        df = pd.concat(frames, axis=0, ignore_index=True)
+        if "Date" not in df.columns:
+            raise KeyError(f"prices_{symbol}.csv missing Date column")
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+        pcol = self._price_col_name(df)
+        df["price_exec"] = pd.to_numeric(df[pcol], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        return df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
     def _load_stepD_prime_state(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
@@ -519,18 +593,43 @@ class StepEService:
 
     def _load_stepD_prime_embeddings(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         """
-        Load and merge multiple (source, horizon) embedding CSVs.
-        Accepts preferred "_embeddings_all.csv" name first.
+        Load embeddings with profile-first resolution. If profile is missing, fallback to
+        source/horizon style for backward compatibility.
         """
         base = out_root / "stepD_prime" / mode / "embeddings"
 
+        profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
+        merged: Optional[pd.DataFrame] = None
+
+        def _read_one(path: Path, prefix: str) -> pd.DataFrame:
+            df = pd.read_csv(path)
+            date_col = next((c for c in df.columns if str(c).strip().lower() == "date"), df.columns[0])
+            if date_col != "Date":
+                df = df.rename(columns={date_col: "Date"})
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+            emb_cols = sorted([c for c in df.columns if str(c).startswith("emb_")])
+            if not emb_cols:
+                raise RuntimeError(f"{path} has no emb_* columns")
+            sub = df[["Date"] + emb_cols].copy()
+            sub = sub.rename(columns={c: f"dprime_{prefix}_emb_{i:03d}" for i, c in enumerate(emb_cols)})
+            return sub
+
+        if profile:
+            p_all = base / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
+            if p_all.exists():
+                return _read_one(p_all, profile).sort_values("Date").reset_index(drop=True)
+            p_tr = base / f"stepDprime_{profile}_{symbol}_embeddings_train.csv"
+            p_te = base / f"stepDprime_{profile}_{symbol}_embeddings_test.csv"
+            if p_tr.exists() and p_te.exists():
+                d0 = _read_one(p_tr, profile)
+                d1 = _read_one(p_te, profile)
+                return pd.concat([d0, d1], axis=0, ignore_index=True).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+
         sources = [s.strip() for s in (cfg.dprime_sources or "").split(",") if s.strip()]
         horizons = [int(x) for x in (cfg.dprime_horizons or "1").split(",") if str(x).strip()]
-
         if not sources:
-            raise ValueError("dprime_sources is empty while use_stepd_prime=True")
+            raise ValueError("dprime_profile/dprime_sources are empty while use_stepd_prime=True")
 
-        merged: Optional[pd.DataFrame] = None
         for src in sources:
             for h in horizons:
                 hh = f"h{int(h):02d}"
@@ -540,62 +639,11 @@ class StepEService:
                     base / f"stepDprime_{src}_{hh}_{symbol}_embeddings_test.csv",
                     base / f"stepDprime_{src}_{hh}_{symbol}_embeddings_train.csv",
                 ]
-                p = None
-                for q in cands:
-                    if q.exists():
-                        p = q
-                        break
+                p = next((q for q in cands if q.exists()), None)
                 if p is None:
                     raise FileNotFoundError(f"Missing StepD' embeddings: expected one of {cands[0].name} ... under {base}")
-
-                df = pd.read_csv(p)
-
-                # Robustly locate the date column (older/newer exporters may use different names)
-                date_col = None
-                for c in df.columns:
-                    if str(c).strip().lower() == "date":
-                        date_col = c
-                        break
-                if date_col is None:
-                    for c in df.columns:
-                        lc = str(c).strip().lower()
-                        if lc.startswith("date"):
-                            date_col = c
-                            break
-                if date_col is None:
-                    for c in df.columns:
-                        lc = str(c).strip().lower()
-                        if "date" in lc:
-                            date_col = c
-                            break
-                if date_col is None:
-                    # last resort: assume first column is date-like
-                    date_col = df.columns[0]
-                if date_col != "Date":
-                    df = df.rename(columns={date_col: "Date"})
-
-                df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-                bad = df["Date"].isna().mean()
-                if bad > 0.01:
-                    # help debugging when Date parsing fails (common root cause of all-zero merges)
-                    sample = df.iloc[:5, :1].to_dict(orient="records")
-                    raise RuntimeError(f"{p} Date parse failed (NaT ratio={bad:.3f}). First rows: {sample}")
-                df["Date"] = df["Date"].dt.normalize()
-
-                emb_cols = [c for c in df.columns if c.startswith("emb_")]
-                if not emb_cols:
-                    raise RuntimeError(f"{p} has no emb_* columns. Please regenerate with the patched script.")
-
-                emb_cols = sorted(emb_cols)
-                sub = df[["Date"] + emb_cols].copy()
-
-                rename = {c: f"dprime_{src}_{hh}_emb_{i:03d}" for i, c in enumerate(emb_cols)}
-                sub = sub.rename(columns=rename)
-
-                if merged is None:
-                    merged = sub
-                else:
-                    merged = merged.merge(sub, on="Date", how="outer")
+                sub = _read_one(p, f"{src}_{hh}")
+                merged = sub if merged is None else merged.merge(sub, on="Date", how="outer")
 
         assert merged is not None
         merged = merged.sort_values("Date").reset_index(drop=True)
@@ -649,23 +697,18 @@ class StepEService:
         out = dprime_cols + [c for c in all_num if c not in dprime_cols]
         return out
 
-    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         df2 = df.copy()
         df2 = df2.sort_values("Date").reset_index(drop=True)
 
         X = df2[obs_cols].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
-        # Reward return basis (leak-safe):
-        #   reward for decision on Date=D is realized on D+1 (no same-day profit).
-        #   use Close(D+1)/Close(D)-1 as the market return applied to pos(D).
-        # Note: last row has no D+1, so it becomes 0.0 after fillna.
-        if "Close" in df2.columns:
-            r_ser = (df2["Close"].shift(-1) / df2["Close"] - 1.0)
-        else:
-            r_ser = df2["oc_ret"]
-        r = r_ser.astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
-        cc_ret_next = r.copy()
+        p_soxl = pd.to_numeric(df2["price_exec"], errors="coerce")
+        p_soxs = pd.to_numeric(df2.get("price_exec_soxs", np.nan), errors="coerce")
+        r_soxl = (p_soxl.shift(-1) / p_soxl - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
+        r_soxs = (p_soxs.shift(-1) / p_soxs - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
+        cc_ret_next = r_soxl.copy()
         dates = df2["Date"].to_numpy()
-        return X, r, cc_ret_next, dates
+        return X, r_soxl, r_soxs, cc_ret_next, dates
 
     # -----------------------
     # Metrics

@@ -117,11 +117,18 @@ class StepFService:
         # load prices (train+test)
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
         df_prices = df_prices.sort_values("Date").reset_index(drop=True)
-        df_prices["oc_ret"] = df_prices["Close"].astype(float) / df_prices["Open"].astype(float).replace(0, np.nan) - 1.0
-        df_prices["oc_ret"] = df_prices["oc_ret"].replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
-        # Return must be based on next-day Close (Close_eff fallback not available here)
-        _ce = df_prices["Close"].astype(float)
-        df_prices["cc_ret_next"] = (_ce.shift(-1) / _ce - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
+        df_soxs = self._load_symbol_prices(out_root=out_root, mode=mode, symbol="SOXS", required=False)
+        if df_soxs.empty and symbol.upper() == "SOXS":
+            df_soxs = df_prices[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
+        elif not df_soxs.empty:
+            df_soxs = df_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
+        else:
+            df_soxs = pd.DataFrame(columns=["Date", "price_exec_soxs"])
+        df_prices = df_prices.merge(df_soxs, on="Date", how="left")
+        p_soxl = pd.to_numeric(df_prices["price_exec"], errors="coerce")
+        p_soxs = pd.to_numeric(df_prices["price_exec_soxs"], errors="coerce")
+        df_prices["cc_ret_next_soxl"] = (p_soxl.shift(-1) / p_soxl - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
+        df_prices["cc_ret_next_soxs"] = (p_soxs.shift(-1) / p_soxs - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(float)
 
         train_start = pd.to_datetime(getattr(date_range, "train_start"))
         train_end = pd.to_datetime(getattr(date_range, "train_end"))
@@ -187,8 +194,10 @@ class StepFService:
         X_train = torch.tensor(df_train[feature_cols].to_numpy(dtype=np.float32), device=device)
         X_test = torch.tensor(df_test[feature_cols].to_numpy(dtype=np.float32), device=device)
 
-        r_train = torch.tensor(df_train["cc_ret_next"].to_numpy(dtype=np.float32), device=device)
-        r_test = torch.tensor(df_test["cc_ret_next"].to_numpy(dtype=np.float32), device=device)
+        r_soxl_train = torch.tensor(df_train["cc_ret_next_soxl"].to_numpy(dtype=np.float32), device=device)
+        r_soxl_test = torch.tensor(df_test["cc_ret_next_soxl"].to_numpy(dtype=np.float32), device=device)
+        r_soxs_train = torch.tensor(df_train["cc_ret_next_soxs"].to_numpy(dtype=np.float32), device=device)
+        r_soxs_test = torch.tensor(df_test["cc_ret_next_soxs"].to_numpy(dtype=np.float32), device=device)
 
         gate = GateNet(n_agents=len(agents), in_dim=len(feature_cols), hidden_dim=int(cfg.hidden_dim)).to(device)
         opt = torch.optim.AdamW(gate.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
@@ -204,7 +213,7 @@ class StepFService:
         def _smooth_abs(x: torch.Tensor) -> torch.Tensor:
             return torch.sqrt(x * x + float(cfg.smooth_abs_eps))
 
-        def _rollout(g: GateNet, X_: torch.Tensor, r_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        def _rollout(g: GateNet, X_: torch.Tensor, r_soxl_: torch.Tensor, r_soxs_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             n_agents = int(g.n_agents)
             if X_.ndim != 2 or X_.shape[1] < n_agents:
                 raise RuntimeError(f"StepF invalid X shape={X_.shape}, n_agents={n_agents}")
@@ -212,7 +221,9 @@ class StepFService:
             pos_prev = torch.zeros((), device=X_.device)
             pos_list = []
             w_list = []
-            ret_list = []
+            reward_list = []
+            cost_list = []
+            gross_list = []
             cost_k = float(cfg.trade_cost_bps) * 1e-4
             for t in range(T):
                 logits = g(X_[t])
@@ -220,21 +231,26 @@ class StepFService:
                 pos_vec = X_[t][:n_agents]
                 pos_t = torch.sum(w * pos_vec)
                 pos_t = torch.clamp(pos_t, -float(cfg.pos_limit), float(cfg.pos_limit))
+                gross = torch.relu(pos_t) * r_soxl_[t] + torch.relu(-pos_t) * r_soxs_[t]
                 cost = cost_k * _smooth_abs(pos_t - pos_prev)
-                ret_net = pos_t * r_[t] - cost - float(cfg.pos_l2) * (pos_t * pos_t)
+                ret_net = gross - cost - float(cfg.pos_l2) * (pos_t * pos_t)
                 pos_list.append(pos_t)
                 w_list.append(w)
-                ret_list.append(ret_net)
+                reward_list.append(ret_net)
+                cost_list.append(cost)
+                gross_list.append(gross)
                 pos_prev = pos_t
             pos = torch.stack(pos_list, dim=0)
             W = torch.stack(w_list, dim=0)
-            ret_net = torch.stack(ret_list, dim=0)
-            return ret_net, pos, W
+            ret_net = torch.stack(reward_list, dim=0)
+            cost = torch.stack(cost_list, dim=0)
+            gross = torch.stack(gross_list, dim=0)
+            return ret_net, pos, W, cost, gross
 
         for ep in range(1, int(cfg.epochs) + 1):
             gate.train()
             opt.zero_grad()
-            ret_fit, _, _ = _rollout(gate, X_train[:n_fit], r_train[:n_fit])
+            ret_fit, _, _, _, _ = _rollout(gate, X_train[:n_fit], r_soxl_train[:n_fit], r_soxs_train[:n_fit])
             loss = -torch.log1p(ret_fit).mean()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(gate.parameters(), 1.0)
@@ -242,7 +258,7 @@ class StepFService:
 
             gate.eval()
             with torch.no_grad():
-                ret_val, _, _ = _rollout(gate, X_train[n_fit:], r_train[n_fit:])
+                ret_val, _, _, _, _ = _rollout(gate, X_train[n_fit:], r_soxl_train[n_fit:], r_soxs_train[n_fit:])
                 val_loss = float((-torch.log1p(ret_val).mean()).item())
 
             if cfg.verbose:
@@ -265,24 +281,41 @@ class StepFService:
         # evaluate full train+test for daily log
         gate.eval()
         with torch.no_grad():
-            ret_tr, pos_tr, W_tr = _rollout(gate, X_train, r_train)
-            ret_te, pos_te, W_te = _rollout(gate, X_test, r_test)
+            ret_tr, pos_tr, W_tr, cost_tr, gross_tr = _rollout(gate, X_train, r_soxl_train, r_soxs_train)
+            ret_te, pos_te, W_te, cost_te, gross_te = _rollout(gate, X_test, r_soxl_test, r_soxs_test)
 
         # build logs
+        all_pos = torch.cat([pos_tr, pos_te], dim=0).cpu().numpy().astype(float)
+        all_reward_next = torch.cat([ret_tr, ret_te], dim=0).cpu().numpy().astype(float)
+        all_cost = torch.cat([cost_tr, cost_te], dim=0).cpu().numpy().astype(float)
+        all_gross = torch.cat([gross_tr, gross_te], dim=0).cpu().numpy().astype(float)
         df_log = pd.DataFrame({
             "Date": pd.to_datetime(list(df_train["Date"].to_numpy()) + list(df_test["Date"].to_numpy())),
             "Split": (["train"] * len(df_train)) + (["test"] * len(df_test)),
-            "pos": torch.cat([pos_tr, pos_te], dim=0).cpu().numpy().astype(float),
-            "ret": torch.cat([ret_tr, ret_te], dim=0).cpu().numpy().astype(float),
+            "pos": all_pos,
+            "ratio": all_pos,
+            "reward_next": all_reward_next,
+            "cost": all_cost,
+            "gross": all_gross,
+            "cc_ret_next_soxl": np.concatenate([df_train["cc_ret_next_soxl"].to_numpy(), df_test["cc_ret_next_soxl"].to_numpy()]).astype(float),
+            "cc_ret_next_soxs": np.concatenate([df_train["cc_ret_next_soxs"].to_numpy(), df_test["cc_ret_next_soxs"].to_numpy()]).astype(float),
         })
+        df_log["abs_ratio"] = df_log["ratio"].abs()
+        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["cc_ret_next_soxl"], np.where(df_log["ratio"] < -1e-8, df_log["cc_ret_next_soxs"], 0.0))
+        df_log["underlying"] = np.where(df_log["ratio"] > 1e-8, "SOXL", np.where(df_log["ratio"] < -1e-8, "SOXS", "NONE"))
+        df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
         df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
+        df_log["Position"] = df_log["pos"]
+        df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
 
         # add weights columns
         W = torch.cat([W_tr, W_te], dim=0).cpu().numpy()
         for i, a in enumerate(agents):
             df_log[f"w_{a}"] = W[:, i].astype(float)
 
-        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity"]].copy().reset_index(drop=True)
+        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity", "reward_next"]].copy().reset_index(drop=True)
+        if len(df_eq) > 0:
+            df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
 
         eq_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
         log_path = out_dir / f"stepF_daily_log_marl_{symbol}.csv"
@@ -326,14 +359,44 @@ class StepFService:
     # -----------------------
 
     def _load_stepA_prices(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+        return self._load_symbol_prices(out_root=out_root, mode=mode, symbol=symbol, required=True)
+
+    def _price_col_name(self, df: pd.DataFrame) -> str:
+        for c in ("P_eff", "Close_eff", "price_eff", "close_eff", "Close"):
+            if c in df.columns:
+                return c
+        raise KeyError("No usable price column found. Expected one of P_eff/Close_eff/Close.")
+
+    def _load_symbol_prices(self, out_root: Path, mode: str, symbol: str, required: bool = True) -> pd.DataFrame:
         base = out_root / "stepA" / mode
         p_tr = base / f"stepA_prices_train_{symbol}.csv"
         p_te = base / f"stepA_prices_test_{symbol}.csv"
-        if not (p_tr.exists() and p_te.exists()):
-            raise FileNotFoundError(f"Missing StepA prices: {p_tr} / {p_te}")
-        df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        return df
+        frames = []
+        if p_tr.exists() and p_te.exists():
+            frames = [pd.read_csv(p_tr), pd.read_csv(p_te)]
+        else:
+            roots = []
+            for attr in ("data_dir", "data_root"):
+                v = getattr(self.app_config, attr, None)
+                if v:
+                    roots.append(Path(v))
+            for root in roots:
+                cand = root / f"prices_{symbol}.csv"
+                if cand.exists():
+                    frames = [pd.read_csv(cand)]
+                    break
+        if not frames:
+            if required:
+                raise FileNotFoundError(f"Missing prices for {symbol} in StepA output and app_config data roots")
+            return pd.DataFrame(columns=["Date", "price_exec"])
+
+        df = pd.concat(frames, axis=0, ignore_index=True)
+        if "Date" not in df.columns:
+            raise KeyError(f"prices_{symbol}.csv missing Date")
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+        pcol = self._price_col_name(df)
+        df["price_exec"] = pd.to_numeric(df[pcol], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        return df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
     def _load_stepE_daily_log(self, out_root: Path, mode: str, symbol: str, agent: str) -> pd.DataFrame:
         p = out_root / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
@@ -395,7 +458,7 @@ class StepFService:
             "gap", "Gap", "atr_norm", "ATR_norm", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio",
             "vol_log_ratio_20", "dev_z_25", "bnf_score", "RSI", "MACD_hist",
         ]
-        reserved = {"Date", "Open", "High", "Low", "Close", "Volume", "oc_ret", "cc_ret_next", "Split"}
+        reserved = {"Date", "Open", "High", "Low", "Close", "Volume", "oc_ret", "cc_ret_next", "cc_ret_next_soxl", "cc_ret_next_soxs", "Split"}
 
         p = str(profile or "minimal").strip().lower()
         if p == "all":
