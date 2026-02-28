@@ -375,7 +375,7 @@ def _jsonify(x: Any) -> Any:
 
 def _parse_horizons(cfg: Any) -> List[int]:
     if _is_periodic_variant(cfg):
-        hz = _get(cfg, 'periodic_snapshot_horizons', (20,))
+        hz = _get(cfg, 'periodic_snapshot_horizons', (1, 5, 10, 20))
     else:
         hz = _get(cfg, 'horizons', (1, 5, 10, 20))
     if isinstance(hz, (list, tuple)):
@@ -450,25 +450,68 @@ def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp,
     return train_start, train_end, test_start, test_end, mode
 
 
-def _build_model(input_dim: int, hidden_dim: int, out_dim: int):
+def _build_model(input_dim: int, hidden_dim: int, out_dim: int, num_layers: int = 2):
+    import torch
     import torch.nn as nn
 
-    class SimpleSeqModel(nn.Module):
-        def __init__(self, input_dim: int, hidden_dim: int, out_dim: int) -> None:
+    class FallbackMambaBlock(nn.Module):
+        """Pure PyTorch SSM-like fallback block (non-GRU/Transformer)."""
+
+        def __init__(self, d_model: int) -> None:
             super().__init__()
-            self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
-            self.head = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, out_dim),
-            )
+            self.in_proj = nn.Linear(d_model, d_model * 2)
+            self.a = nn.Parameter(torch.randn(d_model) * 0.02)
+            self.b = nn.Parameter(torch.randn(d_model) * 0.02)
+            self.c = nn.Parameter(torch.randn(d_model) * 0.02)
+            self.out_proj = nn.Linear(d_model, d_model)
 
-        def forward(self, x):
-            _, h = self.rnn(x)  # h: (1, B, H)
-            h = h[-1]
-            return self.head(h)
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            u, g = self.in_proj(x).chunk(2, dim=-1)
+            g = torch.sigmoid(g)
+            bsz, tlen, dim = u.shape
+            state = torch.zeros((bsz, dim), device=x.device, dtype=x.dtype)
+            outs: List[torch.Tensor] = []
+            a = -torch.nn.functional.softplus(self.a)
+            b = torch.tanh(self.b)
+            c = torch.tanh(self.c)
+            for t in range(tlen):
+                ut = u[:, t, :]
+                state = torch.exp(a) * state + b * ut
+                yt = c * state
+                outs.append((yt * g[:, t, :]).unsqueeze(1))
+            y = torch.cat(outs, dim=1)
+            return self.out_proj(y)
 
-    return SimpleSeqModel(input_dim, hidden_dim, out_dim)
+    class MambaSeqModel(nn.Module):
+        def __init__(self, input_dim: int, hidden_dim: int, out_dim: int, num_layers: int) -> None:
+            super().__init__()
+            self.in_proj = nn.Linear(input_dim, hidden_dim)
+            self.norm_in = nn.LayerNorm(hidden_dim)
+            self.layers = nn.ModuleList()
+            self.has_mamba_ssm = False
+            try:
+                from mamba_ssm import Mamba  # type: ignore
+
+                for _ in range(int(max(1, num_layers))):
+                    self.layers.append(
+                        nn.Sequential(
+                            nn.LayerNorm(hidden_dim),
+                            Mamba(d_model=hidden_dim, d_state=16, d_conv=4, expand=2),
+                        )
+                    )
+                self.has_mamba_ssm = True
+            except Exception:
+                for _ in range(int(max(1, num_layers))):
+                    self.layers.append(nn.Sequential(nn.LayerNorm(hidden_dim), FallbackMambaBlock(hidden_dim)))
+            self.head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, out_dim))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = self.norm_in(self.in_proj(x))
+            for layer in self.layers:
+                h = h + layer(h)
+            return self.head(h[:, -1, :])
+
+    return MambaSeqModel(input_dim, hidden_dim, out_dim, num_layers=num_layers)
 
 
 def _scan_stepa_daily_dir(out_root: Path, mode: str, symbol: str, override_dir: Optional[str]) -> List[Tuple[pd.Timestamp, Path]]:
@@ -689,7 +732,7 @@ def run_mamba_multi_model_by_horizon(
 
         y_train = np.array(y_list, dtype=np.float32)
 
-        model = _build_model(input_dim=X_train.shape[2], hidden_dim=hidden_dim, out_dim=H).to(device)
+        model = _build_model(input_dim=X_train.shape[2], hidden_dim=hidden_dim, out_dim=H, num_layers=int(_get(cfg, "num_layers", 2))).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         loss_fn = nn.MSELoss()
 
@@ -807,7 +850,7 @@ def run_mamba_multi_model_by_horizon(
                 # older torch without weights_only
                 pack = torch.load(pack_path, map_location=device)
             state = pack["state_dict"] if isinstance(pack, dict) and ("state_dict" in pack) else pack
-            mdl = _build_model(input_dim=input_dim, hidden_dim=hidden_dim, out_dim=H).to(device)
+            mdl = _build_model(input_dim=input_dim, hidden_dim=hidden_dim, out_dim=H, num_layers=int(_get(cfg, "num_layers", 2))).to(device)
             mdl.load_state_dict(state)
             mdl.eval()
             model_cache[H] = mdl
@@ -920,6 +963,68 @@ def run_mamba_multi_model_by_horizon(
             df_mani.to_csv(mani_path, index=False, encoding="utf-8")
             print(f"[StepB:mamba] wrote daily manifest -> {mani_path} rows={len(df_mani)}")
 
+    pred_future_periodic_path: Optional[Path] = None
+    if is_periodic and mode == "live" and int(_get(cfg, "live_future_bdays", 0)) > 0:
+        future_bdays = int(_get(cfg, "live_future_bdays", 63))
+        model_h1_path = stepb_dir / "models" / f"{out_tag}_h01.pt"
+        try:
+            pack_h1 = torch.load(model_h1_path, map_location=device, weights_only=True)
+        except TypeError:
+            pack_h1 = torch.load(model_h1_path, map_location=device)
+        state_h1 = pack_h1["state_dict"] if isinstance(pack_h1, dict) and ("state_dict" in pack_h1) else pack_h1
+        h1_model = _build_model(input_dim=final_dim, hidden_dim=hidden_dim, out_dim=1, num_layers=int(_get(cfg, "num_layers", 2))).to(device)
+        h1_model.load_state_dict(state_h1)
+        h1_model.eval()
+
+        fdf = df_f.copy()
+        fdf["Date"] = pd.to_datetime(fdf["Date"], errors="coerce")
+        fdf = fdf.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+        missing_cols = [c for c in feature_cols if c not in fdf.columns]
+        if missing_cols:
+            raise RuntimeError(f"periodic future requires missing feature columns: {missing_cols[:5]}")
+        fdf[feature_cols] = fdf[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().bfill()
+
+        last_known_price_date = max(close_of_date.keys())
+        future_dates = [pd.Timestamp(d).normalize() for d in fdf["Date"].tolist() if pd.Timestamp(d).normalize() > last_known_price_date]
+        future_dates = future_dates[:future_bdays]
+        if len(future_dates) < future_bdays:
+            raise RuntimeError(f"Insufficient periodic future dates: {len(future_dates)} < {future_bdays}")
+
+        anchor_date = pd.Timestamp(last_known_price_date).normalize()
+        anchor_close = float(close_of_date[last_known_price_date])
+        rows_future: List[Dict[str, Any]] = []
+
+        for tgt_date in future_dates:
+            hist = fdf[fdf["Date"] <= anchor_date].tail(lookback_days)
+            if len(hist) < lookback_days:
+                raise RuntimeError(f"Insufficient periodic window at {anchor_date.date()}: {len(hist)} < {lookback_days}")
+            Xw = hist[feature_cols].to_numpy(dtype=np.float32)
+            if standardize and mu is not None and sd is not None:
+                Xw = (Xw - mu.astype(np.float32)) / sd.astype(np.float32)
+            if wavelet_enabled:
+                close_seq = np.full((lookback_days,), float(anchor_close), dtype=np.float32)
+                Xw = _append_wavelet_to_seq(Xw, close_seq)
+
+            xb = torch.from_numpy(Xw[None, :, :]).to(device)
+            with torch.no_grad():
+                yhat = h1_model(xb).detach().cpu().numpy().reshape(-1)
+
+            pred_y = float(yhat[0])
+            pred_close = float(_target_inverse(pred_y, anchor_close, target_mode))
+            rows_future.append({
+                "Date_anchor": anchor_date.strftime("%Y-%m-%d"),
+                "Date_target": pd.Timestamp(tgt_date).strftime("%Y-%m-%d"),
+                "Pred_y_from_anchor": pred_y,
+                "target_mode": target_mode,
+                "Close_anchor": anchor_close,
+                "Pred_Close": pred_close,
+            })
+            anchor_date = pd.Timestamp(tgt_date).normalize()
+            anchor_close = pred_close
+
+        pred_future_periodic_path = stepb_dir / f"stepB_pred_future_periodic_{sym}.csv"
+        pd.DataFrame(rows_future).to_csv(pred_future_periodic_path, index=False, encoding="utf-8-sig")
+
     # ---- Write outputs ----
     pred_close_path = stepb_dir / f"stepB_pred_close_{out_tag}_{sym}.csv"
     pred_path_path = stepb_dir / f"stepB_pred_path_{out_tag}_{sym}.csv"
@@ -959,8 +1064,9 @@ def run_mamba_multi_model_by_horizon(
         "batch_size": batch_size,
         "lr": lr,
         "hidden_dim": hidden_dim,
-        "model_arch": "GRU",
-        "model_name": "SimpleSeqModel(GRU)",
+        "model_arch": "Mamba",
+        "model_name": "Mamba",
+        "backend": str(_get(cfg, "backend", "mamba")),
         "standardize": standardize,
         "train_samples_by_h": train_samples_by_h,
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
@@ -970,6 +1076,7 @@ def run_mamba_multi_model_by_horizon(
             "pred_path": str(pred_path_path),
             "delta": str(delta_path),
             "meta": str(meta_path),
+            "pred_future_periodic": (str(pred_future_periodic_path) if pred_future_periodic_path else ""),
         },
     }
     meta_path.write_text(json.dumps(_jsonify(meta), indent=2, ensure_ascii=False), encoding="utf-8")
@@ -984,6 +1091,7 @@ def run_mamba_multi_model_by_horizon(
             "pred_path": str(pred_path_path),
             "delta": str(delta_path),
             "meta": str(meta_path),
+            "pred_future_periodic": (str(pred_future_periodic_path) if pred_future_periodic_path else ""),
         },
         metrics={
             "daily_manifest_rows": int(len(manifest_rows)),
