@@ -323,33 +323,30 @@ def _parse_steps(s: str) -> Tuple[str, ...]:
 _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
     "dprime_bnf_h01",
     "dprime_bnf_h02",
-    "dprime_bnf_h03",
+    "dprime_bnf_3scale",
+    "dprime_mix_h01",
+    "dprime_mix_h02",
+    "dprime_mix_3scale",
     "dprime_all_features_h01",
     "dprime_all_features_h02",
     "dprime_all_features_h03",
-    "dprime_mix_h01",
-    "dprime_bnf_3scale",
     "dprime_all_features_3scale",
-    "dprime_mix_3scale",
 )
 
 
 def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
     """Return deterministic StepE expert specs for the official 10-agent set."""
     return [
-        # StepDPrime currently emits source=mamba for horizons 1/5/10/20.
-        # Keep historical agent names for compatibility, but align load targets
-        # so StepE expects existing artifacts and does not crash in headless runs.
-        {"agent": "dprime_bnf_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A", "dprime_state_variant": "bnf"},
-        {"agent": "dprime_bnf_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B", "dprime_state_variant": "bnf"},
-        {"agent": "dprime_bnf_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C", "dprime_state_variant": "bnf"},
-        {"agent": "dprime_all_features_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "A", "dprime_state_variant": "all_features"},
-        {"agent": "dprime_all_features_h02", "dprime_sources": "mamba", "dprime_horizons": "5", "obs_profile": "B", "dprime_state_variant": "all_features"},
-        {"agent": "dprime_all_features_h03", "dprime_sources": "mamba", "dprime_horizons": "10", "obs_profile": "C", "dprime_state_variant": "all_features"},
-        {"agent": "dprime_mix_h01", "dprime_sources": "mamba", "dprime_horizons": "1", "obs_profile": "D", "dprime_state_variant": "mix"},
-        {"agent": "dprime_bnf_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "bnf"},
-        {"agent": "dprime_all_features_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "all_features"},
-        {"agent": "dprime_mix_3scale", "dprime_sources": "mamba", "dprime_horizons": "20", "obs_profile": "D", "dprime_state_variant": "mix"},
+        {"agent": "dprime_bnf_h01", "obs_profile": "D", "dprime_profile": "dprime_bnf_h01"},
+        {"agent": "dprime_bnf_h02", "obs_profile": "D", "dprime_profile": "dprime_bnf_h02"},
+        {"agent": "dprime_bnf_3scale", "obs_profile": "D", "dprime_profile": "dprime_bnf_3scale"},
+        {"agent": "dprime_mix_h01", "obs_profile": "D", "dprime_profile": "dprime_mix_h01"},
+        {"agent": "dprime_mix_h02", "obs_profile": "D", "dprime_profile": "dprime_mix_h02"},
+        {"agent": "dprime_mix_3scale", "obs_profile": "D", "dprime_profile": "dprime_mix_3scale"},
+        {"agent": "dprime_all_features_h01", "obs_profile": "D", "dprime_profile": "dprime_all_features_h01"},
+        {"agent": "dprime_all_features_h02", "obs_profile": "D", "dprime_profile": "dprime_all_features_h02"},
+        {"agent": "dprime_all_features_h03", "obs_profile": "D", "dprime_profile": "dprime_all_features_h03"},
+        {"agent": "dprime_all_features_3scale", "obs_profile": "D", "dprime_profile": "dprime_all_features_3scale"},
     ]
 
 
@@ -371,10 +368,7 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.obs_profile = str(spec["obs_profile"])
         cfg.use_stepd_prime = True
         cfg.use_dprime_state = True
-        cfg.dprime_state_variant = str(spec["dprime_state_variant"])
-        cfg.dprime_sources = str(spec["dprime_sources"])
-        cfg.dprime_horizons = str(spec["dprime_horizons"])
-        cfg.dprime_join = "inner"
+        cfg.dprime_profile = str(spec["dprime_profile"])
         cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.epochs = 200
@@ -1185,11 +1179,9 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
 
 
 def _validate_stepdprime_contract(output_root: Path, mode: str, symbol: str) -> None:
-    base = Path(output_root) / "stepD_prime" / str(mode)
+    base = Path(output_root) / "stepDprime" / str(mode)
     required = [
-        base / f"stepDprime_state_bnf_{symbol}_test.csv",
-        base / f"stepDprime_state_all_features_{symbol}_test.csv",
-        base / f"stepDprime_state_mix_{symbol}_test.csv",
+        base / f"stepDprime_state_test_{profile}_{symbol}.csv" for profile in _OFFICIAL_STEPE_AGENTS
     ]
     miss = [str(x.as_posix()) for x in required if not x.exists()]
     if miss:

@@ -703,6 +703,7 @@ def run_mamba_multi_model_by_horizon(
     #   - pred_endpoint_close_by_h: endpoint converted back to Close
     pred_endpoint_y_by_h: Dict[int, np.ndarray] = {}
     pred_endpoint_close_by_h: Dict[int, np.ndarray] = {}
+    pred_dense_y_by_h: Dict[int, np.ndarray] = {}
     loss_by_h: Dict[int, List[float]] = {}
     train_samples_by_h: Dict[int, int] = {}
 
@@ -775,6 +776,7 @@ def run_mamba_multi_model_by_horizon(
                 pb = model(xb).detach().cpu().numpy()  # (B, H)
                 preds.append(pb)
         P = np.concatenate(preds, axis=0)  # (N_anchor, H)
+        pred_dense_y_by_h[H] = P.astype(float)
         pred_endpoint_y_by_h[H] = P[:, -1].astype(float)  # endpoint in target space (y) at t+H
 
         loss_by_h[H] = losses
@@ -788,6 +790,18 @@ def run_mamba_multi_model_by_horizon(
         if y_end is None:
             continue
         pred_endpoint_close_by_h[H] = _target_inverse_vec(y_end.astype(float), anchor_close_arr, target_mode)
+
+    # Dense pathseq export for StepDPrime h03/3scale (always for H=20 when available)
+    if 20 in pred_dense_y_by_h:
+        P20 = pred_dense_y_by_h[20]  # (N_anchor, 20)
+        row_base = {"Date_anchor": [dates[t].strftime("%Y-%m-%d") for t in all_anchor_idx]}
+        for step in range(1, 21):
+            yhat_s = P20[:, step - 1].astype(float)
+            close_s = _target_inverse_vec(yhat_s, anchor_close_arr, target_mode)
+            row_base[f"Pred_Close_t_plus_{step:02d}"] = close_s
+        pathseq_df = pd.DataFrame(row_base)
+        pathseq_path = stepb_dir / f"stepB_pred_pathseq_{out_tag}_h20_{sym}.csv"
+        pathseq_df.to_csv(pathseq_path, index=False, encoding="utf-8-sig")
 
 # ---- Build aggregated outputs ----
     # Anchor-date aligned endpoint CSV
