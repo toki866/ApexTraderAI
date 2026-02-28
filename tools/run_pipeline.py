@@ -336,18 +336,20 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 
 def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
     """Return deterministic StepE expert specs for the official 10-agent set."""
-    return [
-        {"agent": "dprime_bnf_h01", "obs_profile": "A", "dprime_profile": "dprime_bnf_h01"},
-        {"agent": "dprime_bnf_h02", "obs_profile": "A", "dprime_profile": "dprime_bnf_h02"},
-        {"agent": "dprime_bnf_3scale", "obs_profile": "A", "dprime_profile": "dprime_bnf_3scale"},
-        {"agent": "dprime_mix_h01", "obs_profile": "A", "dprime_profile": "dprime_mix_h01"},
-        {"agent": "dprime_mix_h02", "obs_profile": "A", "dprime_profile": "dprime_mix_h02"},
-        {"agent": "dprime_mix_3scale", "obs_profile": "A", "dprime_profile": "dprime_mix_3scale"},
-        {"agent": "dprime_all_features_h01", "obs_profile": "A", "dprime_profile": "dprime_all_features_h01"},
-        {"agent": "dprime_all_features_h02", "obs_profile": "A", "dprime_profile": "dprime_all_features_h02"},
-        {"agent": "dprime_all_features_h03", "obs_profile": "A", "dprime_profile": "dprime_all_features_h03"},
-        {"agent": "dprime_all_features_3scale", "obs_profile": "A", "dprime_profile": "dprime_all_features_3scale"},
-    ]
+    specs: List[Dict[str, Any]] = []
+    for agent in _OFFICIAL_STEPE_AGENTS:
+        fam = "all_features" if "all_features" in agent else ("mix" if "mix" in agent else "bnf")
+        pred_type = "3scale" if agent.endswith("_3scale") else agent.rsplit("_", 1)[-1]
+        specs.append(
+            {
+                "agent": agent,
+                "obs_profile": "D",
+                "dprime_profile": agent,
+                "dprime_sources": fam,
+                "dprime_horizons": pred_type,
+            }
+        )
+    return specs
 
 
 def _device_auto() -> str:
@@ -369,6 +371,8 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.use_stepd_prime = True
         cfg.use_dprime_state = False
         cfg.dprime_profile = str(spec["dprime_profile"])
+        cfg.dprime_sources = str(spec["dprime_sources"])
+        cfg.dprime_horizons = str(spec["dprime_horizons"])
         cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.epochs = 200
