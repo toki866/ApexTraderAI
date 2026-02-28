@@ -1,873 +1,350 @@
-# -*- coding: utf-8 -*-
-'''
-step_dprime_service.py
-
-StepD' (StepD-prime): Train transformer summarizers on StepB predicted paths and output embeddings.
-
-Current scope (v1):
-- Supports sources:
-    - mamba         : output/stepB/<mode>/daily/stepB_daily_pred_mamba_hXX_<SYMBOL>_YYYY_MM_DD.csv
-    - mamba_periodic: output/stepB/<mode>/daily_periodic/stepB_daily_pred_mamba_periodic_hXX_<SYMBOL>_YYYY_MM_DD.csv
-
-- For each (source, horizon), trains a small transformer encoder on fixed-length padded sequences.
-- Supervised objective: binary classification of realized return sign from Date_anchor -> Date_target(horizon).
-- Produces embeddings CSV for downstream StepE.
-
-Notes:
-- This trainer needs realized Close prices to create labels. It reads them from StepA prices_train/test CSVs.
-- If StepB daily paths only exist for the test period, training on "train only" will yield zero samples.
-  In that case, set fit_split="available" to train on available samples (typically test period) for a quick experiment.
-'''
-
 from __future__ import annotations
 
 import json
-import math
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
 
-from ai_core.models.transformer_summarizer import (
-    TransformerSummarizer,
-    TransformerSummarizerConfig,
+
+_PROFILES: Tuple[str, ...] = (
+    "dprime_bnf_h01",
+    "dprime_bnf_h02",
+    "dprime_bnf_3scale",
+    "dprime_mix_h01",
+    "dprime_mix_h02",
+    "dprime_mix_3scale",
+    "dprime_all_features_h01",
+    "dprime_all_features_h02",
+    "dprime_all_features_h03",
+    "dprime_all_features_3scale",
 )
-
 
 
 @dataclass
 class StepDPrimeConfig:
     symbol: str
-    mode: str = "sim"  # sim/live/display/ops etc.
+    mode: str = "sim"
     output_root: str = "output"
-    stepA_root: Optional[str] = None  # default: <output_root>/stepA/<mode>
-    stepB_root: Optional[str] = None  # default: <output_root>/stepB/<mode>
-    stepDprime_root: Optional[str] = None  # default: <output_root>/stepD_prime/<mode>
-
-    sources: Tuple[str, ...] = ("mamba_periodic", "mamba")
-    horizons: Tuple[int, ...] = (1, 5, 10, 20)
-
-    # sequence building
-    max_len: int = 20  # pad/truncate to this
-
-    # model/training
-    seed: int = 42
-    device: Optional[str] = "auto"  # auto/cpu/cuda
-    embedding_dim: int = 32
-    d_model: int = 64
-    nhead: int = 4
-    num_layers: int = 2
-    dropout: float = 0.1
-    batch_size: int = 64
-    epochs: int = 20
-    lr: float = 3e-4
-    weight_decay: float = 1e-3
-    val_ratio: float = 0.15
-    early_stop_patience: int = 5
-
-    # training data selection
-    fit_split: str = "train"  # train / test / train+test / available
-    # Leak guard / debug export controls
-    # By default, StepD' embeddings CSV will NOT contain any label/target columns.
-    # Use export_labels_in_embeddings=True only for debugging; it is never consumed by StepE.
-    export_labels_in_embeddings: bool = False
-    # Optional: export labels into a separate meta CSV under <stepDprime_root>/meta/
-    # choices: 'none' or 'labels'
-    export_meta_mode: str = "none"
+    stepA_root: Optional[str] = None
+    stepB_root: Optional[str] = None
+    stepC_root: Optional[str] = None
+    stepDprime_root: Optional[str] = None
+    legacy_stepDprime_root: Optional[str] = None
+    profiles: Tuple[str, ...] = _PROFILES
+    l_past: int = 63
+    pred_k: int = 20
+    z_past_dim: int = 32
+    z_pred_dim: int = 32
     verbose: bool = True
 
 
-class _SeqDataset(Dataset):
-    def __init__(self, X: np.ndarray, M: np.ndarray, y: np.ndarray, dates: List[str]):
-        self.X = torch.from_numpy(X).float()
-        self.M = torch.from_numpy(M).long()
-        self.y = torch.from_numpy(y).long()
-        self.dates = dates
-
-    def __len__(self) -> int:
-        return self.X.shape[0]
-
-    def __getitem__(self, idx: int):
-        return self.X[idx], self.M[idx], self.y[idx], self.dates[idx]
+def _normalize_mode(mode: str) -> str:
+    m = str(mode or "sim").strip().lower()
+    if m in {"ops", "op", "prod", "production", "real"}:
+        return "live"
+    if m not in {"sim", "live", "display"}:
+        raise ValueError(f"StepDPrime invalid mode={mode}. expected sim/live/display")
+    return m
 
 
-def _set_seed(seed: Optional[int]) -> None:
-    import random
-    if seed is None:
-        seed = 42
-    print(f"[StepDPrime] seed={seed}")
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def _pick_device(device: Optional[str]) -> torch.device:
-    dev = "" if device is None else str(device).strip()
-    if not dev or dev.lower() in {"auto", "none"}:
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
-    return torch.device(dev)
-
-
-def _read_prices(stepA_dir: Path, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    train_path = stepA_dir / f"stepA_prices_train_{symbol}.csv"
-    test_path = stepA_dir / f"stepA_prices_test_{symbol}.csv"
-    if not train_path.exists():
-        raise FileNotFoundError(f"missing StepA train prices: {train_path}")
-    if not test_path.exists():
-        raise FileNotFoundError(f"missing StepA test prices: {test_path}")
-    tr = pd.read_csv(train_path)
-    te = pd.read_csv(test_path)
-    for df in (tr, te):
-        if "Date" not in df.columns or "Close" not in df.columns:
-            raise ValueError("StepA prices CSV must include Date, Close")
-        df["Date"] = pd.to_datetime(df["Date"])
-    return tr, te
-
-
-def _read_optional_stepa_pair(stepA_dir: Path, symbol: str, stem: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-    train_path = stepA_dir / f"{stem}_train_{symbol}.csv"
-    test_path = stepA_dir / f"{stem}_test_{symbol}.csv"
-    if not train_path.exists() or not test_path.exists():
-        return None, None
-    tr = pd.read_csv(train_path)
-    te = pd.read_csv(test_path)
-    for df in (tr, te):
-        if "Date" not in df.columns:
-            return None, None
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    return tr, te
-
-
-def _zscore_rolling(s: pd.Series, win: int) -> pd.Series:
-    m = s.rolling(win, min_periods=win).mean()
-    v = s.rolling(win, min_periods=win).std(ddof=0).replace(0, np.nan)
-    return (s - m) / v
-
-
-def _make_state_base(df_prices: pd.DataFrame) -> pd.DataFrame:
-    out = df_prices.copy().sort_values("Date").reset_index(drop=True)
-    close_prev = out["Close"].astype(float).shift(1)
-    vol_prev = out["Volume"].astype(float).shift(1)
-
-    ret_1 = close_prev.pct_change(1)
-    ret_5 = close_prev.pct_change(5)
-    ret_20 = close_prev.pct_change(20)
-
-    high = out["High"].astype(float)
-    low = out["Low"].astype(float)
-    open_ = out["Open"].astype(float)
-    close = out["Close"].astype(float)
-
-    tr = pd.concat([(high - low), (high - close_prev).abs(), (low - close_prev).abs()], axis=1).max(axis=1)
-    atr14 = tr.rolling(14, min_periods=14).mean()
-    daily_ret = close.pct_change(1)
-
-    rng = (high - low).replace(0, np.nan)
-    body = (close - open_).abs()
-    upper = (high - np.maximum(open_, close)).clip(lower=0)
-    lower = (np.minimum(open_, close) - low).clip(lower=0)
-
-    vol_log = np.log(vol_prev.replace(0, np.nan))
-    vol_log_ratio_20 = vol_log - np.log(vol_prev.rolling(20, min_periods=20).mean().replace(0, np.nan))
-    dev_z_25 = _zscore_rolling(close_prev, 25)
-
-    feat = pd.DataFrame({
-        "Date": out["Date"],
-        "ret_1": ret_1,
-        "ret_5": ret_5,
-        "ret_20": ret_20,
-        "range_atr": (high - low) / atr14.replace(0, np.nan),
-        "body_ratio": body / rng,
-        "upper_wick_ratio": upper / rng,
-        "lower_wick_ratio": lower / rng,
-        "gap": (open_ / close_prev.replace(0, np.nan)) - 1.0,
-        "atr_norm": atr14 / close_prev.replace(0, np.nan),
-        "vol_log_ratio_20": vol_log_ratio_20,
-        "dev_z_25": dev_z_25,
-        "bnf_score": dev_z_25 * vol_log_ratio_20,
-        # 3-month fixed-length compression features (63 bdays)
-        "win_ret_63": (close / close.shift(63).replace(0, np.nan)) - 1.0,
-        "win_vol_63": daily_ret.rolling(63, min_periods=63).std(ddof=0) * math.sqrt(252.0),
-        "win_dd_63": close.rolling(63, min_periods=63).apply(
-            lambda x: float(np.min((x / np.maximum.accumulate(x)) - 1.0)),
-            raw=True,
-        ),
-        "win_range_atr_63": ((high - low) / atr14.replace(0, np.nan)).rolling(63, min_periods=63).mean(),
-        "envelope_top_63": (close / close.rolling(63, min_periods=63).max().replace(0, np.nan)) - 1.0,
-        "envelope_bot_63": (close / close.rolling(63, min_periods=63).min().replace(0, np.nan)) - 1.0,
-        "rbw_63": (
-            close.rolling(63, min_periods=63).max() - close.rolling(63, min_periods=63).min()
-        ) / close.rolling(63, min_periods=63).mean().replace(0, np.nan),
-    })
-
-    if "gap" in feat.columns and "Gap" not in feat.columns:
-        feat["Gap"] = feat["gap"]
-    if "atr_norm" in feat.columns and "ATR_norm" not in feat.columns:
-        feat["ATR_norm"] = feat["atr_norm"]
-
-    for c in feat.columns:
-        if c == "Date":
-            continue
-        feat[c] = pd.to_numeric(feat[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return feat
-
-
-def _merge_stepa_features(state_df: pd.DataFrame, periodic_df: Optional[pd.DataFrame], tech_df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    out = state_df.copy()
-    for extra in (periodic_df, tech_df):
-        if extra is None:
-            continue
-        cols = [c for c in extra.columns if c != "Date"]
-        if not cols:
-            continue
-        sub = extra[["Date"] + cols].copy()
-        out = out.merge(sub, on="Date", how="left")
+def _read_split_summary(stepa_dir: Path, symbol: str) -> Dict[str, str]:
+    p = stepa_dir / f"stepA_split_summary_{symbol}.csv"
+    if not p.exists():
+        raise FileNotFoundError(f"missing StepA split summary: {p}")
+    df = pd.read_csv(p)
+    if {"key", "value"}.issubset(df.columns):
+        kv = {str(k): str(v) for k, v in zip(df["key"], df["value"])}
+    else:
+        kv = {c: str(df.iloc[0][c]) for c in df.columns}
+    req = ["train_start", "train_end", "test_start", "test_end"]
+    out = {}
+    for k in req:
+        if k not in kv or kv[k] in {"None", "nan", "NaT"}:
+            raise ValueError(f"split summary missing {k}")
+        out[k] = str(pd.to_datetime(kv[k]).date())
     return out
 
 
-def _write_state_csvs(stepA_dir: Path, stepD_dir: Path, symbol: str) -> List[str]:
-    pr_train, pr_test = _read_prices(stepA_dir, symbol)
-    per_train, per_test = _read_optional_stepa_pair(stepA_dir, symbol, "stepA_periodic")
-    tech_train, tech_test = _read_optional_stepa_pair(stepA_dir, symbol, "stepA_tech")
-
-    bnf_train = _make_state_base(pr_train)
-    bnf_test = _make_state_base(pr_test)
-
-    all_train = _merge_stepa_features(bnf_train, per_train, tech_train)
-    all_test = _merge_stepa_features(bnf_test, per_test, tech_test)
-
-    mix_cols = [
-        "Date", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "upper_wick_ratio", "lower_wick_ratio",
-        "gap", "atr_norm", "vol_log_ratio_20", "dev_z_25", "bnf_score",
-        "win_ret_63", "win_vol_63", "win_dd_63", "win_range_atr_63", "envelope_top_63", "envelope_bot_63", "rbw_63",
-    ]
-    for opt in ("RSI", "RSI_14", "MACD_hist", "vol_z_20"):
-        if opt in all_train.columns or opt in all_test.columns:
-            mix_cols.append(opt)
-
-    out_files: List[str] = []
-    payload = {
-        "bnf": (bnf_train, bnf_test),
-        "all_features": (all_train, all_test),
-        "mix": (all_train[mix_cols], all_test[mix_cols]),
-    }
-    for variant, (tr_df, te_df) in payload.items():
-        for split, df in (("train", tr_df), ("test", te_df)):
-            out_path = stepD_dir / f"stepDprime_state_{variant}_{symbol}_{split}.csv"
-            df2 = df.copy()
-            if "Date" in df2.columns:
-                df2["Date"] = pd.to_datetime(df2["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-            df2.to_csv(out_path, index=False)
-            out_files.append(str(out_path.as_posix()))
-    return out_files
+def _read_pair(base: Path, stem: str, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    p_tr = base / f"{stem}_train_{symbol}.csv"
+    p_te = base / f"{stem}_test_{symbol}.csv"
+    if not (p_tr.exists() and p_te.exists()):
+        raise FileNotFoundError(f"missing {stem} pair: {p_tr} / {p_te}")
+    tr, te = pd.read_csv(p_tr), pd.read_csv(p_te)
+    for df in (tr, te):
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+    return tr, te
 
 
-def _date_to_key(dt: pd.Timestamp) -> str:
-    return dt.strftime("%Y-%m-%d")
+def _safe(df: pd.DataFrame, c: str, default: float = 0.0) -> pd.Series:
+    if c in df.columns:
+        return pd.to_numeric(df[c], errors="coerce")
+    return pd.Series(default, index=df.index, dtype=float)
 
 
-def _build_close_map(pr_train: pd.DataFrame, pr_test: pd.DataFrame) -> Dict[str, float]:
-    df = pd.concat([pr_train[["Date", "Close"]], pr_test[["Date", "Close"]]], axis=0, ignore_index=True)
-    df = df.drop_duplicates(subset=["Date"]).sort_values("Date")
-    return {_date_to_key(d): float(c) for d, c in zip(df["Date"], df["Close"])}
+def _compute_base_features(prices: pd.DataFrame, tech: pd.DataFrame) -> pd.DataFrame:
+    df = prices.sort_values("Date").reset_index(drop=True).copy()
+    close = _safe(df, "Close")
+    open_ = _safe(df, "Open")
+    high = _safe(df, "High")
+    low = _safe(df, "Low")
+    vol = _safe(df, "Volume")
+    prev_close = close.shift(1)
+    prev_vol = vol.shift(1)
+
+    tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=14).mean()
+    rng = (high - low).replace(0, np.nan)
+    macd = _safe(tech, "MACD")
+    macd_sig = _safe(tech, "MACD_signal")
+    macd_hist = _safe(tech, "MACD_hist") if "MACD_hist" in tech.columns else (macd - macd_sig)
+
+    out = pd.DataFrame({"Date": df["Date"]})
+    out["ret_1"] = close.pct_change(1)
+    out["ret_5"] = close.pct_change(5)
+    out["ret_20"] = close.pct_change(20)
+    out["range_atr"] = (high - low) / atr14.replace(0, np.nan)
+    out["body_ratio"] = (close - open_) / rng
+    out["body_atr"] = (close - open_).abs() / atr14.replace(0, np.nan)
+    out["upper_wick_ratio"] = (high - np.maximum(open_, close)).clip(lower=0) / rng
+    out["lower_wick_ratio"] = (np.minimum(open_, close) - low).clip(lower=0) / rng
+    out["Gap"] = _safe(tech, "Gap") if "Gap" in tech.columns else (open_ / prev_close.replace(0, np.nan) - 1.0)
+    out["ATR_norm"] = _safe(tech, "ATR_norm") if "ATR_norm" in tech.columns else (atr14 / prev_close.replace(0, np.nan))
+    out["gap_atr"] = out["Gap"] / out["ATR_norm"].replace(0, np.nan)
+    out["vol_log_ratio_20"] = np.log(vol.replace(0, np.nan)) - np.log(vol.rolling(20, min_periods=20).mean().replace(0, np.nan))
+    out["vol_chg"] = vol.pct_change(1)
+    z_mu = close.rolling(25, min_periods=25).mean()
+    z_sd = close.rolling(25, min_periods=25).std(ddof=0).replace(0, np.nan)
+    out["dev_z_25"] = (close - z_mu) / z_sd
+    out["bnf_score"] = out["dev_z_25"] * out["vol_log_ratio_20"]
+    out["RSI"] = _safe(tech, "RSI") if "RSI" in tech.columns else _safe(tech, "RSI_14")
+    out["MACD_hist"] = macd_hist
+    out["macd_hist_delta"] = out["MACD_hist"].diff()
+    mh = out["MACD_hist"].fillna(0.0)
+    out["macd_hist_cross_up"] = ((mh > 0.0) & (mh.shift(1) <= 0.0)).astype(float)
+    out["clv"] = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
+    out["distribution_day"] = ((close < prev_close) & (vol > prev_vol)).astype(float)
+    out["dist_count_25"] = out["distribution_day"].rolling(25, min_periods=1).sum()
+    out["absorption_day"] = ((close > prev_close) & (vol < prev_vol)).astype(float)
+    mf_mult = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
+    mfv = mf_mult * vol
+    out["cmf_20"] = mfv.rolling(20, min_periods=20).sum() / vol.rolling(20, min_periods=20).sum().replace(0, np.nan)
+
+    for c in out.columns:
+        if c != "Date":
+            out[c] = pd.to_numeric(out[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return out
 
 
-def _infer_train_end(pr_train: pd.DataFrame) -> str:
-    return _date_to_key(pr_train["Date"].max())
+def _fit_scaler(train: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    mu = train.mean(axis=0)
+    sd = train.std(axis=0)
+    sd = np.where(sd < 1e-8, 1.0, sd)
+    return mu, sd
 
 
-def _collect_daily_pred_files(stepB_dir: Path, symbol: str, source: str, horizon: int) -> List[Path]:
-    hh = f"{horizon:02d}"
-    if source == "mamba_periodic":
-        pat = f"stepB_daily_pred_mamba_periodic_h{hh}_{symbol}_*.csv"
-        root = stepB_dir / "daily_periodic"
-    elif source == "mamba":
-        pat = f"stepB_daily_pred_mamba_h{hh}_{symbol}_*.csv"
-        root = stepB_dir / "daily"
-    else:
-        raise ValueError(f"unsupported source: {source}")
-    if not root.exists():
-        return []
-    return sorted(root.glob(pat))
+def _fit_pca(train: np.ndarray, dim: int) -> Tuple[np.ndarray, int]:
+    if train.shape[0] < 2:
+        raise ValueError("too few train rows for PCA fit")
+    x = train - train.mean(axis=0, keepdims=True)
+    _, _, vt = np.linalg.svd(x, full_matrices=False)
+    d = int(min(dim, vt.shape[0], vt.shape[1]))
+    if d <= 0:
+        raise ValueError("invalid PCA dim")
+    return vt[:d].T.astype(float), d
 
 
-def _pred_close_column(source: str, horizon: int) -> str:
-    if source == "mamba_periodic":
-        return f"Pred_Close_MAMBA_PERIODIC_h{horizon:02d}"
-    if source == "mamba":
-        return f"Pred_Close_MAMBA_h{horizon:02d}"
-    raise ValueError(f"unsupported source: {source}")
+def _project(x: np.ndarray, mu: np.ndarray, sd: np.ndarray, comp: np.ndarray) -> np.ndarray:
+    xn = (x - mu) / sd
+    return xn @ comp
 
 
-def _load_pred_close_aggregate(stepB_dir: Path, symbol: str, source: str) -> Optional[pd.DataFrame]:
-    if source == "mamba_periodic":
-        name = f"stepB_pred_close_mamba_periodic_{symbol}.csv"
-    elif source == "mamba":
-        name = f"stepB_pred_close_mamba_{symbol}.csv"
-    else:
-        raise ValueError(f"unsupported source: {source}")
-
-    cands = [stepB_dir / name] + sorted(stepB_dir.glob(f"**/{name}"))
-    for p in cands:
-        if p.exists():
-            df = pd.read_csv(p)
-            if "Date_anchor" not in df.columns:
-                raise ValueError(f"{p} missing Date_anchor")
-            return df
-    return None
-
-
-def _load_path_csv(p: Path) -> pd.DataFrame:
+def _build_pred_from_stepb(stepb_dir: Path, symbol: str, pred_k: int) -> Tuple[pd.DataFrame, str]:
+    cands = sorted(stepb_dir.glob(f"stepB_pred_pathseq_*_h{pred_k:02d}_{symbol}.csv"))
+    if not cands:
+        raise FileNotFoundError(f"missing pathseq file under {stepb_dir}")
+    p = cands[0]
     df = pd.read_csv(p)
-    req = ["Date_anchor", "step_ahead_bdays", "Date_target", "Pred_ret_from_anchor"]
-    for c in req:
-        if c not in df.columns:
-            raise ValueError(f"{p} missing column: {c}")
-    return df
+    if "Date_anchor" not in df.columns:
+        raise ValueError(f"{p} missing Date_anchor")
+    df["Date"] = pd.to_datetime(df["Date_anchor"], errors="coerce").dt.normalize()
+    return df, str(p.as_posix())
 
 
-def _path_to_sequence(df: pd.DataFrame, max_len: int) -> Tuple[np.ndarray, np.ndarray, str, str]:
-    df = df.sort_values("step_ahead_bdays").reset_index(drop=True)
-    anchor = str(df.loc[0, "Date_anchor"])
-    target_last = str(df.loc[df.index.max(), "Date_target"])
-
-    cum = df["Pred_ret_from_anchor"].astype(float).to_numpy()
-    inc = np.empty_like(cum)
-    inc[0] = cum[0]
-    inc[1:] = cum[1:] - cum[:-1]
-
-    T = len(cum)
-    T_eff = min(T, max_len)
-
-    x = np.zeros((max_len, 2), dtype=np.float32)
-    m = np.zeros((max_len,), dtype=np.int64)
-    x[:T_eff, 0] = inc[:T_eff]
-    x[:T_eff, 1] = cum[:T_eff]
-    m[:T_eff] = 1
-    return x, m, anchor, target_last
 
 
-def _make_label(close_map: Dict[str, float], anchor: str, target: str) -> Optional[int]:
-    ca = close_map.get(anchor)
-    ct = close_map.get(target)
-    if ca is None or ct is None:
-        return None
-    ret = math.log(ct / ca) if ca > 0 and ct > 0 else (ct - ca)
-    return 1 if ret > 0 else 0
-
-
-def _build_calendar_index(pr_train: pd.DataFrame, pr_test: pd.DataFrame) -> Tuple[List[str], Dict[str, int]]:
-    cal = pd.concat([pr_train[["Date"]], pr_test[["Date"]]], ignore_index=True)
-    cal = cal.drop_duplicates(subset=["Date"]).sort_values("Date").reset_index(drop=True)
-    keys = [_date_to_key(dt) for dt in cal["Date"]]
-    return keys, {k: int(i) for i, k in enumerate(keys)}
-
-
-def _shift_calendar_date(calendar_keys: List[str], calendar_idx: Dict[str, int], offset: int, anchor: str) -> Optional[str]:
-    i = calendar_idx.get(anchor)
-    if i is None:
-        return None
-    j = int(i + offset)
-    if j < 0 or j >= len(calendar_keys):
-        return None
-    return calendar_keys[j]
-
-
-def _expand_embeddings_to_calendar(
-    out_df: pd.DataFrame,
-    calendar_keys: List[str],
-    model_key: str,
-    verbose: bool,
-) -> pd.DataFrame:
-    before_rows = int(len(out_df))
-    df_full = pd.DataFrame({"Date": calendar_keys})
-    out_df_exp = df_full.merge(out_df, on="Date", how="left")
-
-    emb_cols = [c for c in out_df_exp.columns if c.startswith("emb_")]
-    if emb_cols:
-        out_df_exp[emb_cols] = out_df_exp[emb_cols].fillna(0.0)
-
-    if "label_available" in out_df_exp.columns:
-        out_df_exp["label_available"] = pd.to_numeric(out_df_exp["label_available"], errors="coerce").fillna(0).astype(int)
-    if "horizon_model" in out_df_exp.columns:
-        out_df_exp["horizon_model"] = pd.to_numeric(out_df_exp["horizon_model"], errors="coerce").fillna(0).astype(int)
-
-    after_rows = int(len(out_df_exp))
-    filled_rows = max(0, after_rows - before_rows)
-    if verbose:
-        print(
-            f"[StepDPrime] expanded embeddings_all: model_key={model_key} "
-            f"before={before_rows} after={after_rows} filled={filled_rows}"
-        )
-    return out_df_exp
-
-
-def _build_sequences_from_pred_close(
-    df: pd.DataFrame,
-    source: str,
-    horizons: Tuple[int, ...],
-    max_len: int,
-    close_map: Dict[str, float],
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    if df is None or len(df) == 0:
-        return np.zeros((0, max_len, 2), dtype=np.float32), np.zeros((0, max_len), dtype=np.int64), []
-
-    work = df.copy()
-    work["Date_anchor"] = pd.to_datetime(work["Date_anchor"], errors="coerce")
-    work = work.dropna(subset=["Date_anchor"]).sort_values("Date_anchor").reset_index(drop=True)
-
-    X_list, M_list, dates = [], [], []
-    for _, row in work.iterrows():
-        anchor = _date_to_key(pd.to_datetime(row["Date_anchor"]))
-        close_anchor = close_map.get(anchor)
-        if close_anchor is None or close_anchor == 0:
+def _load_pred_time_priority(stepc_dir: Path, stepb_dir: Path, symbol: str) -> Tuple[Optional[pd.DataFrame], str]:
+    for root, label in ((stepc_dir, "stepC"), (stepb_dir, "stepB")):
+        if root is None or not root.exists():
             continue
-
-        cum = []
-        for h in horizons:
-            col = _pred_close_column(source, int(h))
-            if col not in work.columns:
-                continue
-            pred_close = pd.to_numeric(pd.Series([row[col]]), errors="coerce").iloc[0]
-            if pd.isna(pred_close):
-                continue
-            cum.append(float(pred_close) / float(close_anchor) - 1.0)
-
-        if not cum:
+        cands = sorted(root.glob(f"stepC_pred_time*_{symbol}.csv")) if label == "stepC" else sorted(root.glob(f"stepB_pred_time*_{symbol}.csv"))
+        if not cands:
             continue
+        p = cands[0]
+        df = pd.read_csv(p)
+        dcol = "Date" if "Date" in df.columns else ("Date_anchor" if "Date_anchor" in df.columns else None)
+        if dcol is None:
+            continue
+        df["Date"] = pd.to_datetime(df[dcol], errors="coerce").dt.normalize()
+        return df, str(p.as_posix())
+    return None, ""
+def _infer_pred_type(profile: str) -> str:
+    if profile.endswith("_h01"):
+        return "h01"
+    if profile.endswith("_h02"):
+        return "h02"
+    if profile.endswith("_h03"):
+        return "h03"
+    return "3scale"
 
-        cum = np.asarray(cum, dtype=np.float32)
-        inc = np.empty_like(cum)
-        inc[0] = cum[0]
-        if len(cum) > 1:
-            inc[1:] = cum[1:] - cum[:-1]
-
-        t_eff = min(len(cum), int(max_len))
-        x = np.zeros((int(max_len), 2), dtype=np.float32)
-        m = np.zeros((int(max_len),), dtype=np.int64)
-        x[:t_eff, 0] = inc[:t_eff]
-        x[:t_eff, 1] = cum[:t_eff]
-        m[:t_eff] = 1
-
-        X_list.append(x)
-        M_list.append(m)
-        dates.append(anchor)
-
-    if not X_list:
-        return np.zeros((0, max_len, 2), dtype=np.float32), np.zeros((0, max_len), dtype=np.int64), []
-    return np.stack(X_list, axis=0), np.stack(M_list, axis=0), dates
-
-
-def _train_one(
-    cfg: StepDPrimeConfig,
-    X: np.ndarray,
-    M: np.ndarray,
-    y: np.ndarray,
-    out_dir: Path,
-    model_key: str,
-    device: torch.device,
-) -> Tuple[TransformerSummarizer, Dict[str, float]]:
-    n = X.shape[0]
-    idx = np.arange(n)
-    np.random.shuffle(idx)
-    n_val = max(1, int(n * cfg.val_ratio)) if n >= 10 else max(1, min(3, n // 3))
-    val_idx = idx[:n_val]
-    tr_idx = idx[n_val:]
-    if len(tr_idx) < 1:
-        tr_idx = val_idx
-        val_idx = idx[:0]
-
-    Xtr, Mtr, ytr = X[tr_idx], M[tr_idx], y[tr_idx]
-    Xva, Mva, yva = (X[val_idx], M[val_idx], y[val_idx]) if len(val_idx) else (None, None, None)
-
-    ds_tr = _SeqDataset(Xtr, Mtr, ytr, dates=[""] * len(ytr))
-    dl_tr = DataLoader(ds_tr, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
-
-    dl_va = None
-    if Xva is not None:
-        ds_va = _SeqDataset(Xva, Mva, yva, dates=[""] * len(yva))
-        dl_va = DataLoader(ds_va, batch_size=cfg.batch_size, shuffle=False, drop_last=False)
-
-    mcfg = TransformerSummarizerConfig(
-        feature_dim=int(X.shape[2]),
-        max_len=int(cfg.max_len),
-        d_model=int(cfg.d_model),
-        nhead=int(cfg.nhead),
-        num_layers=int(cfg.num_layers),
-        dropout=float(cfg.dropout),
-        embedding_dim=int(cfg.embedding_dim),
-        num_classes=2,
-        use_cls_token=False,
-    )
-    model = TransformerSummarizer(mcfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    loss_fn = nn.CrossEntropyLoss()
-
-    best_val = float("inf")
-    best_state = None
-    bad = 0
-
-    def _eval(dl):
-        model.eval()
-        tot = 0.0
-        cnt = 0
-        correct = 0
-        with torch.no_grad():
-            for xb, mb, yb, _ in dl:
-                xb = xb.to(device)
-                mb = mb.to(device)
-                yb = yb.to(device)
-                logits, _ = model(xb, mb, return_embedding=True)
-                loss = loss_fn(logits, yb)
-                tot += float(loss.item()) * len(yb)
-                cnt += len(yb)
-                pred = torch.argmax(logits, dim=1)
-                correct += int((pred == yb).sum().item())
-        return (tot / max(1, cnt)), (correct / max(1, cnt))
-
-    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-
-    for ep in range(1, cfg.epochs + 1):
-        model.train()
-        tot = 0.0
-        cnt = 0
-        correct = 0
-        for xb, mb, yb, _ in dl_tr:
-            xb = xb.to(device)
-            mb = mb.to(device)
-            yb = yb.to(device)
-            opt.zero_grad(set_to_none=True)
-            logits, _ = model(xb, mb, return_embedding=True)
-            loss = loss_fn(logits, yb)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-
-            tot += float(loss.item()) * len(yb)
-            cnt += len(yb)
-            pred = torch.argmax(logits, dim=1)
-            correct += int((pred == yb).sum().item())
-
-        tr_loss = tot / max(1, cnt)
-        tr_acc = correct / max(1, cnt)
-        history["train_loss"].append(tr_loss)
-        history["train_acc"].append(tr_acc)
-
-        if dl_va is not None:
-            va_loss, va_acc = _eval(dl_va)
-            history["val_loss"].append(va_loss)
-            history["val_acc"].append(va_acc)
-
-            if cfg.verbose:
-                print(f"[StepD'] {model_key} ep={ep:03d} train_loss={tr_loss:.4f} acc={tr_acc:.3f} val_loss={va_loss:.4f} val_acc={va_acc:.3f}")
-
-            if va_loss + 1e-6 < best_val:
-                best_val = va_loss
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                bad = 0
-            else:
-                bad += 1
-                if bad >= cfg.early_stop_patience:
-                    if cfg.verbose:
-                        print(f"[StepD'] {model_key} early stop at ep={ep}")
-                    break
-        else:
-            if cfg.verbose:
-                print(f"[StepD'] {model_key} ep={ep:03d} train_loss={tr_loss:.4f} acc={tr_acc:.3f}")
-
-    if best_state is not None:
-        model.load_state_dict(best_state, strict=True)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = out_dir / f"{model_key}.pt"
-    meta_path = out_dir / f"{model_key}.json"
-
-    torch.save(
-        {
-            "state_dict": model.state_dict(),
-            "config": asdict(mcfg),
-            "model_key": model_key,
-            "history": history,
-            "feature_dim": int(X.shape[2]),
-            "max_len": int(cfg.max_len),
-        },
-        ckpt_path,
-    )
-    meta = {
-        "model_key": model_key,
-        "ckpt_path": str(ckpt_path.as_posix()),
-        "config": asdict(mcfg),
-        "history_last": {k: (v[-1] if v else None) for k, v in history.items()},
-        "n_samples": int(X.shape[0]),
-        "best_val_loss": None if best_state is None else float(best_val),
-    }
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    metrics = {
-        "train_loss_last": float(history["train_loss"][-1]) if history["train_loss"] else float("nan"),
-        "train_acc_last": float(history["train_acc"][-1]) if history["train_acc"] else float("nan"),
-        "val_loss_best": float(best_val) if best_state is not None else float("nan"),
-    }
-    return model, metrics
 
 class StepDPrimeService:
-    def __init__(self):
-        pass
-
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
-        _set_seed(cfg.seed)
-        device = _pick_device(cfg.device)
-        print(f"[StepDPrime] device={device}")
-
+        mode = _normalize_mode(cfg.mode)
         out_root = Path(cfg.output_root)
-        stepA_dir = Path(cfg.stepA_root) if cfg.stepA_root else (out_root / "stepA" / cfg.mode)
-        stepB_dir = Path(cfg.stepB_root) if cfg.stepB_root else (out_root / "stepB" / cfg.mode)
-        stepD_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else (out_root / "stepD_prime" / cfg.mode)
+        stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
+        stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
+        stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
+        legacy_dir = Path(cfg.legacy_stepDprime_root) if cfg.legacy_stepDprime_root else out_root / "stepD_prime" / mode
+        stepd_dir.mkdir(parents=True, exist_ok=True)
+        legacy_dir.mkdir(parents=True, exist_ok=True)
 
-        pr_train, pr_test = _read_prices(stepA_dir, cfg.symbol)
-        close_map = _build_close_map(pr_train, pr_test)
-        train_end = _infer_train_end(pr_train)
-        calendar_keys, calendar_idx = _build_calendar_index(pr_train, pr_test)
+        split = _read_split_summary(stepa_dir, cfg.symbol)
+        tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
+        te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
 
-        results = {
-            "mode": cfg.mode,
-            "symbol": cfg.symbol,
-            "output_dir": str(stepD_dir.as_posix()),
-            "train_end": train_end,
-            "state_files": [],
-            "models": {},
-            "embeddings": {},
-            "warnings": [],
-        }
+        pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+        tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+        pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
 
-        models_dir = stepD_dir / "models"
-        embeds_dir = stepD_dir / "embeddings"
-        stepD_dir.mkdir(parents=True, exist_ok=True)
-        models_dir.mkdir(parents=True, exist_ok=True)
-        embeds_dir.mkdir(parents=True, exist_ok=True)
+        prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        base = _compute_base_features(prices, tech)
+        all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
 
-        try:
-            results["state_files"] = _write_state_csvs(stepA_dir, stepD_dir, cfg.symbol)
-        except Exception as e:
-            results["warnings"].append(f"failed to write state CSVs: {type(e).__name__}: {e}")
+        num_cols = [c for c in all_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(all_df[c])]
+        for c in num_cols:
+            all_df[c] = pd.to_numeric(all_df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        for source in cfg.sources:
-            daily_files_by_h = {int(h): _collect_daily_pred_files(stepB_dir, cfg.symbol, source, int(h)) for h in cfg.horizons}
-            use_daily = any(len(v) > 0 for v in daily_files_by_h.values())
+        stepc_dir = Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode
+        pred_df, pred_src = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
+        pred_time_df, pred_time_src = _load_pred_time_priority(stepc_dir, stepb_dir, cfg.symbol)
+        pred_cols = [f"Pred_Close_t_plus_{i:02d}" for i in range(1, cfg.pred_k + 1)]
+        for c in pred_cols:
+            if c not in pred_df.columns:
+                pred_df[c] = np.nan
+        data = all_df.merge(pred_df[["Date"] + pred_cols], on="Date", how="left")
+        data["Close_anchor"] = _safe(prices, "Close")
 
-            if use_daily:
-                for h in cfg.horizons:
-                    files = daily_files_by_h[int(h)]
-                    if cfg.verbose:
-                        print(f"[StepD'] collect: source={source} h={h} files={len(files)} root={stepB_dir.as_posix()}")
-                    if not files:
-                        results["warnings"].append(f"no files for source={source} h={h} under {stepB_dir}")
+        if pred_time_df is not None:
+            for h in (1, 5, 10, 20):
+                cands = [f"Pred_Close_MAMBA_h{h:02d}", f"Close_pred_h{h}", f"Pred_Close_t_plus_{h:02d}"]
+                col = next((c for c in cands if c in pred_time_df.columns), None)
+                if col is not None:
+                    sub = pred_time_df[["Date", col]].rename(columns={col: f"Pred_Close_t_plus_{h:02d}"})
+                    data = data.drop(columns=[f"Pred_Close_t_plus_{h:02d}"], errors="ignore").merge(sub, on="Date", how="left")
+            if pred_time_src:
+                pred_src = pred_time_src + "|" + pred_src
+        for i in range(1, cfg.pred_k + 1):
+            c = f"Pred_Close_t_plus_{i:02d}"
+            data[f"pred_ret_{i:02d}"] = pd.to_numeric(data[c], errors="coerce") / data["Close_anchor"].replace(0, np.nan) - 1.0
+            data[f"pred_ret_{i:02d}"] = data[f"pred_ret_{i:02d}"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        bnf_cols = [
+            "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
+            "Gap", "ATR_norm", "gap_atr", "vol_log_ratio_20", "vol_chg", "dev_z_25", "bnf_score",
+        ]
+        mix_cols = bnf_cols + ["RSI", "MACD_hist", "macd_hist_delta", "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20"]
+        all_cols = [c for c in num_cols if c not in {"Open", "High", "Low", "Close", "Volume", "Close_anchor"}]
+
+        results: Dict[str, object] = {"mode": mode, "symbol": cfg.symbol, "profiles": {}, "output_dir": str(stepd_dir)}
+        date_list = data["Date"].tolist()
+        idx_train = [i for i, d in enumerate(date_list) if tr_s <= d <= tr_e]
+        idx_test = [i for i, d in enumerate(date_list) if te_s <= d <= te_e]
+        if min(idx_test) < cfg.l_past - 1:
+            raise RuntimeError("insufficient history before test_start for L_past window")
+
+        for profile in cfg.profiles:
+            fam = "all_features" if "all_features" in profile else ("mix" if "mix" in profile else "bnf")
+            pred_type = _infer_pred_type(profile)
+            past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
+            past_cols = [c for c in past_cols if c in data.columns]
+
+            pred_steps = [1] if pred_type == "h01" else ([1, 5, 10, 20] if pred_type == "h02" else list(range(1, cfg.pred_k + 1)))
+            pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
+
+            def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
+                xp, xf, ds = [], [], []
+                for i in indices:
+                    if i < cfg.l_past - 1:
                         continue
-
-                    X_list, M_list, y_list, avail_list, dates = [], [], [], [], []
-                    for fp in files:
-                        try:
-                            df = _load_path_csv(fp)
-                            x, m, anchor, target = _path_to_sequence(df, cfg.max_len)
-
-                            label = _make_label(close_map, anchor, target)
-                            if label is None:
-                                y_list.append(np.nan)
-                                avail_list.append(False)
-                            else:
-                                y_list.append(int(label))
-                                avail_list.append(True)
-
-                            X_list.append(x)
-                            M_list.append(m)
-                            dates.append(anchor)
-                        except Exception as e:
-                            results["warnings"].append(f"failed read {fp}: {e}")
-                            continue
-                    if not X_list:
-                        results["warnings"].append(f"no valid samples for source={source} h={h}")
-                        continue
-
-                    X = np.stack(X_list, axis=0)
-                    M = np.stack(M_list, axis=0)
-                    y = np.asarray(y_list, dtype=np.float32)
-                    label_avail = np.asarray(avail_list, dtype=bool)
-
-                    anchors = np.array(dates)
-                    is_train = anchors <= train_end
-                    is_test = anchors > train_end
-
-                    if cfg.fit_split == "train":
-                        sel = is_train & label_avail
-                    elif cfg.fit_split == "test":
-                        sel = is_test & label_avail
-                    elif cfg.fit_split in {"train+test", "available"}:
-                        sel = label_avail
+                    hist = data.iloc[i - cfg.l_past + 1 : i + 1]
+                    xp.append(hist[past_cols].to_numpy(dtype=float).reshape(-1))
+                    ds.append(data.iloc[i]["Date"])
+                    if pred_type == "3scale":
+                        p = data.iloc[i][[f"pred_ret_{k:02d}" for k in range(1, cfg.pred_k + 1)]].to_numpy(dtype=float)
+                        xf.append(np.concatenate([p[:5], p[:10], p[:20]], axis=0))
                     else:
-                        raise ValueError(f"invalid fit_split: {cfg.fit_split}")
+                        xf.append(data.iloc[i][pred_use_cols].to_numpy(dtype=float))
+                return np.asarray(xp, float), np.asarray(xf, float), ds
 
-                    if not np.any(sel):
-                        results["warnings"].append(
-                            f"fit_split={cfg.fit_split} yielded 0 labeled samples for source={source} h={h}. "
-                            f"Fallback to fit_split=available for this model."
-                        )
-                        sel = label_avail
+            Xp_tr, Xf_tr, Dtr = _build_rows(idx_train)
+            Xp_te, Xf_te, Dte = _build_rows(idx_test)
+            if len(Dtr) == 0 or len(Dte) == 0:
+                raise RuntimeError(f"profile={profile}: no rows for train/test")
 
-                    Xfit, Mfit = X[sel], M[sel]
-                    yfit = y[sel].astype(np.int64)
+            mu_p, sd_p = _fit_scaler(Xp_tr)
+            mu_f, sd_f = _fit_scaler(Xf_tr)
+            comp_p, d_p = _fit_pca((Xp_tr - mu_p) / sd_p, cfg.z_past_dim)
+            pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
+            comp_f, d_f = _fit_pca((Xf_tr - mu_f) / sd_f, pred_dim)
+            Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
+            Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
 
-                    model_key = f"stepDprime_{source}_h{h:02d}_{cfg.symbol}"
-                    model, metrics = _train_one(cfg, Xfit, Mfit, yfit, models_dir, model_key, device)
+            def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
+                out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
+                for j in range(zp.shape[1]):
+                    out[f"zp_{j:03d}"] = zp[:, j]
+                for j in range(zf.shape[1]):
+                    out[f"zf_{j:03d}"] = zf[:, j]
+                ref = data.set_index("Date")
+                out["gap_atr"] = [float(ref.loc[pd.to_datetime(d), "gap_atr"]) for d in pd.to_datetime(ds)]
+                out["ATR_norm"] = [float(ref.loc[pd.to_datetime(d), "ATR_norm"]) for d in pd.to_datetime(ds)]
+                out["pos_prev"] = 0.0
+                out["action_prev"] = 0.0
+                out["time_in_trade"] = 0.0
+                return out
 
-                    model.eval()
-                    embs = []
-                    with torch.no_grad():
-                        bs = 256
-                        for i in range(0, X.shape[0], bs):
-                            xb = torch.from_numpy(X[i:i+bs]).float().to(device)
-                            mb = torch.from_numpy(M[i:i+bs]).long().to(device)
-                            e = model.encode(xb, mb).detach().cpu().numpy()
-                            embs.append(e)
-                    E = np.concatenate(embs, axis=0)
+            df_tr, df_te = _to_df(Dtr, Zp_tr, Zf_tr), _to_df(Dte, Zp_te, Zf_te)
+            p_tr = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
+            p_te = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
+            s_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
+            df_tr.to_csv(p_tr, index=False)
+            df_te.to_csv(p_te, index=False)
+            pd.DataFrame([
+                {"key": "mode", "value": mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
+                {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
+                {"key": "test_start", "value": str(te_s.date())}, {"key": "test_end", "value": str(te_e.date())},
+                {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
+                {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
+                {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
+                {"key": "past_feature_channels", "value": "|".join(past_cols)},
+                {"key": "pred_source_file", "value": pred_src},
+                {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
+                {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
+            ]).to_csv(s_path, index=False)
 
-                    out_csv = embeds_dir / f"{model_key}_embeddings_all.csv"
-                    out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
-                    out_df.insert(0, "Date", dates)
-                    if cfg.export_labels_in_embeddings:
-                        out_df.insert(1, "label_up", y)
-                        out_df.insert(2, "label_available", label_avail.astype(int))
-                        out_df.insert(3, "source", source)
-                        out_df.insert(4, "horizon_model", int(h))
-                    out_df_exp = _expand_embeddings_to_calendar(
-                        out_df=out_df,
-                        calendar_keys=calendar_keys,
-                        model_key=model_key,
-                        verbose=cfg.verbose,
-                    )
-                    out_df_exp.to_csv(out_csv, index=False)
+            # legacy dual output
+            lp_tr = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_train.csv"
+            lp_te = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_test.csv"
+            df_tr.to_csv(lp_tr, index=False)
+            df_te.to_csv(lp_te, index=False)
 
-                    results["models"][model_key] = {
-                        "source": source,
-                        "horizon": int(h),
-                        "n_samples_all": int(X.shape[0]),
-                        "n_labels_available": int(label_avail.sum()),
-                        "n_samples_fit": int(Xfit.shape[0]),
-                        "metrics": metrics,
-                        "ckpt": str((models_dir / f"{model_key}.pt").as_posix()),
-                        "meta": str((models_dir / f"{model_key}.json").as_posix()),
-                    }
-                    results["embeddings"][model_key] = str(out_csv.as_posix())
-                continue
+            results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
-            agg = _load_pred_close_aggregate(stepB_dir, cfg.symbol, source)
-            if agg is None:
-                results["warnings"].append(f"no StepB inputs for source={source} under {stepB_dir}")
-                continue
-            if cfg.verbose:
-                print(f"[StepD'] fallback aggregate: source={source} rows={len(agg)} root={stepB_dir.as_posix()}")
-
-            X, M, dates = _build_sequences_from_pred_close(
-                df=agg,
-                source=source,
-                horizons=cfg.horizons,
-                max_len=cfg.max_len,
-                close_map=close_map,
-            )
-            if X.shape[0] == 0:
-                results["warnings"].append(f"aggregate pred_close produced 0 usable samples for source={source}")
-                continue
-
-            anchors = np.array(dates)
-            is_train = anchors <= train_end
-            is_test = anchors > train_end
-
-            for h in cfg.horizons:
-                y_list, avail_list = [], []
-                for anchor in dates:
-                    target = _shift_calendar_date(calendar_keys, calendar_idx, int(h), anchor)
-                    label = _make_label(close_map, anchor, target) if target is not None else None
-                    if label is None:
-                        y_list.append(np.nan)
-                        avail_list.append(False)
-                    else:
-                        y_list.append(int(label))
-                        avail_list.append(True)
-
-                y = np.asarray(y_list, dtype=np.float32)
-                label_avail = np.asarray(avail_list, dtype=bool)
-
-                if cfg.fit_split == "train":
-                    sel = is_train & label_avail
-                elif cfg.fit_split == "test":
-                    sel = is_test & label_avail
-                elif cfg.fit_split in {"train+test", "available"}:
-                    sel = label_avail
-                else:
-                    raise ValueError(f"invalid fit_split: {cfg.fit_split}")
-
-                if not np.any(sel):
-                    results["warnings"].append(
-                        f"fit_split={cfg.fit_split} yielded 0 labeled samples for source={source} h={h}. "
-                        f"Fallback to fit_split=available for this model."
-                    )
-                    sel = label_avail
-                if not np.any(sel):
-                    results["warnings"].append(f"no labeled samples for source={source} h={h} from aggregate pred_close")
-                    continue
-
-                Xfit, Mfit = X[sel], M[sel]
-                yfit = y[sel].astype(np.int64)
-
-                model_key = f"stepDprime_{source}_h{h:02d}_{cfg.symbol}"
-                model, metrics = _train_one(cfg, Xfit, Mfit, yfit, models_dir, model_key, device)
-
-                model.eval()
-                embs = []
-                with torch.no_grad():
-                    bs = 256
-                    for i in range(0, X.shape[0], bs):
-                        xb = torch.from_numpy(X[i:i+bs]).float().to(device)
-                        mb = torch.from_numpy(M[i:i+bs]).long().to(device)
-                        e = model.encode(xb, mb).detach().cpu().numpy()
-                        embs.append(e)
-                E = np.concatenate(embs, axis=0)
-
-                out_csv = embeds_dir / f"{model_key}_embeddings_all.csv"
-                out_df = pd.DataFrame(E, columns=[f"emb_{k:03d}" for k in range(E.shape[1])])
-                out_df.insert(0, "Date", dates)
-                if cfg.export_labels_in_embeddings:
-                    out_df.insert(1, "label_up", y)
-                    out_df.insert(2, "label_available", label_avail.astype(int))
-                    out_df.insert(3, "source", source)
-                    out_df.insert(4, "horizon_model", int(h))
-                out_df_exp = _expand_embeddings_to_calendar(
-                    out_df=out_df,
-                    calendar_keys=calendar_keys,
-                    model_key=model_key,
-                    verbose=cfg.verbose,
-                )
-                out_df_exp.to_csv(out_csv, index=False)
-
-                results["models"][model_key] = {
-                    "source": source,
-                    "horizon": int(h),
-                    "n_samples_all": int(X.shape[0]),
-                    "n_labels_available": int(label_avail.sum()),
-                    "n_samples_fit": int(Xfit.shape[0]),
-                    "metrics": metrics,
-                    "ckpt": str((models_dir / f"{model_key}.pt").as_posix()),
-                    "meta": str((models_dir / f"{model_key}.json").as_posix()),
-                }
-                results["embeddings"][model_key] = str(out_csv.as_posix())
-
-        summary_path = stepD_dir / f"stepDprime_summary_{cfg.symbol}.json"
-        summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-        if cfg.verbose:
-            print(f"[StepD'] wrote summary: {summary_path.as_posix()}")
+        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         return results
