@@ -33,7 +33,7 @@ class WaveletMambaTrainConfig:
     train_end: Optional[str] = None
     test_start: Optional[str] = None
     test_end: Optional[str] = None
-    lookback_days: int = 60
+    lookback_days: int = 128
     horizons: str = "1,5,10,20"
     seed: int = 42
     epochs: Optional[int] = None
@@ -44,8 +44,8 @@ class WaveletMambaTrainConfig:
     daily_snapshot_format: str = "path"
     enabled: bool = True
     variant: str = "full"
-    enable_periodic_snapshots: bool = False
-    periodic_snapshot_horizons: Tuple[int, ...] = (20,)
+    enable_periodic_snapshots: bool = True
+    periodic_snapshot_horizons: Tuple[int, ...] = (1, 5, 10, 20)
     periodic_daily_dirname: str = "daily_periodic"
     periodic_manifest_suffix: str = "periodic"
     periodic_output_tag: str = "mamba_periodic"
