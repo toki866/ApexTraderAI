@@ -1422,7 +1422,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         step_f_cfg = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
         if step_f_cfg is None:
             try:
-                from ai_core.services.step_f_service import StepFConfig  # lazy import
+                from ai_core.services.step_f_service import StepFRouterConfig  # lazy import
 
                 out_root = str(resolved_output_root)
                 mode = resolved_mamba_mode or args.mode or "sim"
@@ -1439,14 +1439,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if not unique_agents:
                     unique_agents = set(_OFFICIAL_STEPE_AGENTS)
 
-                cfgF = StepFConfig(
+                ordered_agents = [a for a in _OFFICIAL_STEPE_AGENTS if a in unique_agents]
+                for a in sorted(unique_agents):
+                    if a not in ordered_agents:
+                        ordered_agents.append(a)
+                safe_defaults = ["dprime_bnf_h01", "dprime_all_features_h01"]
+                if not all(x in ordered_agents for x in safe_defaults):
+                    safe_defaults = ordered_agents[: min(2, len(ordered_agents))]
+
+                cfgF = StepFRouterConfig(
                     output_root=out_root,
-                    agents=",".join(sorted(unique_agents)),
-                    seed=42,
-                    device="auto",
-                    use_context=True,
-                    context_variant="mix",
-                    context_profile="minimal",
+                    agents=",".join(ordered_agents),
+                    mode=str(mode),
+                    safe_set=",".join(safe_defaults),
+                    use_z_pred=False,
+                    trade_cost_bps=10.0,
+                    ema_alpha=0.3,
+                    softmax_beta=1.0,
                 )
 
                 if isinstance(app_config, dict):
@@ -1455,9 +1464,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     setattr(app_config, "stepF", cfgF)
 
                 print(
-                    f"[headless] StepF default config injected: agents={cfgF.agents} seed={cfgF.seed} "
-                    f"device={cfgF.device} use_context={int(cfgF.use_context)} "
-                    f"context_variant={cfgF.context_variant} context_profile={cfgF.context_profile}"
+                    f"[headless] StepF default config injected: agents={cfgF.agents} safe_set={cfgF.safe_set} "
+                    f"router(beta={cfgF.softmax_beta},ema={cfgF.ema_alpha},cost_bps={cfgF.trade_cost_bps})"
                 )
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepF config: {type(e).__name__}: {e}")
