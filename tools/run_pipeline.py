@@ -1493,8 +1493,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         if "A" in steps:
-            print("[StepA] start")
-            results["stepA_result"] = _run_stepA(app_config, symbol, date_range)
+            stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
+            print(f"[StepA] start symbols={','.join(stepa_symbols)}")
+            for stepa_symbol in stepa_symbols:
+                stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
+                if stepa_symbol == symbol:
+                    results["stepA_result"] = stepa_result
             print("[StepA] done")
 
         if "B" in steps:
