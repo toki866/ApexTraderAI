@@ -20,7 +20,11 @@ if /i "%COPY_TO_ONEDRIVE%"=="false" set "COPY_TO_ONEDRIVE=0"
 if not defined AUTO_PREPARE_DATA set "AUTO_PREPARE_DATA=1"
 if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_ID=%%i"
+if defined APEX_RUN_ID (
+  set "RUN_ID=%APEX_RUN_ID%"
+) else (
+  for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_ID=%%i"
+)
 if not defined RUN_ID (
   echo [ERROR] failed to generate run_id
   popd
@@ -51,6 +55,7 @@ if not exist "%LOG_DIR%" (
   echo ==================================================
   echo [RUN] ApexTraderAI local run started
   echo [RUN] requirement=Never finish a workflow run without leaving a readable log artifact
+  echo [RUN] apex_run_id=%APEX_RUN_ID%
   echo [RUN] run_id=%RUN_ID%
   echo [RUN] repo=%CD%
   echo [RUN] work_root=%WORK_ROOT%

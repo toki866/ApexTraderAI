@@ -616,6 +616,49 @@ jobs:
             )
           }
 
+      - name: Generate unique APEX_RUN_ID
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $apexRunId = "gh${{ github.run_id }}_att${{ github.run_attempt }}_${{ env.MODE }}_${ts}_${shortSha}"
+          "APEX_RUN_ID=$apexRunId" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "APEX_RUN_ID=$apexRunId"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- APEX_RUN_ID: $apexRunId"
+
+      - name: Cleanup old WORK_ROOT runs (keep latest)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $runsRoot = 'C:\work\apex_work\runs'
+          $keepLatest = 30
+          $minAgeHours = 6
+          $cutoff = (Get-Date).AddHours(-$minAgeHours)
+          $deletedCount = 0
+
+          if (Test-Path $runsRoot) {
+            $runDirs = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending
+            $removeTargets = $runDirs | Select-Object -Skip $keepLatest | Where-Object { $_.LastWriteTime -lt $cutoff }
+            foreach ($target in $removeTargets) {
+              try {
+                Remove-Item -Path $target.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Test-Path $target.FullName)) { $deletedCount++ }
+              } catch {
+                Write-Warning "Failed to remove old run dir: $($target.FullName)"
+              }
+            }
+            Write-Host "Cleanup summary: root=$runsRoot keepLatest=$keepLatest minAgeHours=$minAgeHours deleted=$deletedCount total=$($runDirs.Count)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): deleted=$deletedCount keepLatest=$keepLatest minAgeHours=$minAgeHours total=$($runDirs.Count)"
+          } else {
+            Write-Warning "WORK_ROOT does not exist: $runsRoot"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): skipped (root not found)"
+          }
+
       - name: Run desktop BAT
         id: run_bat
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -638,6 +681,7 @@ jobs:
           TRAIN_YEARS: ${{ inputs.train_years }}
           TEST_MONTHS: ${{ inputs.test_months }}
           WORK_ROOT: C:\work\apex_work\runs
+          APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           PYTHON_EXE: python
         run: |
@@ -772,6 +816,7 @@ jobs:
           Add-Content $report ""
           Add-Content $report "[STEP] append_error_tails"
           Add-Content $report ("timestamp={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+          Add-Content $report ("[INFO] apex_run_id={0}" -f $env:APEX_RUN_ID)
 
           # python env snapshot (to compare with local)
           Add-Content $report "---- python_env ----"
@@ -791,8 +836,17 @@ jobs:
 
           # run_*.log tail (best effort)
           $workRoot = 'C:\work\apex_work\runs'
-          $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $latestRunDir = $null
+          if ($env:APEX_RUN_ID) {
+            $candidateRunDir = Join-Path $workRoot $env:APEX_RUN_ID
+            if (Test-Path $candidateRunDir) {
+              $latestRunDir = Get-Item $candidateRunDir
+            }
+          }
+          if (-not $latestRunDir) {
+            $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
           Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           if ($latestRunDir) {
             Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)
@@ -864,9 +918,19 @@ jobs:
           $outputRootForPackage = ''
           $runsRoot = 'C:\work\apex_work\runs'
           if (Test-Path $runsRoot) {
-            $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 1
+            $latestRun = $null
+            $candidate = $null
+            if ($env:APEX_RUN_ID) {
+              $candidate = Join-Path $runsRoot $env:APEX_RUN_ID
+              if (Test-Path $candidate) {
+                $latestRun = Get-Item $candidate
+              }
+            }
+            if (-not $latestRun) {
+              $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+            }
             if ($latestRun) {
               $runDirForPackage = $latestRun.FullName
               $outputRootForPackage = Join-Path $runDirForPackage 'output'
@@ -970,7 +1034,10 @@ jobs:
           )
 
           $runId = ''
-          if (Test-Path $consoleLog) {
+          if ($env:APEX_RUN_ID) {
+            $runId = $env:APEX_RUN_ID
+          }
+          if (-not $runId -and (Test-Path $consoleLog)) {
             $runIdLine = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
             if ($runIdLine) {
               $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
@@ -1213,6 +1280,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($outputRoot)) {
             $outputRoot = $env:OUTPUT_ROOT
           }
+
+          if (Test-Path 'reports/metrics_summary.md') { Remove-Item 'reports/metrics_summary.md' -Force -ErrorAction SilentlyContinue }
+          if (Test-Path 'reports/metrics_summary.csv') { Remove-Item 'reports/metrics_summary.csv' -Force -ErrorAction SilentlyContinue }
 
           python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
@@ -2101,8 +2171,19 @@ jobs:
             $env:REPO_ROOT
           ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-          $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
-          $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+          $preferredMd = Join-Path $env:REPO_ROOT 'reports\metrics_summary.md'
+          if (Test-Path $preferredMd) {
+            $metricsMdSource = $preferredMd
+          } else {
+            $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
+          }
+
+          $preferredCsv = Join-Path $env:REPO_ROOT 'reports\metrics_summary.csv'
+          if (Test-Path $preferredCsv) {
+            $metricsCsvSource = $preferredCsv
+          } else {
+            $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+          }
 
           $latestMetricsMd = Join-Path $latestDir 'metrics_summary.md'
           $latestMetricsCsv = Join-Path $latestDir 'metrics_summary.csv'
@@ -2748,6 +2829,49 @@ jobs:
             )
           }
 
+      - name: Generate unique APEX_RUN_ID
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $apexRunId = "gh${{ github.run_id }}_att${{ github.run_attempt }}_${{ env.MODE }}_${ts}_${shortSha}"
+          "APEX_RUN_ID=$apexRunId" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "APEX_RUN_ID=$apexRunId"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- APEX_RUN_ID: $apexRunId"
+
+      - name: Cleanup old WORK_ROOT runs (keep latest)
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $runsRoot = 'C:\work\apex_work\runs'
+          $keepLatest = 30
+          $minAgeHours = 6
+          $cutoff = (Get-Date).AddHours(-$minAgeHours)
+          $deletedCount = 0
+
+          if (Test-Path $runsRoot) {
+            $runDirs = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending
+            $removeTargets = $runDirs | Select-Object -Skip $keepLatest | Where-Object { $_.LastWriteTime -lt $cutoff }
+            foreach ($target in $removeTargets) {
+              try {
+                Remove-Item -Path $target.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Test-Path $target.FullName)) { $deletedCount++ }
+              } catch {
+                Write-Warning "Failed to remove old run dir: $($target.FullName)"
+              }
+            }
+            Write-Host "Cleanup summary: root=$runsRoot keepLatest=$keepLatest minAgeHours=$minAgeHours deleted=$deletedCount total=$($runDirs.Count)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): deleted=$deletedCount keepLatest=$keepLatest minAgeHours=$minAgeHours total=$($runDirs.Count)"
+          } else {
+            Write-Warning "WORK_ROOT does not exist: $runsRoot"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): skipped (root not found)"
+          }
+
       - name: Run desktop BAT
         id: run_bat
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -2770,6 +2894,7 @@ jobs:
           TRAIN_YEARS: ${{ inputs.train_years }}
           TEST_MONTHS: ${{ inputs.test_months }}
           WORK_ROOT: C:\work\apex_work\runs
+          APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           PYTHON_EXE: python
         run: |
@@ -2904,6 +3029,7 @@ jobs:
           Add-Content $report ""
           Add-Content $report "[STEP] append_error_tails"
           Add-Content $report ("timestamp={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+          Add-Content $report ("[INFO] apex_run_id={0}" -f $env:APEX_RUN_ID)
 
           # python env snapshot (to compare with local)
           Add-Content $report "---- python_env ----"
@@ -2923,8 +3049,17 @@ jobs:
 
           # run_*.log tail (best effort)
           $workRoot = 'C:\work\apex_work\runs'
-          $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $latestRunDir = $null
+          if ($env:APEX_RUN_ID) {
+            $candidateRunDir = Join-Path $workRoot $env:APEX_RUN_ID
+            if (Test-Path $candidateRunDir) {
+              $latestRunDir = Get-Item $candidateRunDir
+            }
+          }
+          if (-not $latestRunDir) {
+            $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
           Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           if ($latestRunDir) {
             Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)
@@ -2996,9 +3131,19 @@ jobs:
           $outputRootForPackage = ''
           $runsRoot = 'C:\work\apex_work\runs'
           if (Test-Path $runsRoot) {
-            $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 1
+            $latestRun = $null
+            $candidate = $null
+            if ($env:APEX_RUN_ID) {
+              $candidate = Join-Path $runsRoot $env:APEX_RUN_ID
+              if (Test-Path $candidate) {
+                $latestRun = Get-Item $candidate
+              }
+            }
+            if (-not $latestRun) {
+              $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+            }
             if ($latestRun) {
               $runDirForPackage = $latestRun.FullName
               $outputRootForPackage = Join-Path $runDirForPackage 'output'
@@ -3102,7 +3247,10 @@ jobs:
           )
 
           $runId = ''
-          if (Test-Path $consoleLog) {
+          if ($env:APEX_RUN_ID) {
+            $runId = $env:APEX_RUN_ID
+          }
+          if (-not $runId -and (Test-Path $consoleLog)) {
             $runIdLine = Select-String -Path $consoleLog -Pattern '^\[OK\] run_id=' | Select-Object -Last 1
             if ($runIdLine) {
               $runId = ($runIdLine.Line -replace '^\[OK\] run_id=', '').Trim()
@@ -3342,6 +3490,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($outputRoot)) {
             $outputRoot = $env:OUTPUT_ROOT
           }
+
+          if (Test-Path 'reports/metrics_summary.md') { Remove-Item 'reports/metrics_summary.md' -Force -ErrorAction SilentlyContinue }
+          if (Test-Path 'reports/metrics_summary.csv') { Remove-Item 'reports/metrics_summary.csv' -Force -ErrorAction SilentlyContinue }
 
           python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
@@ -4207,8 +4358,19 @@ jobs:
             $env:REPO_ROOT
           ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-          $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
-          $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+          $preferredMd = Join-Path $env:REPO_ROOT 'reports\metrics_summary.md'
+          if (Test-Path $preferredMd) {
+            $metricsMdSource = $preferredMd
+          } else {
+            $metricsMdSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.md')
+          }
+
+          $preferredCsv = Join-Path $env:REPO_ROOT 'reports\metrics_summary.csv'
+          if (Test-Path $preferredCsv) {
+            $metricsCsvSource = $preferredCsv
+          } else {
+            $metricsCsvSource = Resolve-FirstMatch -RootDirs $candidateRoots -FileNames @('metrics_summary.csv')
+          }
 
           $latestMetricsMd = Join-Path $latestDir 'metrics_summary.md'
           $latestMetricsCsv = Join-Path $latestDir 'metrics_summary.csv'
