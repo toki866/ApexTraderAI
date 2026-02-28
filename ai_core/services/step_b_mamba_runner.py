@@ -1046,6 +1046,113 @@ def run_mamba_multi_model_by_horizon(
     )
 
 
+def rollout_periodic_h1_future(
+    app_config: Any,
+    symbol: str,
+    periodic_history_df: pd.DataFrame,
+    periodic_future_df: pd.DataFrame,
+    cfg: Any,
+    anchor_close: float,
+    horizon_days: int = 63,
+) -> pd.DataFrame:
+    """Roll out periodic h=1 model over future business days.
+
+    Returns DataFrame with columns: Date, Pred_Close.
+    """
+    _require_torch()
+    import torch
+
+    out_root = _infer_output_root(app_config)
+    _, train_end, _, _, mode = _infer_split(app_config, cfg)
+    lookback_days = int(_get(cfg, "lookback_days", 128))
+    hidden_dim = int(_get(cfg, "hidden_dim", 64))
+    standardize = bool(_get(cfg, "standardize", True))
+    target_mode = _get_target_mode(cfg, True)
+
+    h1_model = out_root / "stepB" / mode / "models" / "mamba_periodic_h01.pt"
+    if not h1_model.exists():
+        raise FileNotFoundError(f"Missing periodic h01 model: {h1_model}")
+
+    hist = periodic_history_df.copy()
+    fut = periodic_future_df.copy()
+    for dfx in (hist, fut):
+        if "Date" not in dfx.columns:
+            raise ValueError("periodic DataFrame must include Date")
+        dfx["Date"] = pd.to_datetime(dfx["Date"], errors="coerce").dt.normalize()
+        dfx.dropna(subset=["Date"], inplace=True)
+        dfx.sort_values("Date", inplace=True)
+
+    feature_cols = _select_periodic_feature_cols(hist)
+    if not feature_cols:
+        raise RuntimeError("No periodic feature columns found for rollout")
+
+    for c in feature_cols:
+        if c not in fut.columns:
+            fut[c] = 0.0
+    hist = hist[["Date"] + feature_cols].copy()
+    fut = fut[["Date"] + feature_cols].copy()
+
+    hist[feature_cols] = hist[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().fillna(0.0)
+    fut[feature_cols] = fut[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().fillna(0.0)
+
+    all_per = pd.concat([hist, fut], axis=0, ignore_index=True)
+    all_per = all_per.drop_duplicates(subset=["Date"], keep="last").sort_values("Date").reset_index(drop=True)
+
+    train_mask = all_per["Date"] <= pd.Timestamp(train_end).normalize()
+    x_train = all_per.loc[train_mask, feature_cols].to_numpy(dtype=np.float32)
+    mu = None
+    sd = None
+    if standardize and len(x_train) > 0:
+        mu = x_train.mean(axis=0)
+        sd = x_train.std(axis=0)
+        sd = np.where(sd < 1e-8, 1.0, sd)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        pack = torch.load(h1_model, map_location=device, weights_only=True)
+    except TypeError:
+        pack = torch.load(h1_model, map_location=device)
+    in_dim = int(pack.get("feature_dim", len(feature_cols))) if isinstance(pack, dict) else len(feature_cols)
+    hidden_dim = int(pack.get("hidden_dim", hidden_dim)) if isinstance(pack, dict) else hidden_dim
+    state = pack["state_dict"] if isinstance(pack, dict) and "state_dict" in pack else pack
+    model = _build_model(input_dim=in_dim, hidden_dim=hidden_dim, out_dim=1).to(device)
+    model.load_state_dict(state)
+    model.eval()
+
+    future_dates = fut["Date"].drop_duplicates().sort_values().head(int(horizon_days)).to_list()
+    if len(future_dates) < int(horizon_days):
+        raise RuntimeError(f"periodic future dates are insufficient: {len(future_dates)} < {horizon_days}")
+
+    results: List[Dict[str, Any]] = []
+    anchor_date = pd.Timestamp(hist["Date"].max()).normalize()
+    current_close = float(anchor_close)
+
+    for tgt in future_dates:
+        tgt_n = pd.Timestamp(tgt).normalize()
+        anchor_idx_list = all_per.index[all_per["Date"] <= anchor_date].to_list()
+        if not anchor_idx_list:
+            raise RuntimeError(f"Could not locate anchor date in periodic features: {anchor_date}")
+        anchor_idx = int(anchor_idx_list[-1])
+        start_idx = max(0, anchor_idx - lookback_days + 1)
+        win = all_per.iloc[start_idx : anchor_idx + 1][feature_cols].to_numpy(dtype=np.float32)
+        if len(win) < lookback_days:
+            pad = np.zeros((lookback_days - len(win), win.shape[1]), dtype=np.float32)
+            win = np.vstack([pad, win])
+        if standardize and (mu is not None) and (sd is not None):
+            win = (win - mu.astype(np.float32)) / sd.astype(np.float32)
+
+        xb = torch.from_numpy(win[None, :, :]).to(device)
+        with torch.no_grad():
+            pred_y = float(model(xb).detach().cpu().numpy().reshape(-1)[0])
+        pred_close = _target_inverse(pred_y, current_close, target_mode)
+
+        results.append({"Date": tgt_n.strftime("%Y-%m-%d"), "Pred_Close": float(pred_close)})
+        anchor_date = tgt_n
+        current_close = float(pred_close)
+
+    return pd.DataFrame(results, columns=["Date", "Pred_Close"])
+
+
 # ---------------------------------------------------------------------
 # Backward-compatible entrypoint expected by StepBService
 # ---------------------------------------------------------------------
