@@ -100,6 +100,12 @@ class StepBResult:
 
     out_dir: str = ""
     pred_time_all_path: str = ""
+    split_summary_path: str = ""
+    pred_time_full_path: str = ""
+    pred_time_periodic_path: str = ""
+    pred_future_periodic_path: str = ""
+    pred_nextday_full_path: str = ""
+    rollout63_full_path: str = ""
 
     # agent_results maps keys like "mamba" to StepBAgentResult
     agent_results: Dict[str, StepBAgentResult] = field(default_factory=dict)

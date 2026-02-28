@@ -3,3 +3,6 @@ pandas
 PyYAML
 yfinance
 matplotlib
+torch
+PyWavelets
+mamba-ssm

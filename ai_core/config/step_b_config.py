@@ -33,7 +33,7 @@ class WaveletMambaTrainConfig:
     train_end: Optional[str] = None
     test_start: Optional[str] = None
     test_end: Optional[str] = None
-    lookback_days: int = 60
+    lookback_days: int = 128
     horizons: str = "1,5,10,20"
     seed: int = 42
     epochs: Optional[int] = None
@@ -45,11 +45,15 @@ class WaveletMambaTrainConfig:
     enabled: bool = True
     variant: str = "full"
     enable_periodic_snapshots: bool = False
-    periodic_snapshot_horizons: Tuple[int, ...] = (20,)
+    periodic_snapshot_horizons: Tuple[int, ...] = (1, 5, 10, 20)
     periodic_daily_dirname: str = "daily_periodic"
     periodic_manifest_suffix: str = "periodic"
     periodic_output_tag: str = "mamba_periodic"
     periodic_endpoints: Tuple[int, ...] = (1, 5, 10, 20)
+    live_future_bdays: int = 63
+    sim_rollout63: bool = False
+    run_variants: Tuple[str, ...] = ("full", "periodic")
+    backend: str = "mamba"
     date_range: Optional[DateRange] = None
 
 
@@ -79,8 +83,10 @@ class StepBConfig:
         if isinstance(self.mamba.mamba_mode, str) and self.mamba.mamba_mode.strip():
             self.mamba.mode = self.mamba.mamba_mode.strip()
         if isinstance(self.run_mode, str) and self.run_mode.strip():
-            if str(self.mamba.mode).strip().lower() in ("", "sim") and self.run_mode.strip().lower() in ("sim", "ops"):
-                self.mamba.mode = self.run_mode.strip().lower()
+            m_mode = str(self.mamba.mode).strip().lower()
+            run_mode = self.run_mode.strip().lower()
+            if m_mode in ("", "sim") and run_mode in ("sim", "live", "display", "ops", "prod", "production"):
+                self.mamba.mode = run_mode
 
         if getattr(self.mamba, "epochs", None) is None:
             self.mamba.epochs = int(self.mamba.num_epochs)
