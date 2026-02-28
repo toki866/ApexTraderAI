@@ -511,6 +511,20 @@ def _instantiate_service(cls, ctx: Dict[str, Any]):
         raise
 
 
+def _filter_kwargs_for_ctor(cls: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Return ctor kwargs accepted by `cls`.
+
+    This keeps call sites forward/backward compatible when service config dataclasses
+    add/remove optional constructor parameters across versions.
+    """
+    try:
+        sig = inspect.signature(cls)
+        allowed = set(sig.parameters.keys())
+    except Exception:
+        allowed = set(getattr(cls, "__dataclass_fields__", {}).keys())
+    return {k: v for k, v in kwargs.items() if k in allowed}
+
+
 def _load_prices_dates(
     symbol: str,
     repo_root: Path,
@@ -648,7 +662,7 @@ def _build_date_range(
     return dr
 
 
-def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path:
+def _ensure_stepb_pred_time_all(symbol: str, output_root: Path, mode: str) -> Path:
     """Ensure stepB_pred_time_all_<SYMBOL>.csv exists under output/stepB/<mode>/.
 
     Policy:
@@ -664,7 +678,10 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
         # be permissive; create folder anyway
         pass
 
-    out_root = repo_root / 'output'
+    import pandas as pd
+    import shutil
+
+    out_root = Path(output_root)
     stepb_mode_dir = out_root / 'stepB' / mode
     stepb_mode_dir.mkdir(parents=True, exist_ok=True)
 
@@ -694,6 +711,35 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
     if _normalize_pred_time_all(target):
         return target
 
+    # Build from mode-local pred_close first.
+    pred_close = stepb_mode_dir / f'stepB_pred_close_mamba_{symbol}.csv'
+
+    def _build_from_pred_close(pred_close_path: Path) -> bool:
+        if not pred_close_path.exists() or pred_close_path.stat().st_size <= 0:
+            return False
+        try:
+            df = pd.read_csv(pred_close_path)
+        except Exception:
+            return False
+        date_col = next((c for c in df.columns if c.lower() == 'date'), None)
+        if date_col is None:
+            return False
+        mamba_col = next((c for c in df.columns if c == 'Pred_Close_MAMBA'), None)
+        if mamba_col is None:
+            mamba_col = next((c for c in df.columns if c.lower() == 'pred_close_mamba'), None)
+        if mamba_col is None:
+            mamba_col = next((c for c in df.columns if c.lower().startswith('pred_close_mamba_')), None)
+        if mamba_col is None:
+            return False
+        out_df = df[[date_col, mamba_col]].copy().rename(
+            columns={date_col: 'Date', mamba_col: 'Pred_Close_MAMBA'}
+        )
+        out_df.to_csv(target, index=False, encoding='utf-8')
+        return _normalize_pred_time_all(target)
+
+    if _build_from_pred_close(pred_close):
+        return target
+
     # If a legacy pred_time_all exists, copy it into the mode folder (do not delete legacy).
     legacy_candidates = [
         out_root / 'stepB' / f'stepB_pred_time_all_{symbol}.csv',
@@ -705,51 +751,7 @@ def _ensure_stepb_pred_time_all(symbol: str, repo_root: Path, mode: str) -> Path
             if _normalize_pred_time_all(target):
                 return target
 
-    # Build from agent pred_close files.
-    prices_dates = _load_prices_dates(symbol, repo_root)
-    df = pd.DataFrame({'Date': prices_dates})
-
-    # Gather candidate files from mode dir first, then legacy stepB dir as fallback.
-    candidate_dirs = [stepb_mode_dir, out_root / 'stepB']
-    files: list[Path] = []
-    for d in candidate_dirs:
-        if d.exists():
-            files.extend(sorted(d.glob(f'*{symbol}*.csv')))
-
-    def _pick_best(files: list[Path], key: str) -> Path | None:
-        key_l = key.lower()
-        cands = [f for f in files if key_l in f.name.lower()]
-        if not cands:
-            return None
-        # Prefer pred_close, then pred_path, then anything else; avoid delta.
-        def score(f: Path) -> tuple:
-            n = f.name.lower()
-            return (
-                0 if 'pred_time_all' in n else 1,
-                0 if 'pred_close' in n else 1,
-                0 if 'pred_path' in n else 1,
-                1 if 'delta' in n else 0,
-                len(n),
-            )
-        cands.sort(key=score)
-        return cands[0]
-
-    agent_map = {
-        'MAMBA': _pick_best(files, 'mamba'),
-    }
-
-    for agent, path in agent_map.items():
-        if path is None:
-            continue
-        series = _load_pred_close(path, agent)
-        df = df.merge(series, on='Date', how='left')
-
-    if 'Pred_Close_MAMBA' in df.columns:
-        df = df[['Date', 'Pred_Close_MAMBA']]
-    else:
-        df = df[['Date']]
-    df.to_csv(target, index=False, encoding='utf-8')
-    return target
+    raise FileNotFoundError(f"Missing StepB pred_time_all/pred_close artifacts for {symbol} at {stepb_mode_dir}")
 def _get_app_config(repo_root: Path):
     """Load AppConfig from YAML if available, otherwise fall back to a minimal default.
 
@@ -1165,13 +1167,14 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
     from ai_core.services.step_dprime_service import StepDPrimeService, StepDPrimeConfig
 
     out_root = str(getattr(app_config, "output_root", "output"))
-    cfg = StepDPrimeConfig(
-        symbol=symbol,
-        mode=(mode or "sim"),
-        output_root=out_root,
-        seed=42,
-        device="auto",
-    )
+    raw_cfg = {
+        "symbol": symbol,
+        "mode": (mode or "sim"),
+        "output_root": out_root,
+        "seed": 42,
+        "device": "auto",
+    }
+    cfg = StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **raw_cfg))
     svc = StepDPrimeService()
     return svc.run(cfg)
 
@@ -1490,7 +1493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("[StepB] done")
             # Ensure contract artifact exists
             try:
-                p = _ensure_stepb_pred_time_all(symbol, repo_root, mode=resolved_mamba_mode)
+                p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
                 print(f"[StepB] ensured: {p}")
             except Exception as e:
                 print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
