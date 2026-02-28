@@ -626,13 +626,21 @@ class StepEService:
                 return pd.concat([d0, d1], axis=0, ignore_index=True).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
         sources = [s.strip() for s in (cfg.dprime_sources or "").split(",") if s.strip()]
-        horizons = [int(x) for x in (cfg.dprime_horizons or "1").split(",") if str(x).strip()]
         if not sources:
-            raise ValueError("dprime_profile/dprime_sources are empty while use_stepd_prime=True")
+            inferred = self._infer_dprime_source_from_agent(str(getattr(cfg, "agent", "") or ""))
+            if inferred:
+                sources = [inferred]
+
+        horizon_tokens = [str(x).strip() for x in (cfg.dprime_horizons or "1").split(",") if str(x).strip()]
+        horizons = [self._normalize_horizon_token(tok) for tok in horizon_tokens]
+        if not sources:
+            raise ValueError(
+                "dprime_profile/dprime_sources are empty while use_stepd_prime=True, "
+                "and source inference from agent name failed"
+            )
 
         for src in sources:
-            for h in horizons:
-                hh = f"h{int(h):02d}"
+            for hh in horizons:
                 cands = [
                     base / f"stepDprime_{src}_{hh}_{symbol}_embeddings_all.csv",
                     base / f"stepDprime_{src}_{hh}_{symbol}_embeddings.csv",
@@ -648,6 +656,28 @@ class StepEService:
         assert merged is not None
         merged = merged.sort_values("Date").reset_index(drop=True)
         return merged
+
+    def _normalize_horizon_token(self, token: str) -> str:
+        t = str(token or "").strip().lower()
+        if not t:
+            return "h01"
+        if t.isdigit():
+            return f"h{int(t):02d}"
+        if t.startswith("h") and t[1:].isdigit():
+            return f"h{int(t[1:]):02d}"
+        if t == "3scale":
+            return "3scale"
+        raise ValueError(f"invalid dprime_horizons token: {token}")
+
+    def _infer_dprime_source_from_agent(self, agent: str) -> str:
+        a = str(agent or "").lower()
+        if "all_features" in a:
+            return "all_features"
+        if "mix" in a:
+            return "mix"
+        if "bnf" in a:
+            return "bnf"
+        return ""
 
     # -----------------------
     # Observation & returns

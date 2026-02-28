@@ -201,6 +201,14 @@ def _infer_pred_type(profile: str) -> str:
     return "3scale"
 
 
+def _infer_family(profile: str) -> str:
+    if "all_features" in profile:
+        return "all_features"
+    if "mix" in profile:
+        return "mix"
+    return "bnf"
+
+
 class StepDPrimeService:
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
         mode = _normalize_mode(cfg.mode)
@@ -271,7 +279,7 @@ class StepDPrimeService:
             raise RuntimeError("insufficient history before test_start for L_past window")
 
         for profile in cfg.profiles:
-            fam = "all_features" if "all_features" in profile else ("mix" if "mix" in profile else "bnf")
+            fam = _infer_family(profile)
             pred_type = _infer_pred_type(profile)
             past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
             past_cols = [c for c in past_cols if c in data.columns]
@@ -366,12 +374,17 @@ class StepDPrimeService:
             )
             df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
 
+            # Legacy profile-based names (kept for compatibility)
             ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
             ep_te = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_test.csv"
             ep_all = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
             df_emb_tr.to_csv(ep_tr, index=False)
             df_emb_te.to_csv(ep_te, index=False)
             df_emb_all.to_csv(ep_all, index=False)
+
+            # Family/pred_type names consumed by StepE source+horizon loading.
+            ep_all_named = emb_dir / f"stepDprime_{fam}_{pred_type}_{cfg.symbol}_embeddings_all.csv"
+            df_emb_all.to_csv(ep_all_named, index=False)
 
             results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
