@@ -26,3 +26,5 @@ jobs:
           python -c "import ai_core.utils.paths"
           python -c "import ai_core.config.app_config"
           python -c "import tools.run_pipeline"
+          python -c "from ai_core.services.step_b_service import StepBService; print('ok')"
+          python -c "from ai_core.services.step_b_mamba_runner import WaveletMambaRunner; print('ok')"

@@ -54,6 +54,13 @@ import re
 import numpy as np
 import pandas as pd
 
+try:
+    from mamba_ssm import Mamba as _MambaSSM  # type: ignore
+    _MAMBA_SSM_AVAILABLE = True
+except Exception:
+    _MambaSSM = None  # type: ignore[assignment]
+    _MAMBA_SSM_AVAILABLE = False
+
 
 # ----------------------------------------------------------------------
 # Optional Wavelet front-end (leakage-safe)
@@ -450,25 +457,67 @@ def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp,
     return train_start, train_end, test_start, test_end, mode
 
 
-def _build_model(input_dim: int, hidden_dim: int, out_dim: int):
+def _make_torch_ssm_fallback_block(dim: int, hidden_dim: int):
     import torch.nn as nn
 
-    class SimpleSeqModel(nn.Module):
-        def __init__(self, input_dim: int, hidden_dim: int, out_dim: int) -> None:
+    class TorchSSMFallbackBlock(nn.Module):
+        """Pure-PyTorch SSM-compatible fallback block (no mamba-ssm dependency)."""
+
+        def __init__(self, dim: int, hidden_dim: int) -> None:
             super().__init__()
-            self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
-            self.head = nn.Sequential(
+            self.in_proj = nn.Linear(dim, hidden_dim)
+            self.dw_conv = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim)
+            self.gate = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, out_dim),
+                nn.Sigmoid(),
             )
+            self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+            self.norm = nn.LayerNorm(hidden_dim)
 
         def forward(self, x):
-            _, h = self.rnn(x)  # h: (1, B, H)
-            h = h[-1]
-            return self.head(h)
+            h = self.in_proj(x)  # (B, T, H)
+            y = self.dw_conv(h.transpose(1, 2)).transpose(1, 2)  # (B, T, H)
+            y = y * self.gate(h)
+            y = self.out_proj(y)
+            return self.norm(h + y)
 
-    return SimpleSeqModel(input_dim, hidden_dim, out_dim)
+    return TorchSSMFallbackBlock(dim=dim, hidden_dim=hidden_dim)
+
+
+class WaveletMambaRunner:
+    """Public import-stable symbol used by CI/import sanity."""
+
+    @staticmethod
+    def make_torch_model(input_dim: int, hidden_dim: int, out_dim: int):
+        import torch.nn as nn
+
+        class _WaveletMambaTorchModel(nn.Module):
+            def __init__(self, input_dim: int, hidden_dim: int, out_dim: int) -> None:
+                super().__init__()
+                self.input_proj = nn.Linear(input_dim, hidden_dim)
+                if _MAMBA_SSM_AVAILABLE and _MambaSSM is not None:
+                    self.ssm = _MambaSSM(d_model=hidden_dim, d_state=16, d_conv=4, expand=2)
+                    self.model_arch = "Mamba(mamba-ssm)"
+                else:
+                    self.ssm = _make_torch_ssm_fallback_block(dim=hidden_dim, hidden_dim=hidden_dim)
+                    self.model_arch = "Mamba(torch-ssm-fallback)"
+                self.head = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, out_dim),
+                )
+
+            def forward(self, x):
+                h = self.input_proj(x)
+                h = self.ssm(h)
+                h_last = h[:, -1, :]
+                return self.head(h_last)
+
+        return _WaveletMambaTorchModel(input_dim, hidden_dim, out_dim)
+
+
+def _build_model(input_dim: int, hidden_dim: int, out_dim: int):
+    return WaveletMambaRunner.make_torch_model(input_dim, hidden_dim, out_dim)
 
 
 def _scan_stepa_daily_dir(out_root: Path, mode: str, symbol: str, override_dir: Optional[str]) -> List[Tuple[pd.Timestamp, Path]]:
@@ -930,6 +979,8 @@ def run_mamba_multi_model_by_horizon(
     df_path.to_csv(pred_path_path, index=False, encoding="utf-8-sig")
     out_win[["Date", f"Delta_Close_pred_{col_agent}"]].to_csv(delta_path, index=False, encoding="utf-8-sig")
 
+    model_arch = "Mamba(mamba-ssm)" if _MAMBA_SSM_AVAILABLE else "Mamba(torch-ssm-fallback)"
+
     meta = {
         "symbol": sym,
         "variant": ("periodic" if is_periodic else "full"),
@@ -959,8 +1010,10 @@ def run_mamba_multi_model_by_horizon(
         "batch_size": batch_size,
         "lr": lr,
         "hidden_dim": hidden_dim,
-        "model_arch": "GRU",
-        "model_name": "SimpleSeqModel(GRU)",
+        "backend": "mamba",
+        "mamba_ssm_available": bool(_MAMBA_SSM_AVAILABLE),
+        "model_arch": model_arch,
+        "model_name": "WaveletMambaRunner",
         "standardize": standardize,
         "train_samples_by_h": train_samples_by_h,
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
