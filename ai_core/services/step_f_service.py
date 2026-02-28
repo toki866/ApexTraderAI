@@ -66,7 +66,8 @@ class StepFConfig:
 
     # optional context (StepDPrime state)
     use_context: bool = False
-    context_variant: str = "mix"  # bnf/all_features/mix
+    context_variant: str = "mix"  # legacy fallback
+    context_dprime_profile: str = "dprime_mix_h02"
     context_profile: str = "minimal"  # minimal / all
 
 
@@ -91,7 +92,9 @@ class StepFService:
         self.app_config = app_config
 
     def run(self, date_range, symbol: str, mode: Optional[str] = None) -> None:
-        mode = mode or getattr(date_range, "mode", None) or "sim"
+        mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
+        if mode in {"ops", "prod", "production", "real"}:
+            mode = "live"
         cfg: StepFConfig = getattr(self.app_config, "stepF", None)
         if cfg is None:
             raise ValueError("app_config.stepF (StepFConfig) is missing.")
@@ -143,7 +146,13 @@ class StepFService:
 
         context_cols: List[str] = []
         if bool(getattr(cfg, "use_context", False)):
-            df_ctx = self._load_stepd_prime_context(out_root, mode, symbol, variant=str(getattr(cfg, "context_variant", "mix") or "mix"))
+            df_ctx = self._load_stepd_prime_context(
+                out_root,
+                mode,
+                symbol,
+                variant=str(getattr(cfg, "context_variant", "mix") or "mix"),
+                profile=str(getattr(cfg, "context_dprime_profile", "") or ""),
+            )
             if not df_ctx.empty:
                 df_all = df_all.merge(df_ctx, on="Date", how="left")
                 context_cols = self._select_context_columns(df_all, profile=str(getattr(cfg, "context_profile", "minimal") or "minimal"))
@@ -345,12 +354,25 @@ class StepFService:
         out = pd.DataFrame({"Date": df["Date"], "Position": pos.astype(float)})
         return out.sort_values("Date").reset_index(drop=True)
 
-    def _load_stepd_prime_context(self, out_root: Path, mode: str, symbol: str, variant: str) -> pd.DataFrame:
+    def _load_stepd_prime_context(self, out_root: Path, mode: str, symbol: str, variant: str, profile: str = "") -> pd.DataFrame:
+        profile = str(profile or "").strip()
+        paths = []
+        if profile:
+            base_new = out_root / "stepDprime" / mode
+            paths.extend([
+                base_new / f"stepDprime_state_train_{profile}_{symbol}.csv",
+                base_new / f"stepDprime_state_test_{profile}_{symbol}.csv",
+            ])
+            base_old = out_root / "stepD_prime" / mode
+            paths.extend([
+                base_old / f"stepDprime_state_{profile}_{symbol}_train.csv",
+                base_old / f"stepDprime_state_{profile}_{symbol}_test.csv",
+            ])
         base = out_root / "stepD_prime" / mode
-        paths = [
+        paths.extend([
             base / f"stepDprime_state_{variant}_{symbol}_train.csv",
             base / f"stepDprime_state_{variant}_{symbol}_test.csv",
-        ]
+        ])
         frames: List[pd.DataFrame] = []
         for p in paths:
             if not p.exists():

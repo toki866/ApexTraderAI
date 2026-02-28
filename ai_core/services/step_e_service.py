@@ -67,6 +67,7 @@ class StepEConfig:
     use_stepd_prime: bool = False
     use_dprime_state: bool = False
     dprime_state_variant: str = ""  # bnf / all_features / mix
+    dprime_profile: str = ""
     dprime_sources: str = ""      # e.g. "bnf" or "bnf,all_features"
     dprime_horizons: str = "1"    # e.g. "1" or "1,2,3"
     dprime_join: str = "concat"   # concat only (for now)
@@ -118,7 +119,9 @@ class StepEService:
         self.app_config = app_config
 
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
-        mode = str(mode or getattr(date_range, "mode", None) or "sim")
+        mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
+        if mode in {"ops", "prod", "production", "real"}:
+            mode = "live"
 
         raw_cfgs = getattr(self.app_config, "stepE", None)
         if raw_cfgs is None:
@@ -460,13 +463,20 @@ class StepEService:
         return df.sort_values("Date").reset_index(drop=True)
 
     def _load_stepD_prime_state(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+        profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         variant = str(cfg.dprime_state_variant or "").strip()
-        if not variant:
-            raise ValueError("dprime_state_variant is empty while use_dprime_state=True")
+        if not profile and variant:
+            # compatibility mapping for old variant-only configs
+            profile = f"dprime_{variant}_h02"
+        if not profile:
+            raise ValueError("dprime_profile is empty while use_dprime_state=True")
 
-        base = out_root / "stepD_prime" / mode
-        p_tr = base / f"stepDprime_state_{variant}_{symbol}_train.csv"
-        p_te = base / f"stepDprime_state_{variant}_{symbol}_test.csv"
+        p_tr = out_root / "stepDprime" / mode / f"stepDprime_state_train_{profile}_{symbol}.csv"
+        p_te = out_root / "stepDprime" / mode / f"stepDprime_state_test_{profile}_{symbol}.csv"
+        if not (p_tr.exists() and p_te.exists()):
+            legacy_base = out_root / "stepD_prime" / mode
+            p_tr = legacy_base / f"stepDprime_state_{profile}_{symbol}_train.csv"
+            p_te = legacy_base / f"stepDprime_state_{profile}_{symbol}_test.csv"
         if not (p_tr.exists() and p_te.exists()):
             raise FileNotFoundError(f"Missing StepD' state CSVs: {p_tr} / {p_te}")
 
