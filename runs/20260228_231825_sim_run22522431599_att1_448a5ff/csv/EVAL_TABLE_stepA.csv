@@ -1,0 +1,2 @@
+status,summary,test_rows,test_date_start,test_date_end,missing_ohlcv_count,path
+SKIP,stepA_prices_test file missing,,,,,
