@@ -84,6 +84,11 @@ class StepEConfig:
     smooth_abs_eps: float = 1e-6
     device: str = "auto"
 
+    # Pair-trade mode (SOXL long when ratio>0, SOXS long when ratio<0)
+    pair_trade: bool = True
+    long_symbol: str = "SOXL"
+    short_symbol: str = "SOXS"
+
 
 # ---------------------------
 # Policy (continuous position)
@@ -220,8 +225,8 @@ class StepEService:
             print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
 
         # Prepare tensors
-        X_train, r_soxl_train, r_soxs_train, cc_ret_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
-        X_test, r_soxl_test, r_soxs_test, cc_ret_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
+        X_train, r_soxl_train, r_soxs_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
+        X_test, r_soxl_test, r_soxs_test, dates_test = self._build_obs_and_returns(df_test, obs_cols)
 
         # Standardize based on train
         mu = X_train.mean(axis=0)
@@ -361,13 +366,14 @@ class StepEService:
             "Split": (["train"] * len(dates_train)) + (["test"] * len(dates_test)),
             "pos": pos_arr,
             "reward_next": reward_next_arr,
-            "cc_ret_next_soxl": cc_soxl,
-            "cc_ret_next_soxs": cc_soxs,
+            "r_soxl_next": cc_soxl,
+            "r_soxs_next": cc_soxs,
             "cost": cost_arr,
         })
         df_log["ratio"] = df_log["pos"]
         df_log["abs_ratio"] = df_log["ratio"].abs()
-        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["cc_ret_next_soxl"], np.where(df_log["ratio"] < -1e-8, df_log["cc_ret_next_soxs"], 0.0))
+        df_log["market_ret"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"] * df_log["ratio"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"] * (-df_log["ratio"]), 0.0))
+        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"], 0.0))
         df_log["underlying"] = np.where(df_log["ratio"] > 1e-8, "SOXL", np.where(df_log["ratio"] < -1e-8, "SOXS", "NONE"))
         df_log["gross"] = gross_arr
         df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
@@ -430,11 +436,6 @@ class StepEService:
 
     def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
-        df_soxs = self._load_symbol_prices(out_root=out_root, mode=mode, symbol="SOXS", required=False)
-        if df_soxs.empty and symbol.upper() == "SOXS":
-            df_soxs = df_prices[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
-        elif not df_soxs.empty:
-            df_soxs = df_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_exec_soxs"})
 
         if cfg.use_dprime_state:
             df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol)
@@ -446,10 +447,6 @@ class StepEService:
         else:
             df = df_prices.copy()
 
-        if not df_soxs.empty:
-            df = df.merge(df_soxs, on="Date", how="left")
-        else:
-            df["price_exec_soxs"] = np.nan
         used_manifest: dict[str, object] = {}
 
         if not cfg.use_dprime_state:
@@ -467,30 +464,65 @@ class StepEService:
 
         # StepD' embeddings
         if cfg.use_stepd_prime:
-            dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            self._ensure_dprime_sources(cfg)
+            try:
+                dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            except Exception as e:
+                print(f"[StepE] WARN: StepD' embeddings unavailable ({e}). Falling back to use_stepd_prime=False and continue.")
+                cfg.use_stepd_prime = False
+                dprime_df = None
 
-            # Normalize dates defensively (time-of-day differences can cause a full join miss)
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
-            dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
+            if dprime_df is not None:
+                # Normalize dates defensively (time-of-day differences can cause a full join miss)
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+                dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
 
-            dprime_dates = dprime_df["Date"].dropna().unique()
-            match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
-            used_manifest["stepD_prime_match_ratio"] = match_ratio
-            if match_ratio < 0.10:
-                # If this happens, all embeddings will be NaN after merge then become zeros.
-                df_min, df_max = df["Date"].min(), df["Date"].max()
-                dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
-                raise RuntimeError(
-                    "StepD' merge mismatch (match_ratio={:.3f}). "
-                    "df Date range={}..{}, dprime Date range={}..{}. "
-                    "Check the embeddings file Date column/format.".format(match_ratio, df_min, df_max, dp_min, dp_max)
-                )
+                dprime_dates = dprime_df["Date"].dropna().unique()
+                match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
+                used_manifest["stepD_prime_match_ratio"] = match_ratio
+                if match_ratio < 0.10:
+                    # If this happens, all embeddings will be NaN after merge then become zeros.
+                    df_min, df_max = df["Date"].min(), df["Date"].max()
+                    dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
+                    raise RuntimeError(
+                        "StepD' merge mismatch (match_ratio={:.3f}). "
+                        "df Date range={}..{}, dprime Date range={}..{}. "
+                        "Check the embeddings file Date column/format.".format(match_ratio, df_min, df_max, dp_min, dp_max)
+                    )
 
-            df = df.merge(dprime_df, on="Date", how="left")
-            # missing embeddings -> 0 (warmup rows are expected to be missing)
-            dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
-            if dp_cols:
-                df[dp_cols] = df[dp_cols].fillna(0.0)
+                df = df.merge(dprime_df, on="Date", how="left")
+                # missing embeddings -> 0 (warmup rows are expected to be missing)
+                dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
+                if dp_cols:
+                    df[dp_cols] = df[dp_cols].fillna(0.0)
+
+        # Pair-trade daily next returns (D->D+1 confirmed, no leakage)
+        pair_trade_enabled = bool(cfg.pair_trade) and symbol.upper() in {str(cfg.long_symbol).upper(), str(cfg.short_symbol).upper(), "SOXL", "SOXS"}
+        if pair_trade_enabled:
+            soxl_px = self._load_stepA_price_exec(out_root=out_root, mode=mode, symbol=str(cfg.long_symbol or "SOXL"))
+            soxs_px = self._load_stepA_price_exec(out_root=out_root, mode=mode, symbol=str(cfg.short_symbol or "SOXS"))
+            if soxl_px.empty or soxs_px.empty:
+                print("[StepE] WARN: Pair-trade requested but SOXL/SOXS prices are missing. Fallback to single-symbol mode.")
+                pair_trade_enabled = False
+            else:
+                pair = soxl_px.rename(columns={"price_exec": "price_soxl"}).merge(
+                    soxs_px.rename(columns={"price_exec": "price_soxs"}),
+                    on="Date",
+                    how="inner",
+                ).sort_values("Date").reset_index(drop=True)
+                pair["r_soxl_next"] = (pair["price_soxl"].shift(-1) / pair["price_soxl"] - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                pair["r_soxs_next"] = (pair["price_soxs"].shift(-1) / pair["price_soxs"] - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                df = df.merge(pair[["Date", "r_soxl_next", "r_soxs_next"]], on="Date", how="left")
+                df[["r_soxl_next", "r_soxs_next"]] = df[["r_soxl_next", "r_soxs_next"]].fillna(0.0)
+
+        if not pair_trade_enabled:
+            px = pd.to_numeric(df.get("price_exec", np.nan), errors="coerce")
+            r_base = (px.shift(-1) / px - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            df["r_soxl_next"] = r_base.astype(float)
+            df["r_soxs_next"] = r_base.astype(float)
+
+        # backward-compatible baseline column name
+        df["cc_ret_next"] = pd.to_numeric(df["r_soxl_next"], errors="coerce").fillna(0.0)
 
         df = df.sort_values("Date").reset_index(drop=True)
         return df, used_manifest
@@ -498,6 +530,15 @@ class StepEService:
     def _load_stepA_prices(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         df = self._load_symbol_prices(out_root=out_root, mode=mode, symbol=symbol, required=True)
         return df.sort_values("Date").reset_index(drop=True)
+
+    def _load_stepA_price_exec(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+        df = self._load_symbol_prices(out_root=out_root, mode=mode, symbol=symbol, required=False)
+        if df.empty:
+            return pd.DataFrame(columns=["Date", "price_exec"])
+        out = df[["Date", "price_exec"]].copy()
+        out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.normalize()
+        out["price_exec"] = pd.to_numeric(out["price_exec"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        return out.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
     def _price_col_name(self, df: pd.DataFrame) -> str:
         for c in ("P_eff", "Close_eff", "price_eff", "close_eff", "Close"):
@@ -727,18 +768,33 @@ class StepEService:
         out = dprime_cols + [c for c in all_num if c not in dprime_cols]
         return out
 
-    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         df2 = df.copy()
         df2 = df2.sort_values("Date").reset_index(drop=True)
 
         X = df2[obs_cols].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
-        p_soxl = pd.to_numeric(df2["price_exec"], errors="coerce")
-        p_soxs = pd.to_numeric(df2.get("price_exec_soxs", np.nan), errors="coerce")
-        r_soxl = (p_soxl.shift(-1) / p_soxl - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
-        r_soxs = (p_soxs.shift(-1) / p_soxs - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
-        cc_ret_next = r_soxl.copy()
+        r_soxl = pd.to_numeric(df2.get("r_soxl_next", np.nan), errors="coerce")
+        r_soxs = pd.to_numeric(df2.get("r_soxs_next", np.nan), errors="coerce")
+        r_soxl = r_soxl.replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
+        r_soxs = r_soxs.replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
         dates = df2["Date"].to_numpy()
-        return X, r_soxl, r_soxs, cc_ret_next, dates
+        return X, r_soxl, r_soxs, dates
+
+    def _ensure_dprime_sources(self, cfg: StepEConfig) -> None:
+        if not bool(getattr(cfg, "use_stepd_prime", False)):
+            return
+        if str(getattr(cfg, "dprime_sources", "") or "").strip():
+            return
+        agent = str(getattr(cfg, "agent", "") or "").lower()
+        inferred = "mamba"
+        if "bnf" in agent:
+            inferred = "bnf"
+        elif "mix" in agent:
+            inferred = "mix"
+        elif "all_features" in agent:
+            inferred = "all_features"
+        cfg.dprime_sources = inferred
+        print(f"[StepE] WARN: dprime_sources was empty with use_stepd_prime=True. Inferred dprime_sources='{inferred}' from agent.")
 
     # -----------------------
     # Metrics
