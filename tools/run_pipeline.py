@@ -380,8 +380,10 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.dprime_horizons = str(spec["dprime_horizons"])
         cfg.seed = 42 + idx
         cfg.device = "auto"
-        cfg.epochs = 200
-        cfg.patience = min(int(getattr(cfg, "patience", 15)), 10)
+        cfg.hidden_dim = 256
+        cfg.epochs = 800
+        cfg.patience = 80
+        cfg.lr = 3e-4
         cfg_list.append(cfg)
 
     if isinstance(app_config, dict):
