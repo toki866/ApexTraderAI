@@ -381,9 +381,18 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.hidden_dim = 256
-        cfg.epochs = 800
-        cfg.patience = 80
+        cfg.policy_kind = "ppo"
+        cfg.ppo_total_timesteps = 600000
+        cfg.ppo_n_steps = 2048
+        cfg.ppo_batch_size = 256
+        cfg.ppo_n_epochs = 20
+        cfg.ppo_gamma = 0.99
+        cfg.ppo_gae_lambda = 0.95
+        cfg.ppo_ent_coef = 0.0
+        cfg.ppo_clip_range = 0.2
         cfg.lr = 3e-4
+        cfg.pos_l2 = 1e-3
+        # cfg.epochs / cfg.patience are diffpg-only knobs.
         cfg_list.append(cfg)
 
     if isinstance(app_config, dict):

@@ -86,6 +86,16 @@ class StepEConfig:
     smooth_abs_eps: float = 1e-6
     device: str = "auto"
 
+    # PPO training
+    ppo_total_timesteps: int = 600_000
+    ppo_n_steps: int = 2048
+    ppo_batch_size: int = 256
+    ppo_n_epochs: int = 20
+    ppo_gamma: float = 0.99
+    ppo_gae_lambda: float = 0.95
+    ppo_ent_coef: float = 0.0
+    ppo_clip_range: float = 0.2
+
     # Pair-trade mode (SOXL long when ratio>0, SOXS long when ratio<0)
     pair_trade: bool = True
     long_symbol: str = "SOXL"
@@ -258,6 +268,36 @@ class StepEService:
         sd = np.where(sd < 1e-8, 1.0, sd)
         X_train_s = (X_train - mu) / sd
         X_test_s = (X_test - mu) / sd
+
+        policy_kind = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
+        if policy_kind not in {"diffpg", "ppo"}:
+            raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}")
+        if policy_kind == "ppo":
+            self._train_and_eval_ppo(
+                cfg=cfg,
+                symbol=symbol,
+                mode=mode,
+                out_dir=out_dir,
+                model_dir=model_dir,
+                obs_cols=obs_cols,
+                mu=mu,
+                sd=sd,
+                dates_train=dates_train,
+                dates_test=dates_test,
+                r_soxl_train=r_soxl_train,
+                r_soxs_train=r_soxs_train,
+                r_soxl_test=r_soxl_test,
+                r_soxs_test=r_soxs_test,
+                X_train_s=X_train_s,
+                X_test_s=X_test_s,
+                train_start=train_start,
+                train_end=train_end,
+                test_start=test_start,
+                test_end=test_end,
+                rows_train=len(df_train),
+                rows_test=len(df_test),
+            )
+            return
 
         # Train policy (diffPG)
         device_name = str(cfg.device).strip().lower()
@@ -464,6 +504,185 @@ class StepEService:
             print(f"[StepE] wrote daily_log={log_path}")
             print(f"[StepE] wrote summary={summ_path}")
             print(f"[StepE] wrote model={mdl_path}")
+
+    def _train_and_eval_ppo(
+        self,
+        *,
+        cfg: StepEConfig,
+        symbol: str,
+        mode: str,
+        out_dir: Path,
+        model_dir: Path,
+        obs_cols: List[str],
+        mu: np.ndarray,
+        sd: np.ndarray,
+        dates_train: np.ndarray,
+        dates_test: np.ndarray,
+        r_soxl_train: np.ndarray,
+        r_soxs_train: np.ndarray,
+        r_soxl_test: np.ndarray,
+        r_soxs_test: np.ndarray,
+        X_train_s: np.ndarray,
+        X_test_s: np.ndarray,
+        train_start: pd.Timestamp,
+        train_end: pd.Timestamp,
+        test_start: pd.Timestamp,
+        test_end: pd.Timestamp,
+        rows_train: int,
+        rows_test: int,
+    ) -> None:
+        try:
+            from stable_baselines3 import PPO
+            from stable_baselines3.common.vec_env import DummyVecEnv
+        except Exception as e:
+            raise RuntimeError("PPO policy_kind requires stable-baselines3 to be installed") from e
+
+        from ai_core.rl.daily_pair_trading_env import DailyPairTradingEnv
+
+        seed = int(cfg.seed or 42)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+        train_env = DailyPairTradingEnv(
+            X=X_train_s,
+            r_soxl_next=r_soxl_train,
+            r_soxs_next=r_soxs_train,
+            trade_cost_bps=float(cfg.trade_cost_bps),
+            pos_limit=float(cfg.pos_limit),
+            pos_l2=float(cfg.pos_l2),
+        )
+        test_env = DailyPairTradingEnv(
+            X=X_test_s,
+            r_soxl_next=r_soxl_test,
+            r_soxs_next=r_soxs_test,
+            trade_cost_bps=float(cfg.trade_cost_bps),
+            pos_limit=float(cfg.pos_limit),
+            pos_l2=float(cfg.pos_l2),
+        )
+
+        vec_env = DummyVecEnv([lambda: train_env])
+        vec_env.seed(seed)
+
+        device_name = str(cfg.device).strip().lower()
+        if device_name in ("", "none", "auto"):
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=float(cfg.lr),
+            n_steps=int(cfg.ppo_n_steps),
+            batch_size=int(cfg.ppo_batch_size),
+            n_epochs=int(cfg.ppo_n_epochs),
+            gamma=float(cfg.ppo_gamma),
+            gae_lambda=float(cfg.ppo_gae_lambda),
+            ent_coef=float(cfg.ppo_ent_coef),
+            clip_range=float(cfg.ppo_clip_range),
+            verbose=1 if cfg.verbose else 0,
+            seed=seed,
+            device=device_name,
+        )
+        model.learn(total_timesteps=int(cfg.ppo_total_timesteps))
+
+        def _rollout_env(env: DailyPairTradingEnv):
+            obs, _ = env.reset(seed=seed)
+            rewards, pos, costs, gross = [], [], [], []
+            done = False
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                action = np.asarray(action, dtype=np.float32).reshape(-1)
+                obs, reward, terminated, truncated, info = env.step(action)
+                rewards.append(float(reward))
+                pos.append(float(info.get("pos", 0.0)))
+                costs.append(float(info.get("cost", 0.0)))
+                gross.append(float(info.get("gross", 0.0)))
+                done = bool(terminated or truncated)
+            return np.asarray(rewards), np.asarray(pos), np.asarray(costs), np.asarray(gross)
+
+        ret_tr_full, pos_tr_full, cost_tr_full, gross_tr_full = _rollout_env(train_env)
+        ret_te_full, pos_te_full, cost_te_full, gross_te_full = _rollout_env(test_env)
+
+        reward_next_arr = np.concatenate([ret_tr_full, ret_te_full]).astype(float)
+        pos_arr = np.concatenate([pos_tr_full, pos_te_full]).astype(float)
+        cost_arr = np.concatenate([cost_tr_full, cost_te_full]).astype(float)
+        gross_arr = np.concatenate([gross_tr_full, gross_te_full]).astype(float)
+        cc_soxl = np.concatenate([r_soxl_train, r_soxl_test]).astype(float)
+        cc_soxs = np.concatenate([r_soxs_train, r_soxs_test]).astype(float)
+
+        df_log = pd.DataFrame({
+            "Date": pd.to_datetime(list(dates_train) + list(dates_test)),
+            "Split": (["train"] * len(dates_train)) + (["test"] * len(dates_test)),
+            "pos": pos_arr,
+            "reward_next": reward_next_arr,
+            "r_soxl_next": cc_soxl,
+            "r_soxs_next": cc_soxs,
+            "cost": cost_arr,
+        })
+        df_log["ratio"] = df_log["pos"]
+        df_log["abs_ratio"] = df_log["ratio"].abs()
+        df_log["market_ret"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"] * df_log["ratio"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"] * (-df_log["ratio"]), 0.0))
+        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"], 0.0))
+        df_log["underlying"] = np.where(df_log["ratio"] > 1e-8, "SOXL", np.where(df_log["ratio"] < -1e-8, "SOXS", "NONE"))
+        df_log["gross"] = gross_arr
+        df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
+        df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
+        df_log["Position"] = df_log["pos"]
+        df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
+
+        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity", "reward_next"]].copy().reset_index(drop=True)
+        if len(df_eq) > 0:
+            df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
+
+        eq_path = out_dir / f"stepE_equity_{cfg.agent}_{symbol}.csv"
+        log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
+        summ_path = out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json"
+        mdl_zip_path = model_dir / f"stepE_{cfg.agent}_{symbol}_ppo.zip"
+        mdl_pt_path = model_dir / f"stepE_{cfg.agent}_{symbol}.pt"
+
+        df_eq.to_csv(eq_path, index=False)
+        df_log.to_csv(log_path, index=False)
+
+        df_log_for_summary = pd.read_csv(log_path)
+        metrics = compute_split_metrics(df_log_for_summary, split="test", equity_col="equity", ret_col="ret")
+        legacy_metrics = {
+            "test_return_pct": metrics["total_return_pct"],
+            "test_sharpe": metrics["sharpe"],
+            "test_max_dd": metrics["max_dd_pct"],
+            "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
+            "cagr": metrics["cagr_pct"] / 100.0 if np.isfinite(metrics["cagr_pct"]) else float("nan"),
+            "max_drawdown": metrics["max_dd_pct"],
+        }
+        summary = {
+            "agent": cfg.agent,
+            "mode": mode,
+            "symbol": symbol,
+            "train_start": str(train_start.date()),
+            "train_end": str(train_end.date()),
+            "test_start": str(test_start.date()),
+            "test_end": str(test_end.date()),
+            "rows_train": int(rows_train),
+            "rows_test": int(rows_test),
+            **metrics,
+            **legacy_metrics,
+        }
+        summ_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        model.save(str(mdl_zip_path))
+        torch.save({
+            "cfg": asdict(cfg),
+            "obs_cols": obs_cols,
+            "mu": mu.astype(np.float32),
+            "sd": sd.astype(np.float32),
+            "policy_kind": "ppo",
+            "sb3_model_path": str(mdl_zip_path),
+        }, mdl_pt_path)
+
+        if cfg.verbose:
+            print(f"[StepE] wrote equity={eq_path}")
+            print(f"[StepE] wrote daily_log={log_path}")
+            print(f"[StepE] wrote summary={summ_path}")
+            print(f"[StepE] wrote model(zip)={mdl_zip_path}")
+            print(f"[StepE] wrote model(pt)={mdl_pt_path}")
 
     # -----------------------
     # Load & merge
