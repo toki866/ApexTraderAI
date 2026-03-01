@@ -5,3 +5,5 @@ yfinance
 matplotlib
 scikit-learn
 hdbscan
+gymnasium
+stable-baselines3
