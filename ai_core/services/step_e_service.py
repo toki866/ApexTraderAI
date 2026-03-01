@@ -398,7 +398,9 @@ class StepEService:
         df_log.to_csv(log_path, index=False)
 
         # Summary metrics (test) using metrics_summary.csv-aligned definitions.
-        metrics = compute_split_metrics(df_log, split="test", equity_col="equity", ret_col="ret")
+        # Read back from saved daily log to guarantee summary uses persisted data.
+        df_log_for_summary = pd.read_csv(log_path)
+        metrics = compute_split_metrics(df_log_for_summary, split="test", equity_col="equity", ret_col="ret")
         legacy_metrics = {
             "test_return_pct": metrics["total_return_pct"],
             "test_sharpe": metrics["sharpe"],

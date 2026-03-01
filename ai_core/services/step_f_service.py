@@ -150,11 +150,16 @@ class StepFService:
         eq_df = daily[daily["Split"] == "test"][ ["Date", "ratio", "ret", "equity"] ].copy()
         eq_df.to_csv(eq_marl_path, index=False)
 
-        metrics = compute_split_metrics(daily, split="test", equity_col="equity", ret_col="ret")
+        daily_for_summary = pd.read_csv(log_router_path)
+        metrics = compute_split_metrics(daily_for_summary, split="test", equity_col="equity", ret_col="ret")
         summary = {
             **metrics,
+            "test_return_pct": metrics["total_return_pct"],
+            "test_sharpe": metrics["sharpe"],
+            "test_max_dd": metrics["max_dd_pct"],
             "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
             "max_drawdown": metrics["max_dd_pct"],
+            "equity_end": metrics["equity_end"],
             "num_trades": int(np.sum(np.abs(np.diff(eq_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not eq_df.empty else 0,
         }
         summary.update({"mode": mode, "symbol": symbol, "agents": agents})

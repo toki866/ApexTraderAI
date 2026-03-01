@@ -43,6 +43,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from ai_core.utils.paths import get_repo_root
+from ai_core.utils.leak_audit_utils import (
+    audit_stepE_reward_alignment,
+    audit_stepF_market_alignment,
+    write_audit_reports,
+)
 class _DateRangeShim:
     """Wrapper for DateRange that can carry extra attributes like `future_end` safely."""
 
@@ -1243,6 +1248,62 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
         if callable(v):
             available.append(name)
     raise RuntimeError(f"{cls_name} has no supported entrypoint. Tried={candidates}. Available={sorted(set(available))}")
+
+
+def _run_leak_audits(output_root: Path, mode: str, symbol: str, fail_on_audit: bool = False) -> None:
+    import pandas as pd
+
+    audit_root = output_root / "audit" / mode
+    rows: List[Dict[str, Any]] = []
+
+    # StepE audits per agent log
+    step_e_dir = output_root / "stepE" / mode
+    for p in sorted(step_e_dir.glob(f"stepE_daily_log_*_{symbol}.csv")):
+        agent = p.name[len("stepE_daily_log_") : -len(f"_{symbol}.csv")]
+        df = pd.read_csv(p)
+        audit = audit_stepE_reward_alignment(df, split="test", tol=1e-12)
+        prefix = f"audit_stepE_{agent}_{symbol}"
+        write_audit_reports(audit_root, prefix, audit)
+        rows.append({
+            "step": "E",
+            "name": agent,
+            "split": audit.get("split", "test"),
+            "status": audit.get("status", "FAIL"),
+            "max_abs": audit.get("max_abs"),
+            "max_date": audit.get("max_date"),
+            "rel_err": audit.get("rel_err"),
+            "note": audit.get("note", ""),
+        })
+
+    # StepF audits for router/marl logs
+    for name in ("router", "marl"):
+        p = output_root / "stepF" / mode / f"stepF_daily_log_{name}_{symbol}.csv"
+        if not p.exists():
+            continue
+        df = pd.read_csv(p)
+        audit = audit_stepF_market_alignment(df, split="test", tol=1e-12)
+        prefix = f"audit_stepF_{name}_{symbol}"
+        write_audit_reports(audit_root, prefix, audit)
+        rows.append({
+            "step": "F",
+            "name": name,
+            "split": audit.get("split", "test"),
+            "status": audit.get("status", "FAIL"),
+            "max_abs": audit.get("max_abs"),
+            "max_date": audit.get("max_date"),
+            "rel_err": audit.get("rel_err"),
+            "note": audit.get("note", ""),
+        })
+
+    if rows:
+        summary_path = audit_root / f"leak_audit_summary_{symbol}.csv"
+        pd.DataFrame(rows, columns=["step", "name", "split", "status", "max_abs", "max_date", "rel_err", "note"]).to_csv(summary_path, index=False)
+        failed = [r for r in rows if str(r.get("status", "")).upper() != "PASS"]
+        print(f"[audit] wrote summary={summary_path} total={len(rows)} failed={len(failed)}")
+        if failed and fail_on_audit:
+            raise RuntimeError(f"Leak audit failed: {failed}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
@@ -1282,6 +1343,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--enable-mamba", action="store_true", help="Enable Wavelet-Mamba training in StepB (best-effort).")
     ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
     ap.add_argument("--auto-prepare-data", type=int, default=1, choices=[0, 1], help="Automatically generate missing data/prices_<SYMBOL>.csv before StepA.")
+    ap.add_argument("--fail-on-audit", type=int, default=0, choices=[0, 1], help="If 1, fail pipeline when leak audit reports FAIL.")
     ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
     ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
     args = ap.parse_args(argv)
@@ -1367,7 +1429,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.train_years,
         future_end=future_end,
         mamba_mode=resolved_mamba_mode,
-        stepE_mode=resolved_stepE_mode,
+        stepE_mode=resolved_mode,
         mode=resolved_mode,
         output_root=resolved_output_root,
         data_root=data_root,
@@ -1535,6 +1597,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 reason = step_result.get("reason", "unknown")
                 raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
             print(f"[Step{step}] done")
+
+        _run_leak_audits(
+            output_root=Path(resolved_output_root),
+            mode=resolved_mode,
+            symbol=symbol,
+            fail_on_audit=bool(args.fail_on_audit),
+        )
 
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
