@@ -117,6 +117,22 @@ class DiffPolicyNet(nn.Module):
 # ---------------------------
 
 class StepEService:
+    _OBS_FORBIDDEN_EXACT = {
+        "r_soxl_next",
+        "r_soxs_next",
+        "cc_ret_next",
+        "reward_next",
+        "ret",
+        "equity",
+        "gross",
+        "cost",
+        "market_ret",
+        "abs_ratio",
+        "underlying",
+        "Position",
+        "Action",
+    }
+
     def __init__(self, app_config):
         """
         app_config is expected to have:
@@ -219,12 +235,18 @@ class StepEService:
         if cfg.use_stepd_prime:
             obs_cols = self._prepend_dprime_cols(df_all=df_all) + [c for c in obs_cols if not c.startswith("dprime_")]
 
+        forbidden_hit = self._find_forbidden_obs_cols(obs_cols)
+        if forbidden_hit:
+            raise RuntimeError(f"[LEAK_GUARD] forbidden columns in obs: {forbidden_hit}")
+
         # Ensure columns exist
         obs_cols = [c for c in obs_cols if c in df_all.columns]
         if not obs_cols:
             raise RuntimeError("No observation columns selected.")
         if cfg.verbose:
+            print(f"[StepE] obs_cols_count={len(obs_cols)}")
             print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
+            print("[LEAK_GUARD] OK forbidden_hit=0")
 
         # Prepare tensors
         X_train, r_soxl_train, r_soxs_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
@@ -774,12 +796,23 @@ class StepEService:
         # Leak guard: drop label/target-like columns if they exist
         bad_keys = ("label", "available", "target", "y_")
         all_num = [c for c in all_num if not any(k in str(c).lower() for k in bad_keys)]
+        all_num = [c for c in all_num if not self._is_forbidden_obs_column(c)]
         # Avoid raw scale columns (Open/High/Low/Close/Volume)
         drop = {"Open", "High", "Low", "Close", "Volume"}
         all_num = [c for c in all_num if c not in drop]
         # Put dprime first
         out = dprime_cols + [c for c in all_num if c not in dprime_cols]
         return out
+
+    def _is_forbidden_obs_column(self, col: str) -> bool:
+        c = str(col)
+        cl = c.lower()
+        if c in self._OBS_FORBIDDEN_EXACT:
+            return True
+        return "_next" in cl or cl.endswith("_next")
+
+    def _find_forbidden_obs_cols(self, cols: List[str]) -> List[str]:
+        return [c for c in cols if self._is_forbidden_obs_column(c)]
 
     def _build_obs_and_returns(self, df: pd.DataFrame, obs_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         df2 = df.copy()
