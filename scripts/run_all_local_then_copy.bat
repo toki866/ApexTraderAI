@@ -106,6 +106,13 @@ if errorlevel 1 goto :failed
 
 :skip_git_sync
 
+echo [RUN] Installing/updating Python dependencies from requirements.txt>> "%LOG_FILE%"
+call :run_python -m pip install -U pip setuptools wheel
+if errorlevel 1 goto :failed
+
+call :run_python -m pip install -r requirements.txt
+if errorlevel 1 goto :failed
+
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
