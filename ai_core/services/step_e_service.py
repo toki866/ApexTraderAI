@@ -46,6 +46,8 @@ import pandas as pd
 import torch
 from torch import nn
 
+from ai_core.utils.metrics_utils import compute_split_metrics
+
 
 # ---------------------------
 # Config
@@ -395,8 +397,16 @@ class StepEService:
         log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
         df_log.to_csv(log_path, index=False)
 
-        # Summary metrics (test)
-        metrics = self._compute_metrics(df_eq)
+        # Summary metrics (test) using metrics_summary.csv-aligned definitions.
+        metrics = compute_split_metrics(df_log, split="test", equity_col="equity", ret_col="ret")
+        legacy_metrics = {
+            "test_return_pct": metrics["total_return_pct"],
+            "test_sharpe": metrics["sharpe"],
+            "test_max_dd": metrics["max_dd_pct"],
+            "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
+            "cagr": metrics["cagr_pct"] / 100.0 if np.isfinite(metrics["cagr_pct"]) else float("nan"),
+            "max_drawdown": metrics["max_dd_pct"],
+        }
 
         summary = {
             "agent": cfg.agent,
@@ -409,6 +419,7 @@ class StepEService:
             "rows_train": int(len(df_train)),
             "rows_test": int(len(df_test)),
             **metrics,
+            **legacy_metrics,
         }
 
         summ_path = out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json"
@@ -795,67 +806,3 @@ class StepEService:
             inferred = "all_features"
         cfg.dprime_sources = inferred
         print(f"[StepE] WARN: dprime_sources was empty with use_stepd_prime=True. Inferred dprime_sources='{inferred}' from agent.")
-
-    # -----------------------
-    # Metrics
-    # -----------------------
-
-    def _compute_metrics(self, df_eq: pd.DataFrame) -> Dict[str, float]:
-        if df_eq is None or len(df_eq) == 0:
-            return {
-                "test_days": 0,
-                "end_capital_from_initial": float("nan"),
-                "profit_from_initial": float("nan"),
-                "test_return_pct": float("nan"),
-                "test_sharpe": float("nan"),
-                "test_max_dd": float("nan"),
-                "total_return": float("nan"),
-                "cagr": float("nan"),
-                "sharpe": float("nan"),
-                "max_drawdown": float("nan"),
-                "num_trades": 0.0,
-            }
-
-        # Equity should already be reset to start at 1.0 on the test window.
-        if "equity" in df_eq.columns and pd.api.types.is_numeric_dtype(df_eq["equity"]):
-            eq = df_eq["equity"].astype(float).to_numpy()
-        else:
-            r = df_eq["ret"].astype(float).to_numpy()
-            eq = np.cumprod(1.0 + r)
-
-        end_capital = float(eq[-1])
-        profit = float(end_capital - 1.0)
-        test_return_pct = float(profit * 100.0)
-
-        # Sharpe (annualized)
-        r = df_eq["ret"].astype(float).to_numpy()
-        mu = float(np.mean(r)) if len(r) else 0.0
-        sd = float(np.std(r, ddof=1)) if len(r) > 1 else 0.0
-        sharpe = float((mu / (sd + 1e-12)) * np.sqrt(252.0)) if len(r) > 1 else float("nan")
-
-        # Max drawdown
-        peak = np.maximum.accumulate(eq)
-        dd = eq / np.where(peak == 0, 1.0, peak) - 1.0
-        max_drawdown = float(np.min(dd)) if len(dd) else float("nan")
-
-        # CAGR over the test window (annualized using 252 trading days)
-        days = max(1, len(eq))
-        cagr = float(end_capital ** (252.0 / days) - 1.0) if end_capital > 0 else float("nan")
-
-        num_trades = float((df_eq["Action"] != 0).sum()) if "Action" in df_eq.columns else float("nan")
-
-        return {
-            "test_days": int(len(df_eq)),
-            "end_capital_from_initial": end_capital,
-            "profit_from_initial": profit,
-            "test_return_pct": test_return_pct,
-            "test_sharpe": sharpe,
-            "test_max_dd": max_drawdown,
-
-            # Backward-compatible keys
-            "total_return": profit,
-            "cagr": cagr,
-            "sharpe": sharpe,
-            "max_drawdown": max_drawdown,
-            "num_trades": num_trades,
-        }
