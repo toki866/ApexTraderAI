@@ -18,7 +18,7 @@ class WaveletMambaTrainConfig:
     activation: str = "gelu"
     use_layer_norm: bool = True
     batch_size: int = 64
-    num_epochs: int = 60
+    num_epochs: int = 200
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     optimizer: str = "adamw"
