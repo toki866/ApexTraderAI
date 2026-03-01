@@ -1,0 +1,368 @@
+# EVAL_REPORT
+
+- output_root: `C:\work\apex_work\runs\gh22536133099_att1_sim_20260301_134359_abb257d\output`
+- mode: `sim`
+- symbol: `SOXL`
+- overall_status: **OK**
+
+## D' (stepD_prime) artifacts
+- status: **OK**
+- summary: D' state/embeddings found
+- state_count: 20
+- embeddings_count: 40
+
+## StepA table
+| status | summary | test_rows | test_date_start | test_date_end | missing_ohlcv_count |
+|---|---|---:|---|---|---:|
+| OK | prices_test evaluated | 63 | 2022-01-03 | 2022-04-01 | 0 |
+
+## StepB table
+| file | pred_col | non_null_ratio | coverage_ratio_over_test | mae | corr | status |
+|---|---|---:|---:|---:|---:|---|
+| stepB_pred_close_mamba_SOXL.csv | Pred_Close_MAMBA | 0.9384 | 1.0000 | 5.2983 | 0.8719 | OK |
+| stepB_pred_time_all_SOXL.csv | Pred_Close_MAMBA | 0.9384 | 1.0000 | 5.2983 | 0.8719 | OK |
+
+## StepE table
+| agent | file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| dprime_all_features_3scale | stepE_daily_log_dprime_all_features_3scale_SOXL.csv | 63 | 58.1835 | -0.0049 | 0.0686 | 0.0470 | 23.1861 |  | OK |
+| dprime_all_features_h01 | stepE_daily_log_dprime_all_features_h01_SOXL.csv | 63 | 60.1469 | -0.0032 | 0.0691 | 0.0463 | 23.6884 |  | OK |
+| dprime_all_features_h02 | stepE_daily_log_dprime_all_features_h02_SOXL.csv | 63 | 60.0792 | -0.0013 | 0.0691 | 0.0463 | 23.6782 |  | OK |
+| dprime_all_features_h03 | stepE_daily_log_dprime_all_features_h03_SOXL.csv | 63 | 59.6323 | -0.0041 | 0.0690 | 0.0465 | 23.5602 |  | OK |
+| dprime_bnf_3scale | stepE_daily_log_dprime_bnf_3scale_SOXL.csv | 63 | 57.1434 | -0.0044 | 0.0683 | 0.0474 | 22.8958 |  | OK |
+| dprime_bnf_h01 | stepE_daily_log_dprime_bnf_h01_SOXL.csv | 63 | 60.7977 | -0.0017 | 0.0693 | 0.0461 | 23.8721 |  | OK |
+| dprime_bnf_h02 | stepE_daily_log_dprime_bnf_h02_SOXL.csv | 63 | 60.6127 | -0.0017 | 0.0693 | 0.0462 | 23.8198 |  | OK |
+| dprime_mix_3scale | stepE_daily_log_dprime_mix_3scale_SOXL.csv | 63 | 57.7353 | -0.0174 | 0.0685 | 0.0472 | 23.0254 |  | OK |
+| dprime_mix_h01 | stepE_daily_log_dprime_mix_h01_SOXL.csv | 63 | 58.8024 | -0.0025 | 0.0688 | 0.0467 | 23.3615 |  | OK |
+| dprime_mix_h02 | stepE_daily_log_dprime_mix_h02_SOXL.csv | 63 | 58.4291 | -0.0039 | 0.0687 | 0.0469 | 23.2507 |  | OK |
+
+## StepF table
+| file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| stepF_equity_marl_SOXL.csv | 63 | 61.3149 | -0.0016 | 0.0687 | 0.0472 | 23.1177 | Split missing: evaluated all rows as test | OK |
+
+## Diversity
+- status: **OK**
+- summary: agent positions look diverse
+- max_corr: 0.9947
+- max_match_ratio: 0.0952
+- pairs_over_0_9999: 0 / 45
+- identical_all_agents: False
+
+## PLOTS
+- [equity_stepE_topN.png](./equity_stepE_topN.png)
+- [equity_stepF.png](./equity_stepF.png)
+- [bar_stepE_return.png](./bar_stepE_return.png)
+- [scatter_stepE_dd_vs_ret.png](./scatter_stepE_dd_vs_ret.png)
+  - note: StepF_vs_best_StepE: StepF(61.3149) は best StepE(60.7977) に勝ってる
+
+## Raw JSON
+```json
+{
+  "output_root": "C:\\work\\apex_work\\runs\\gh22536133099_att1_sim_20260301_134359_abb257d\\output",
+  "mode": "sim",
+  "symbol": "SOXL",
+  "stepA": {
+    "status": "OK",
+    "summary": "prices_test evaluated",
+    "details": {
+      "path": "C:\\work\\apex_work\\runs\\gh22536133099_att1_sim_20260301_134359_abb257d\\output\\stepA\\sim\\stepA_prices_test_SOXL.csv",
+      "test_rows": 63,
+      "test_date_start": "2022-01-03",
+      "test_date_end": "2022-04-01",
+      "missing_ohlcv_count": 0,
+      "ohlcv_missing": {
+        "Open": 0,
+        "High": 0,
+        "Low": 0,
+        "Close": 0,
+        "Volume": 0
+      }
+    }
+  },
+  "stepB": {
+    "status": "OK",
+    "summary": "stepB files evaluated",
+    "rows": [
+      {
+        "file": "stepB_pred_close_mamba_SOXL.csv",
+        "pred_col": "Pred_Close_MAMBA",
+        "non_null_ratio": 0.9383726528647087,
+        "first_valid_date": "2014-07-09",
+        "coverage_ratio_over_test": 1.0,
+        "mae": 5.298298457312206,
+        "corr": 0.8718667623174237,
+        "status": "OK"
+      },
+      {
+        "file": "stepB_pred_time_all_SOXL.csv",
+        "pred_col": "Pred_Close_MAMBA",
+        "non_null_ratio": 0.9383726528647087,
+        "first_valid_date": "2014-07-09",
+        "coverage_ratio_over_test": 1.0,
+        "mae": 5.298298457312206,
+        "corr": 0.8718667623174237,
+        "status": "OK"
+      }
+    ],
+    "files": [
+      "stepB_pred_close_mamba_SOXL.csv",
+      "stepB_pred_path_mamba_SOXL.csv",
+      "stepB_pred_time_all_SOXL.csv"
+    ]
+  },
+  "dprime": {
+    "status": "OK",
+    "summary": "D' state/embeddings found",
+    "details": {
+      "state_count": 20,
+      "embeddings_count": 40,
+      "state_files": [
+        "stepDprime_state_dprime_all_features_3scale_SOXL_test.csv",
+        "stepDprime_state_dprime_all_features_3scale_SOXL_train.csv",
+        "stepDprime_state_dprime_all_features_h01_SOXL_test.csv",
+        "stepDprime_state_dprime_all_features_h01_SOXL_train.csv",
+        "stepDprime_state_dprime_all_features_h02_SOXL_test.csv",
+        "stepDprime_state_dprime_all_features_h02_SOXL_train.csv",
+        "stepDprime_state_dprime_all_features_h03_SOXL_test.csv",
+        "stepDprime_state_dprime_all_features_h03_SOXL_train.csv",
+        "stepDprime_state_dprime_bnf_3scale_SOXL_test.csv",
+        "stepDprime_state_dprime_bnf_3scale_SOXL_train.csv",
+        "stepDprime_state_dprime_bnf_h01_SOXL_test.csv",
+        "stepDprime_state_dprime_bnf_h01_SOXL_train.csv",
+        "stepDprime_state_dprime_bnf_h02_SOXL_test.csv",
+        "stepDprime_state_dprime_bnf_h02_SOXL_train.csv",
+        "stepDprime_state_dprime_mix_3scale_SOXL_test.csv",
+        "stepDprime_state_dprime_mix_3scale_SOXL_train.csv",
+        "stepDprime_state_dprime_mix_h01_SOXL_test.csv",
+        "stepDprime_state_dprime_mix_h01_SOXL_train.csv",
+        "stepDprime_state_dprime_mix_h02_SOXL_test.csv",
+        "stepDprime_state_dprime_mix_h02_SOXL_train.csv"
+      ],
+      "embeddings_files": [
+        "stepDprime_all_features_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_all_features_h01_SOXL_embeddings_all.csv",
+        "stepDprime_all_features_h02_SOXL_embeddings_all.csv",
+        "stepDprime_all_features_h03_SOXL_embeddings_all.csv",
+        "stepDprime_bnf_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_bnf_h01_SOXL_embeddings_all.csv",
+        "stepDprime_bnf_h02_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_all_features_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_all_features_3scale_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_all_features_3scale_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_all_features_h01_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_all_features_h01_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_all_features_h01_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_all_features_h02_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_all_features_h02_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_all_features_h02_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_all_features_h03_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_all_features_h03_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_all_features_h03_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_bnf_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_bnf_3scale_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_bnf_3scale_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_bnf_h01_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_bnf_h01_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_bnf_h01_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_bnf_h02_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_bnf_h02_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_bnf_h02_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_mix_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_mix_3scale_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_mix_3scale_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_mix_h01_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_mix_h01_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_mix_h01_SOXL_embeddings_train.csv",
+        "stepDprime_dprime_mix_h02_SOXL_embeddings_all.csv",
+        "stepDprime_dprime_mix_h02_SOXL_embeddings_test.csv",
+        "stepDprime_dprime_mix_h02_SOXL_embeddings_train.csv",
+        "stepDprime_mix_3scale_SOXL_embeddings_all.csv",
+        "stepDprime_mix_h01_SOXL_embeddings_all.csv",
+        "stepDprime_mix_h02_SOXL_embeddings_all.csv"
+      ],
+      "searched": [
+        "C:\\work\\apex_work\\runs\\gh22536133099_att1_sim_20260301_134359_abb257d\\output\\stepD_prime\\sim\\stepDprime_state_*_SOXL_train.csv",
+        "C:\\work\\apex_work\\runs\\gh22536133099_att1_sim_20260301_134359_abb257d\\output\\stepD_prime\\sim\\stepDprime_state_*_SOXL_test.csv",
+        "C:\\work\\apex_work\\runs\\gh22536133099_att1_sim_20260301_134359_abb257d\\output\\stepD_prime\\sim\\embeddings\\stepDprime_*_SOXL_embeddings*.csv"
+      ]
+    }
+  },
+  "stepE": {
+    "status": "OK",
+    "summary": "stepE daily logs evaluated",
+    "rows": [
+      {
+        "file": "stepE_daily_log_dprime_all_features_3scale_SOXL.csv",
+        "agent": "dprime_all_features_3scale",
+        "test_days": 63,
+        "equity_multiple": 58.183491157113295,
+        "max_dd": -0.0049230908043682575,
+        "mean_ret": 0.0685959815330404,
+        "std_ret": 0.046964619580036726,
+        "sharpe": 23.186123047224587,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h01_SOXL.csv",
+        "agent": "dprime_all_features_h01",
+        "test_days": 63,
+        "equity_multiple": 60.14692739376423,
+        "max_dd": -0.0032077874056992695,
+        "mean_ret": 0.06913456706336413,
+        "std_ret": 0.046329723507503404,
+        "sharpe": 23.688404453977096,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h02_SOXL.csv",
+        "agent": "dprime_all_features_h02",
+        "test_days": 63,
+        "equity_multiple": 60.07922952294705,
+        "max_dd": -0.001298910821788124,
+        "mean_ret": 0.06911542845912096,
+        "std_ret": 0.04633687046419151,
+        "sharpe": 23.678194098389568,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_all_features_h03_SOXL.csv",
+        "agent": "dprime_all_features_h03",
+        "test_days": 63,
+        "equity_multiple": 59.63227862750218,
+        "max_dd": -0.00409758510068059,
+        "mean_ret": 0.06899245499239655,
+        "std_ret": 0.046486101415098874,
+        "sharpe": 23.560187586357916,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_3scale_SOXL.csv",
+        "agent": "dprime_bnf_3scale",
+        "test_days": 63,
+        "equity_multiple": 57.143426577658694,
+        "max_dd": -0.004439599346369394,
+        "mean_ret": 0.06830917378748479,
+        "std_ret": 0.04736135446290991,
+        "sharpe": 22.895766578742318,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_h01_SOXL.csv",
+        "agent": "dprime_bnf_h01",
+        "test_days": 63,
+        "equity_multiple": 60.79768519726861,
+        "max_dd": -0.0016751878429204226,
+        "mean_ret": 0.06930956905818585,
+        "std_ret": 0.04608961630488343,
+        "sharpe": 23.87208632746904,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_bnf_h02_SOXL.csv",
+        "agent": "dprime_bnf_h02",
+        "test_days": 63,
+        "equity_multiple": 60.61270339848783,
+        "max_dd": -0.0017287200316785656,
+        "mean_ret": 0.06925635560995912,
+        "std_ret": 0.046155239264649886,
+        "sharpe": 23.81984319534583,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_mix_3scale_SOXL.csv",
+        "agent": "dprime_mix_3scale",
+        "test_days": 63,
+        "equity_multiple": 57.73528308790433,
+        "max_dd": -0.017360930927253992,
+        "mean_ret": 0.0684790802780688,
+        "std_ret": 0.047211851646604214,
+        "sharpe": 23.02539850998148,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_mix_h01_SOXL.csv",
+        "agent": "dprime_mix_h01",
+        "test_days": 63,
+        "equity_multiple": 58.80236780058171,
+        "max_dd": -0.0024665852542966604,
+        "mean_ret": 0.0687738325267139,
+        "std_ret": 0.04673281963497798,
+        "sharpe": 23.361542358762357,
+        "status": "OK"
+      },
+      {
+        "file": "stepE_daily_log_dprime_mix_h02_SOXL.csv",
+        "agent": "dprime_mix_h02",
+        "test_days": 63,
+        "equity_multiple": 58.42913470619838,
+        "max_dd": -0.0039480566047132015,
+        "mean_ret": 0.06867063538834729,
+        "std_ret": 0.04688514529102709,
+        "sharpe": 23.25070200583929,
+        "status": "OK"
+      }
+    ]
+  },
+  "stepF": {
+    "status": "OK",
+    "summary": "stepF equity logs evaluated",
+    "rows": [
+      {
+        "file": "stepF_equity_marl_SOXL.csv",
+        "test_days": 63,
+        "equity_multiple": 61.314891284638506,
+        "max_dd": -0.0016456641967895758,
+        "mean_ret": 0.06869763093459036,
+        "std_ret": 0.04717335043495038,
+        "sharpe": 23.117736446919178,
+        "status": "OK",
+        "note": "Split missing: evaluated all rows as test"
+      }
+    ]
+  },
+  "diversity": {
+    "status": "OK",
+    "summary": "agent positions look diverse",
+    "max_corr": 0.9947161034178036,
+    "max_match_ratio": 0.09523809523809523,
+    "pairs_over_0_9999": 0,
+    "all_pairs": 45,
+    "identical_all_agents": false
+  },
+  "overall_status": "OK",
+  "plots": {
+    "items": [
+      {
+        "name": "equity_stepE_topN.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\equity_stepE_topN.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "equity_stepF.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\equity_stepF.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "bar_stepE_return.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\bar_stepE_return.png",
+        "exists": true,
+        "reason": null
+      },
+      {
+        "name": "scatter_stepE_dd_vs_ret.png",
+        "path": "C:\\Users\\becky\\OneDrive\\デスクトップ\\Python\\apex-trader-ai\\actions-runner\\_work\\ApexTraderAI\\ApexTraderAI\\temp\\eval\\scatter_stepE_dd_vs_ret.png",
+        "exists": true,
+        "reason": null
+      }
+    ],
+    "notes": [
+      "StepF_vs_best_StepE: StepF(61.3149) は best StepE(60.7977) に勝ってる"
+    ]
+  }
+}
+```
+
+Best-effort mode: this evaluator writes SKIP/notes and always exits 0.

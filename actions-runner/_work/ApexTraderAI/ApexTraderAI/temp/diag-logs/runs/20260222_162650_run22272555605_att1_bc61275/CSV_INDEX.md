@@ -1,0 +1,68 @@
+﻿# CSV Index
+
+- source_run_dir: C:\work\apex_work\runs\20260222_161032
+- source_output_root: C:\work\apex_work\runs\20260222_161032\output
+
+- file: ./csv/stepA_prices_test_SOXL.csv | size_bytes: 5601 | head_only: no
+  - preview:
+    - Date,Open,High,Low,Close,Volume
+    - 2022-01-03,69.05000305175781,72.11000061035156,68.38999938964844,72.0999984741211,15794800
+- file: ./csv/stepA_split_summary_SOXL.csv | size_bytes: 448 | head_only: no
+  - preview:
+    - key,value
+    - mode,sim
+- file: ./csv/stepB_pred_close_mamba_SOXL.csv | size_bytes: 411498 | head_only: no
+  - preview:
+    - Date,Pred_Close_MAMBA_h01,Delta_Close_pred_MAMBA_h01,Pred_Close_MAMBA_h05,Delta_Close_pred_MAMBA_h05,Pred_Close_MAMBA_h10,Delta_Close_pred_MAMBA_h10,Pred_Close_MAMBA_h20,Delta_Close_pred_MAMBA_h20,Pred_Close_MAMBA,Delta_Close_pred_MAMBA
+    - 2014-01-03,,,,,,,,,,
+- file: ./csv/stepB_pred_path_mamba_SOXL.csv | size_bytes: 172718 | head_only: no
+  - preview:
+    - Date_anchor,Pred_Close_t_plus_01,Pred_Close_t_plus_05,Pred_Close_t_plus_10,Pred_Close_t_plus_20
+    - 2014-03-31,1.794518232345581,1.1276847124099731,1.5130629539489746,1.6234194040298462
+- file: ./csv/stepB_pred_time_all_SOXL.csv | size_bytes: 61869 | head_only: no
+  - preview:
+    - Date,Pred_Close_MAMBA
+    - 2014-01-03,
+- file: ./csv/stepE_daily_log_dprime_all_features_3scale_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_all_features_h01_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_all_features_h02_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_all_features_h03_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_bnf_3scale_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_bnf_h01_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_bnf_h02_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_bnf_h03_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_mix_3scale_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+- file: ./csv/stepE_daily_log_dprime_mix_h01_SOXL.csv | size_bytes: 207103 | head_only: no
+  - preview:
+    - Date,Split,pos,ret,equity,Position,Action
+    - 2014-01-03,train,0.535007119178772,-0.010654497891664505,0.9893455021083355,0.535007119178772,1
+
+- eval_report: ./csv/EVAL_REPORT.md
+- eval_summary: ./csv/EVAL_SUMMARY.txt

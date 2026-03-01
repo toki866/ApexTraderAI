@@ -1,0 +1,2 @@
+file,test_days,equity_multiple,max_dd,mean_ret,std_ret,sharpe,status,note
+stepF_equity_marl_SOXL.csv,63,61.314891284638506,-0.0016456641967895758,0.06869763093459036,0.04717335043495038,23.117736446919178,OK,Split missing: evaluated all rows as test
