@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -12,6 +11,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.services.step_dprime_service import _compute_base_features
+from ai_core.utils.metrics_utils import compute_split_metrics
 
 try:
     import hdbscan
@@ -150,7 +150,13 @@ class StepFService:
         eq_df = daily[daily["Split"] == "test"][ ["Date", "ratio", "ret", "equity"] ].copy()
         eq_df.to_csv(eq_marl_path, index=False)
 
-        summary = self._compute_metrics(eq_df)
+        metrics = compute_split_metrics(daily, split="test", equity_col="equity", ret_col="ret")
+        summary = {
+            **metrics,
+            "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
+            "max_drawdown": metrics["max_dd_pct"],
+            "num_trades": int(np.sum(np.abs(np.diff(eq_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not eq_df.empty else 0,
+        }
         summary.update({"mode": mode, "symbol": symbol, "agents": agents})
         summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -418,24 +424,3 @@ class StepFService:
             ratio_prev = ratio
 
         return pd.DataFrame(out)
-
-    def _compute_metrics(self, eq_df: pd.DataFrame) -> Dict[str, float]:
-        if eq_df.empty:
-            return {}
-        ret = eq_df["ret"].astype(float).to_numpy()
-        eq = eq_df["equity"].astype(float).to_numpy()
-        total_return = float(eq[-1] - 1.0)
-        mu = float(np.mean(ret))
-        sd = float(np.std(ret, ddof=0))
-        sharpe = float((mu / (sd + 1e-12)) * math.sqrt(252.0))
-        peak = np.maximum.accumulate(eq)
-        max_dd = float(np.min(eq / np.where(peak == 0, 1.0, peak) - 1.0))
-        trades = int(np.sum(np.abs(np.diff(eq_df["ratio"].astype(float).to_numpy())) > 1e-9))
-        win_rate = float((ret > 0).mean())
-        return {
-            "total_return": total_return,
-            "sharpe": sharpe,
-            "max_drawdown": max_dd,
-            "win_rate": win_rate,
-            "num_trades": trades,
-        }
