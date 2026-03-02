@@ -67,4 +67,4 @@ def test_close_pre_smoke():
 
     decision = run_close_pre(symbol="SOXL", mode="sim", target_date=str(d.date()), output_root="output", config={"fit_window_days": 252})
     assert np.isfinite(float(decision["ratio_final"]))
-    assert len(decision.get("ratios", {})) >= len(decision.get("stage1", {}).get("allowed_agents_final", []))
+    assert len(decision.get("ratios", {})) >= len(decision.get("stage1", {}).get("branches_final", decision.get("stage1", {}).get("allowed_agents_final", [])))
