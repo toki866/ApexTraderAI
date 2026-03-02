@@ -24,7 +24,7 @@ def _default_date(mode: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run StepF close-pre two-stage router")
     ap.add_argument("--symbol", required=True)
-    ap.add_argument("--mode", default="sim", choices=["sim", "live", "ops", "prod"])
+    ap.add_argument("--mode", default="live", choices=["sim", "live", "ops", "prod"])
     ap.add_argument("--date", default=None, help="YYYY-MM-DD")
     ap.add_argument("--output-root", default="output")
     ap.add_argument("--stage0-topk", type=int, default=3)
@@ -32,8 +32,10 @@ def main() -> None:
     ap.add_argument("--pca-n-components", type=int, default=30)
     ap.add_argument("--hdbscan-min-cluster-size", type=int, default=30)
     ap.add_argument("--hdbscan-min-samples", type=int, default=10)
-    ap.add_argument("--safe-set", type=str, default="dprime_bnf_h01,dprime_all_features_h01")
-    ap.add_argument("--topK-agents-per-regime", type=int, default=3)
+    ap.add_argument("--safe-branches", type=str, default="dprime_bnf_h01,dprime_all_features_h01")
+    ap.add_argument("--topk-branches-per-regime", type=int, default=3)
+    ap.add_argument("--refresh-stepb", type=int, default=1)
+    ap.add_argument("--refresh-dprime", type=int, default=1)
     ap.add_argument("--dry-run", type=int, default=1)
     args = ap.parse_args()
 
@@ -46,8 +48,10 @@ def main() -> None:
         "pca_n_components": args.pca_n_components,
         "hdbscan_min_cluster_size": args.hdbscan_min_cluster_size,
         "hdbscan_min_samples": args.hdbscan_min_samples,
-        "safe_set": args.safe_set,
-        "topK_agents_per_regime": args.topK_agents_per_regime,
+        "safe_branches": args.safe_branches,
+        "topk_branches_per_regime": args.topk_branches_per_regime,
+        "refresh_stepb": bool(args.refresh_stepb),
+        "refresh_dprime": bool(args.refresh_dprime),
     }
     decision = run_close_pre(
         symbol=args.symbol,
@@ -58,8 +62,9 @@ def main() -> None:
     )
     print(
         f"[StepF close-pre] symbol={args.symbol} mode={decision['mode']} date={decision['target_date']} "
-        f"regime_id={decision['stage1']['regime_id_final']} ratio_final={decision['ratio_final']:.6f} "
-        f"agents_inferred={len(decision['ratios'])} total_sec={decision['timing']['total_sec']:.3f}"
+        f"regime_id={decision['stage1']['regime_id']} ratio_final={decision['ratio_final']:.6f} "
+        f"branches={len(decision['ratios'])} stepb={decision['stepB']['executed']} "
+        f"dprime_profiles={len(decision['dprime']['executed_profiles'])} total_sec={decision['timing']['total_sec']:.3f}"
     )
 
 

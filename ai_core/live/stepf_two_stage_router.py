@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -11,6 +11,8 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
+from ai_core.live.branch_materializer import BranchMaterializer
+from ai_core.live.branch_specs import BRANCHES, DEFAULT_SAFE_BRANCHES
 from ai_core.live.feature_store import FeatureStore
 from ai_core.live.step_e_policy import StepEPolicy
 from ai_core.services.step_dprime_service import _compute_base_features
@@ -34,14 +36,18 @@ class TwoStageConfig:
     hdbscan_min_samples: int = 10
     past_window_days: int = 63
     past_resample_len: int = 20
-    safe_set: str = "dprime_bnf_h01,dprime_all_features_h01"
-    topK_agents_per_regime: int = 3
+    safe_branches: str = ",".join(DEFAULT_SAFE_BRANCHES)
+    topk_branches_per_regime: int = 3
     min_samples_regime: int = 20
     topk_filter_ev_positive: bool = True
     softmax_beta: float = 1.0
     ema_alpha: float = 0.3
     pos_limit: float = 1.0
     eps_ir: float = 1e-8
+    refresh_stepb: bool = True
+    refresh_dprime: bool = True
+    stepdprime_pred_k: int = 20
+    stepdprime_l_past: int = 63
 
 
 class StepFTwoStageRouter:
@@ -62,9 +68,11 @@ class StepFTwoStageRouter:
         target_dt = target_dt.normalize()
         out_root = Path(output_root)
 
-        agents = self._discover_agents(out_root, m, symbol)
-        if not agents:
+        all_agents = sorted(BRANCHES.keys())
+        model_agents = self._discover_agents(out_root, m, symbol)
+        if not model_agents:
             raise RuntimeError(f"No StepE models found for {symbol} mode={m}")
+        agents = [a for a in all_agents if a in model_agents]
 
         timings: Dict[str, float] = {}
         t = time.perf_counter()
@@ -84,14 +92,14 @@ class StepFTwoStageRouter:
         merged_for_stats["Split"] = merged_for_stats[split_cols].bfill(axis=1).iloc[:, 0].fillna("train") if split_cols else "train"
 
         fcfg = StepFRouterConfig(
-            topK=cfg.topK_agents_per_regime,
+            topK=cfg.topk_branches_per_regime,
             min_samples_regime=cfg.min_samples_regime,
             topk_filter_ev_positive=cfg.topk_filter_ev_positive,
             eps_ir=cfg.eps_ir,
         )
-        safe_set = [a.strip() for a in cfg.safe_set.split(",") if a.strip() and a.strip() in agents]
+        safe_set = [a.strip() for a in cfg.safe_branches.split(",") if a.strip() and a.strip() in agents]
         if not safe_set:
-            safe_set = agents[: min(2, len(agents))]
+            safe_set = [a for a in DEFAULT_SAFE_BRANCHES if a in agents] or agents[: min(2, len(agents))]
 
         svc = StepFService(app_config=None)
         edge_table = svc._build_regime_edge_table(merged_for_stats, agents=agents, cfg=fcfg)
@@ -101,11 +109,31 @@ class StepFTwoStageRouter:
 
         t = time.perf_counter()
         topk_candidates = self._stage0_candidates(series=phase2_df[["Date", "regime_id"]], target_date=target_dt, prev_regime_id=regime_dminus1, topk=cfg.stage0_topk)
-        candidate_agents = set(safe_set)
+        branches_stage0 = set(safe_set)
         for rid in topk_candidates:
-            candidate_agents.update(allow_map.get(int(rid), []))
-        candidate_agents = sorted(a for a in candidate_agents if a in agents)
+            branches_stage0.update(allow_map.get(int(rid), []))
+        branches_stage0 = sorted(a for a in branches_stage0 if a in agents)
         timings["stage0_sec"] = time.perf_counter() - t
+
+        t = time.perf_counter()
+        regime_final = int(regime_d)
+        branches_final = [a for a in allow_map.get(regime_final, safe_set) if a in branches_stage0]
+        if not branches_final:
+            branches_final = list(branches_stage0)
+        timings["stage1_select_sec"] = time.perf_counter() - t
+
+        t = time.perf_counter()
+        mat = BranchMaterializer(output_root=str(out_root)).materialize(
+            symbol=symbol,
+            mode=m,
+            target_date=str(target_dt.date()),
+            branches_final=branches_final,
+            refresh_stepb=bool(cfg.refresh_stepb),
+            refresh_dprime=bool(cfg.refresh_dprime),
+            pred_k=int(cfg.stepdprime_pred_k),
+            l_past=int(cfg.stepdprime_l_past),
+        )
+        timings["branch_materialize_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
         state_path = out_root / "stepF" / m / "live_close_pre" / f"state_{symbol}.json"
@@ -114,7 +142,7 @@ class StepFTwoStageRouter:
 
         obs_cols_union = []
         policies: Dict[str, StepEPolicy] = {}
-        for agent in candidate_agents:
+        for agent in branches_final:
             model_path = out_root / "stepE" / m / "models" / f"stepE_{agent}_{symbol}.pt"
             pol = StepEPolicy(model_path=model_path)
             policies[agent] = pol
@@ -124,19 +152,15 @@ class StepFTwoStageRouter:
         obs = fs.get_row(target_dt, obs_cols_union)
 
         ratio_by_agent: Dict[str, float] = {}
-        for agent in candidate_agents:
+        for agent in branches_final:
             ratio_by_agent[agent] = policies[agent].predict(obs, pos_prev=pos_prev, pos_limit=cfg.pos_limit)
         timings["agent_infer_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
-        regime_final = int(regime_d)
-        allowed_final = allow_map.get(regime_final, safe_set)
-        allowed_final = [a for a in allowed_final if a in candidate_agents] or list(candidate_agents)
-
         ir_map = {(int(r.regime_id), str(r.agent)): float(r.IR) for r in edge_table.itertuples(index=False)}
-        scores = np.array([ir_map.get((regime_final, a), np.nan) for a in allowed_final], dtype=float)
+        scores = np.array([ir_map.get((regime_final, a), np.nan) for a in branches_final], dtype=float)
         if np.any(np.isnan(scores)):
-            w_raw = np.ones(len(allowed_final), dtype=float) / max(1, len(allowed_final))
+            w_raw = np.ones(len(branches_final), dtype=float) / max(1, len(branches_final))
         else:
             z = cfg.softmax_beta * scores
             z = z - np.max(z)
@@ -144,19 +168,19 @@ class StepFTwoStageRouter:
             w_raw = ex / max(ex.sum(), 1e-12)
 
         ema_prev = {k: float(v) for k, v in (state.get("ema_weights", {}) or {}).items()}
-        w_by_agent = {a: 0.0 for a in candidate_agents}
-        for i, a in enumerate(allowed_final):
+        w_by_agent = {a: 0.0 for a in branches_final}
+        for i, a in enumerate(branches_final):
             smoothed = cfg.ema_alpha * float(w_raw[i]) + (1.0 - cfg.ema_alpha) * ema_prev.get(a, 0.0)
             w_by_agent[a] = smoothed
         sw = sum(w_by_agent.values())
         if sw <= 0:
-            for a in allowed_final:
-                w_by_agent[a] = 1.0 / max(1, len(allowed_final))
+            for a in branches_final:
+                w_by_agent[a] = 1.0 / max(1, len(branches_final))
         else:
             for a in list(w_by_agent.keys()):
                 w_by_agent[a] = w_by_agent[a] / sw
 
-        ratio_final = float(sum(w_by_agent.get(a, 0.0) * ratio_by_agent.get(a, 0.0) for a in candidate_agents))
+        ratio_final = float(sum(w_by_agent.get(a, 0.0) * ratio_by_agent.get(a, 0.0) for a in branches_final))
         ratio_final = float(np.clip(ratio_final, -cfg.pos_limit, cfg.pos_limit))
         timings["stage1_aggregate_sec"] = time.perf_counter() - t
 
@@ -166,21 +190,38 @@ class StepFTwoStageRouter:
             "symbol": symbol,
             "mode": m,
             "target_date": str(target_dt.date()),
+            "fit_end_date": fit_info.get("fit_end_date"),
+            "fit_window_days": fit_info.get("fit_window_days"),
+            "n_fit_rows": fit_info.get("n_train_rows"),
+            "params": asdict(cfg),
             "stage0": {
                 "prev_regime_id": int(regime_dminus1),
                 "topk_candidates": [int(x) for x in topk_candidates],
-                "allowed_agents_union": candidate_agents,
+                "branches_stage0": branches_stage0,
             },
             "stage1": {
-                "regime_id_final": int(regime_final),
-                "allowed_agents_final": allowed_final,
+                "regime_id": int(regime_final),
+                "branches_final": branches_final,
+            },
+            "stepB": {
+                "executed": bool(mat.stepb_executed),
+                "output_paths": mat.stepb_paths,
+                "pred_k": int(mat.stepb_pred_k),
+                "horizons": mat.stepb_horizons,
+            },
+            "dprime": {
+                "executed_profiles": mat.dprime_executed_profiles,
+                "output_paths": mat.dprime_paths,
             },
             "ratios": {k: float(v) for k, v in ratio_by_agent.items()},
             "weights": {k: float(v) for k, v in w_by_agent.items() if v > 0},
             "ratio_final": ratio_final,
+            "state_in": {
+                "pos_prev": pos_prev,
+                "ema_prev": ema_prev,
+            },
             "fit_info": fit_info,
             "timing": {**timings, "total_sec": time.perf_counter() - t0},
-            "config": asdict(cfg),
             "timestamp_utc": pd.Timestamp.utcnow().isoformat(),
         }
 
@@ -192,6 +233,7 @@ class StepFTwoStageRouter:
             "last_ratio": ratio_final,
             "ema_weights": {k: float(v) for k, v in w_by_agent.items()},
             "last_regime_id": int(regime_final),
+            "last_date": str(target_dt.date()),
             "updated_at_utc": pd.Timestamp.utcnow().isoformat(),
         }
         state_path.write_text(json.dumps(next_state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -228,8 +270,8 @@ class StepFTwoStageRouter:
                 s = chunk[c].to_numpy(dtype=float)
                 vec.extend(np.interp(target_idx, np.arange(win), s).tolist())
             z_rows.append(vec)
-            z_dates.append(base_feat.loc[i, "Date"])
-        z = pd.DataFrame({"Date": z_dates})
+            z_dates.append(base_feat.iloc[i]["Date"])
+        z = pd.DataFrame({"Date": pd.to_datetime(z_dates).normalize()})
         if z_rows:
             arr = np.asarray(z_rows, dtype=float)
             for i in range(arr.shape[1]):
@@ -312,9 +354,9 @@ class StepFTwoStageRouter:
             "mode": decision.get("mode", ""),
             "prev_regime_id": decision.get("stage0", {}).get("prev_regime_id", -1),
             "stage0_candidates": "|".join(map(str, decision.get("stage0", {}).get("topk_candidates", []))),
-            "regime_id_final": decision.get("stage1", {}).get("regime_id_final", -1),
+            "regime_id_final": decision.get("stage1", {}).get("regime_id", -1),
             "n_agents_inferred": len(decision.get("ratios", {}) or {}),
-            "n_agents_final": len(decision.get("stage1", {}).get("allowed_agents_final", []) or []),
+            "n_agents_final": len(decision.get("stage1", {}).get("branches_final", []) or []),
             "ratio_final": decision.get("ratio_final", 0.0),
             "fit_end_date": decision.get("fit_info", {}).get("fit_end_date", ""),
             "fit_window_days": decision.get("fit_info", {}).get("fit_window_days", ""),
