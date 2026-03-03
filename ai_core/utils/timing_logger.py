@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import socket
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -9,6 +11,24 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 import pandas as pd
+
+
+def _get_host() -> str:
+    try:
+        node = platform.node()
+        if node:
+            return node
+    except Exception:
+        pass
+
+    try:
+        hostname = socket.gethostname()
+        if hostname:
+            return hostname
+    except Exception:
+        pass
+
+    return os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "unknown"
 
 
 class TimingLogger:
@@ -31,7 +51,7 @@ class TimingLogger:
         self.retrain = str(retrain or "")
         self.events_path = Path(output_root) / "timing" / self.mode / "timing_events.jsonl"
         self.timings_csv_path = Path(output_root) / "timings.csv"
-        self.host = os.uname().nodename
+        self.host = _get_host()
 
         if not self.enabled:
             return
