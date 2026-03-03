@@ -10,6 +10,7 @@ from ai_core.config.app_config import AppConfig
 from ai_core.config.step_b_config import StepBConfig, WaveletMambaTrainConfig
 from ai_core.services.step_b_mamba_runner import rollout_periodic_h1_future, run_stepB_mamba
 from ai_core.types.step_b_types import StepBResult
+from ai_core.utils.timing_logger import TimingLogger
 
 
 class StepBService:
@@ -19,6 +20,10 @@ class StepBService:
 
     def __init__(self, app_config: AppConfig) -> None:
         self.app_config = app_config
+
+    def _timing(self) -> TimingLogger:
+        t = getattr(self.app_config, "_timing_logger", None)
+        return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
     def _resolve_run_mode(self, cfg: StepBConfig) -> str:
         m = str(getattr(cfg.mamba, "mode", "sim") or "sim").strip().lower()
@@ -199,42 +204,52 @@ class StepBService:
         if stepb_config is None:
             raise TypeError("StepBService.run requires StepBConfig")
 
-        cfg_all = StepBConfig.from_any(stepb_config)
-        if not cfg_all.enabled_agents():
-            raise ValueError("No agents enabled in StepBConfig (mamba disabled).")
+        timing = self._timing()
+        with timing.stage("stepB.total"):
+            cfg_all = StepBConfig.from_any(stepb_config)
+            if not cfg_all.enabled_agents():
+                raise ValueError("No agents enabled in StepBConfig (mamba disabled).")
 
-        symbol = cfg_all.symbol
-        run_mode = self._resolve_run_mode(cfg_all)
-        prices_df = self._load_stepa_df(symbol, run_mode, "prices")
-        prices_test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
-        tech_df = self._load_stepa_df(symbol, run_mode, "tech")
-        periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
-        features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
+            symbol = cfg_all.symbol
+            run_mode = self._resolve_run_mode(cfg_all)
+            with timing.stage("stepB.load_stepA_inputs"):
+                prices_df = self._load_stepa_df(symbol, run_mode, "prices")
+                prices_test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
+                tech_df = self._load_stepa_df(symbol, run_mode, "tech")
+                periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
+                features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
 
-        forced_cfg = self._force_spec(cfg_all.mamba)
-        full_cfg = replace(forced_cfg, variant="full", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
-        periodic_cfg = replace(forced_cfg, variant="periodic", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
+            forced_cfg = self._force_spec(cfg_all.mamba)
+            full_cfg = replace(forced_cfg, variant="full", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
+            periodic_cfg = replace(forced_cfg, variant="periodic", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
 
-        full_res = run_stepB_mamba(
-            app_config=self.app_config,
-            symbol=symbol,
-            prices_df=prices_df,
-            features_df=features_df,
-            cfg=full_cfg,
-        )
-        periodic_res = run_stepB_mamba(
-            app_config=self.app_config,
-            symbol=symbol,
-            prices_df=prices_df,
-            features_df=periodic_df,
-            cfg=periodic_cfg,
-        )
-        pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
+            with timing.stage("stepB.full.run"):
+                full_res = run_stepB_mamba(
+                    app_config=self.app_config,
+                    symbol=symbol,
+                    prices_df=prices_df,
+                    features_df=features_df,
+                    cfg=full_cfg,
+                )
+            with timing.stage("stepB.periodic.run"):
+                periodic_res = run_stepB_mamba(
+                    app_config=self.app_config,
+                    symbol=symbol,
+                    prices_df=prices_df,
+                    features_df=periodic_df,
+                    cfg=periodic_cfg,
+                )
+            with timing.stage("stepB.write_pred_time_all"):
+                pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
 
-        info = {}
-        if run_mode == "live":
-            nextday = self._write_live_nextday(symbol, run_mode)
-            future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_df, run_mode)
+            info = {}
+            nextday = None
+            future = None
+            if run_mode == "live":
+                with timing.stage("stepB.write_live_nextday"):
+                    nextday = self._write_live_nextday(symbol, run_mode)
+                with timing.stage("stepB.write_live_future"):
+                    future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_df, run_mode)
             if nextday is not None:
                 info["pred_nextday_mamba_path"] = str(nextday)
             if future is not None:

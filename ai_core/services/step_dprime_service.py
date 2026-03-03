@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from ai_core.utils.timing_logger import TimingLogger
 
 _PROFILES: Tuple[str, ...] = (
     "dprime_bnf_h01",
@@ -39,6 +40,7 @@ class StepDPrimeConfig:
     z_past_dim: int = 32
     z_pred_dim: int = 32
     verbose: bool = True
+    timing_logger: Optional[TimingLogger] = None
 
 
 def _normalize_mode(mode: str) -> str:
@@ -211,6 +213,7 @@ def _infer_family(profile: str) -> str:
 
 class StepDPrimeService:
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
+        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
         mode = _normalize_mode(cfg.mode)
         out_root = Path(cfg.output_root)
         stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
@@ -222,19 +225,21 @@ class StepDPrimeService:
         legacy_dir.mkdir(parents=True, exist_ok=True)
         emb_dir.mkdir(parents=True, exist_ok=True)
 
-        split = _read_split_summary(stepa_dir, cfg.symbol)
-        tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
-        te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
+        with timing.stage("stepDPrime.load_inputs"):
+            split = _read_split_summary(stepa_dir, cfg.symbol)
+            tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
+            te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
 
-        pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
-        tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
-        pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+            pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+            tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+            pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
 
         prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
         tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
         periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        base = _compute_base_features(prices, tech)
-        all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+        with timing.stage("stepDPrime.build_features"):
+            base = _compute_base_features(prices, tech)
+            all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
 
         num_cols = [c for c in all_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(all_df[c])]
         for c in num_cols:
@@ -278,115 +283,114 @@ class StepDPrimeService:
         if min(idx_test) < cfg.l_past - 1:
             raise RuntimeError("insufficient history before test_start for L_past window")
 
-        for profile in cfg.profiles:
-            fam = _infer_family(profile)
-            pred_type = _infer_pred_type(profile)
-            past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
-            past_cols = [c for c in past_cols if c in data.columns]
+        with timing.stage("stepDPrime.total"):
+            for profile in cfg.profiles:
+                with timing.stage("stepDPrime.profile.loop", agent_id=str(profile)):
+                    fam = _infer_family(profile)
+                    pred_type = _infer_pred_type(profile)
+                    past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
+                    past_cols = [c for c in past_cols if c in data.columns]
 
-            pred_steps = [1] if pred_type == "h01" else ([1, 5, 10, 20] if pred_type == "h02" else list(range(1, cfg.pred_k + 1)))
-            pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
+                    pred_steps = [1] if pred_type == "h01" else ([1, 5, 10, 20] if pred_type == "h02" else list(range(1, cfg.pred_k + 1)))
+                    pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
 
-            def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
-                xp, xf, ds = [], [], []
-                for i in indices:
-                    if i < cfg.l_past - 1:
-                        continue
-                    hist = data.iloc[i - cfg.l_past + 1 : i + 1]
-                    xp.append(hist[past_cols].to_numpy(dtype=float).reshape(-1))
-                    ds.append(data.iloc[i]["Date"])
-                    if pred_type == "3scale":
-                        p = data.iloc[i][[f"pred_ret_{k:02d}" for k in range(1, cfg.pred_k + 1)]].to_numpy(dtype=float)
-                        xf.append(np.concatenate([p[:5], p[:10], p[:20]], axis=0))
-                    else:
-                        xf.append(data.iloc[i][pred_use_cols].to_numpy(dtype=float))
-                return np.asarray(xp, float), np.asarray(xf, float), ds
+                    def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
+                        xp, xf, ds = [], [], []
+                        for i in indices:
+                            if i < cfg.l_past - 1:
+                                continue
+                            hist = data.iloc[i - cfg.l_past + 1 : i + 1]
+                            xp.append(hist[past_cols].to_numpy(dtype=float).reshape(-1))
+                            ds.append(data.iloc[i]["Date"])
+                            if pred_type == "3scale":
+                                p = data.iloc[i][[f"pred_ret_{k:02d}" for k in range(1, cfg.pred_k + 1)]].to_numpy(dtype=float)
+                                xf.append(np.concatenate([p[:5], p[:10], p[:20]], axis=0))
+                            else:
+                                xf.append(data.iloc[i][pred_use_cols].to_numpy(dtype=float))
+                        return np.asarray(xp, float), np.asarray(xf, float), ds
 
-            Xp_tr, Xf_tr, Dtr = _build_rows(idx_train)
-            Xp_te, Xf_te, Dte = _build_rows(idx_test)
-            if len(Dtr) == 0 or len(Dte) == 0:
-                raise RuntimeError(f"profile={profile}: no rows for train/test")
+                    Xp_tr, Xf_tr, Dtr = _build_rows(idx_train)
+                    Xp_te, Xf_te, Dte = _build_rows(idx_test)
+                    if len(Dtr) == 0 or len(Dte) == 0:
+                        raise RuntimeError(f"profile={profile}: no rows for train/test")
 
-            mu_p, sd_p = _fit_scaler(Xp_tr)
-            mu_f, sd_f = _fit_scaler(Xf_tr)
-            comp_p, d_p = _fit_pca((Xp_tr - mu_p) / sd_p, cfg.z_past_dim)
-            pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
-            comp_f, d_f = _fit_pca((Xf_tr - mu_f) / sd_f, pred_dim)
-            Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
-            Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
+                    mu_p, sd_p = _fit_scaler(Xp_tr)
+                    mu_f, sd_f = _fit_scaler(Xf_tr)
+                    comp_p, d_p = _fit_pca((Xp_tr - mu_p) / sd_p, cfg.z_past_dim)
+                    pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
+                    comp_f, d_f = _fit_pca((Xf_tr - mu_f) / sd_f, pred_dim)
+                    Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
+                    Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
 
-            def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
-                out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
-                for j in range(zp.shape[1]):
-                    out[f"zp_{j:03d}"] = zp[:, j]
-                for j in range(zf.shape[1]):
-                    out[f"zf_{j:03d}"] = zf[:, j]
-                ref = data.set_index("Date")
-                out["gap_atr"] = [float(ref.loc[pd.to_datetime(d), "gap_atr"]) for d in pd.to_datetime(ds)]
-                out["ATR_norm"] = [float(ref.loc[pd.to_datetime(d), "ATR_norm"]) for d in pd.to_datetime(ds)]
-                out["pos_prev"] = 0.0
-                out["action_prev"] = 0.0
-                out["time_in_trade"] = 0.0
-                return out
+                    def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
+                        out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
+                        for j in range(zp.shape[1]):
+                            out[f"zp_{j:03d}"] = zp[:, j]
+                        for j in range(zf.shape[1]):
+                            out[f"zf_{j:03d}"] = zf[:, j]
+                        ref = data.set_index("Date")
+                        out["gap_atr"] = [float(ref.loc[pd.to_datetime(d), "gap_atr"]) for d in pd.to_datetime(ds)]
+                        out["ATR_norm"] = [float(ref.loc[pd.to_datetime(d), "ATR_norm"]) for d in pd.to_datetime(ds)]
+                        out["pos_prev"] = 0.0
+                        out["action_prev"] = 0.0
+                        out["time_in_trade"] = 0.0
+                        return out
 
-            df_tr, df_te = _to_df(Dtr, Zp_tr, Zf_tr), _to_df(Dte, Zp_te, Zf_te)
-            p_tr = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
-            p_te = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
-            s_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
-            df_tr.to_csv(p_tr, index=False)
-            df_te.to_csv(p_te, index=False)
-            pd.DataFrame([
-                {"key": "mode", "value": mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
-                {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
-                {"key": "test_start", "value": str(te_s.date())}, {"key": "test_end", "value": str(te_e.date())},
-                {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
-                {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
-                {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
-                {"key": "past_feature_channels", "value": "|".join(past_cols)},
-                {"key": "pred_source_file", "value": pred_src},
-                {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
-                {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
-            ]).to_csv(s_path, index=False)
+                    df_tr, df_te = _to_df(Dtr, Zp_tr, Zf_tr), _to_df(Dte, Zp_te, Zf_te)
+                    p_tr = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
+                    p_te = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
+                    s_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
+                    df_tr.to_csv(p_tr, index=False)
+                    df_te.to_csv(p_te, index=False)
+                    pd.DataFrame([
+                        {"key": "mode", "value": mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
+                        {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
+                        {"key": "test_start", "value": str(te_s.date())}, {"key": "test_end", "value": str(te_e.date())},
+                        {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
+                        {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
+                        {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
+                        {"key": "past_feature_channels", "value": "|".join(past_cols)},
+                        {"key": "pred_source_file", "value": pred_src},
+                        {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
+                        {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
+                    ]).to_csv(s_path, index=False)
 
-            # legacy dual output
-            lp_tr = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_train.csv"
-            lp_te = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_test.csv"
-            df_tr.to_csv(lp_tr, index=False)
-            df_te.to_csv(lp_te, index=False)
+                    lp_tr = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_train.csv"
+                    lp_te = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_test.csv"
+                    df_tr.to_csv(lp_tr, index=False)
+                    df_te.to_csv(lp_te, index=False)
 
-            emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
+                    emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
 
-            def _to_emb_df(df_state: pd.DataFrame) -> pd.DataFrame:
-                out = pd.DataFrame({"Date": pd.to_datetime(df_state["Date"], errors="coerce").dt.strftime("%Y-%m-%d")})
-                for i, c in enumerate(emb_cols):
-                    out[f"emb_{i:03d}"] = pd.to_numeric(df_state[c], errors="coerce").astype(float)
-                return out
+                    def _to_emb_df(df_state: pd.DataFrame) -> pd.DataFrame:
+                        out = pd.DataFrame({"Date": pd.to_datetime(df_state["Date"], errors="coerce").dt.strftime("%Y-%m-%d")})
+                        for i, c in enumerate(emb_cols):
+                            out[f"emb_{i:03d}"] = pd.to_numeric(df_state[c], errors="coerce").astype(float)
+                        return out
 
-            df_emb_tr = _to_emb_df(df_tr)
-            df_emb_te = _to_emb_df(df_te)
-            df_emb_all = pd.concat([df_emb_tr, df_emb_te], axis=0, ignore_index=True)
-            df_emb_all["Date"] = pd.to_datetime(df_emb_all["Date"], errors="coerce")
-            df_emb_all = (
-                df_emb_all.dropna(subset=["Date"])
-                .sort_values("Date")
-                .drop_duplicates(subset=["Date"], keep="last")
-                .reset_index(drop=True)
-            )
-            df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
+                    df_emb_tr = _to_emb_df(df_tr)
+                    df_emb_te = _to_emb_df(df_te)
+                    df_emb_all = pd.concat([df_emb_tr, df_emb_te], axis=0, ignore_index=True)
+                    df_emb_all["Date"] = pd.to_datetime(df_emb_all["Date"], errors="coerce")
+                    df_emb_all = (
+                        df_emb_all.dropna(subset=["Date"])
+                        .sort_values("Date")
+                        .drop_duplicates(subset=["Date"], keep="last")
+                        .reset_index(drop=True)
+                    )
+                    df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
 
-            # Legacy profile-based names (kept for compatibility)
-            ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
-            ep_te = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_test.csv"
-            ep_all = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
-            df_emb_tr.to_csv(ep_tr, index=False)
-            df_emb_te.to_csv(ep_te, index=False)
-            df_emb_all.to_csv(ep_all, index=False)
+                    ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
+                    ep_te = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_test.csv"
+                    ep_all = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
+                    df_emb_tr.to_csv(ep_tr, index=False)
+                    df_emb_te.to_csv(ep_te, index=False)
+                    df_emb_all.to_csv(ep_all, index=False)
 
-            # Family/pred_type names consumed by StepE source+horizon loading.
-            ep_all_named = emb_dir / f"stepDprime_{fam}_{pred_type}_{cfg.symbol}_embeddings_all.csv"
-            df_emb_all.to_csv(ep_all_named, index=False)
+                    ep_all_named = emb_dir / f"stepDprime_{fam}_{pred_type}_{cfg.symbol}_embeddings_all.csv"
+                    df_emb_all.to_csv(ep_all_named, index=False)
 
-            results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
+                    results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
         (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         return results

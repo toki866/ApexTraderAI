@@ -151,6 +151,10 @@ class StepEService:
         """
         self.app_config = app_config
 
+    def _timing(self) -> TimingLogger:
+        t = getattr(self.app_config, "_timing_logger", None)
+        return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
+
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
         mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
         if mode in {"ops", "prod", "production", "real"}:
@@ -190,7 +194,9 @@ class StepEService:
     # -----------------------
 
     def _run_one(self, cfg: StepEConfig, date_range, symbol: str, mode: str) -> None:
-        out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
+        timing = self._timing()
+        with timing.stage("stepE.agent.total", agent_id=str(cfg.agent)):
+            out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
         out_dir = out_root / "stepE" / mode
         model_dir = out_dir / "models"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -203,7 +209,8 @@ class StepEService:
             print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed} device={cfg.device}")
 
         # Load & merge inputs (train+test)
-        df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
+        with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent)):
+            df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
 
         # Split bounds
         train_start = pd.to_datetime(getattr(date_range, "train_start"))
@@ -241,7 +248,8 @@ class StepEService:
                     )
 
         # Observation columns
-        obs_cols = self._select_obs_columns(cfg.obs_profile, df_all=df_all)
+        with timing.stage("stepE.agent.select_obs", agent_id=str(cfg.agent)):
+            obs_cols = self._select_obs_columns(cfg.obs_profile, df_all=df_all)
         if cfg.use_stepd_prime:
             obs_cols = self._prepend_dprime_cols(df_all=df_all) + [c for c in obs_cols if not c.startswith("dprime_")]
 
@@ -273,7 +281,8 @@ class StepEService:
         if policy_kind not in {"diffpg", "ppo"}:
             raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}")
         if policy_kind == "ppo":
-            self._train_and_eval_ppo(
+            with timing.stage("stepE.agent.train", agent_id=str(cfg.agent)):
+                self._train_and_eval_ppo(
                 cfg=cfg,
                 symbol=symbol,
                 mode=mode,
@@ -295,8 +304,9 @@ class StepEService:
                 test_start=test_start,
                 test_end=test_end,
                 rows_train=len(df_train),
-                rows_test=len(df_test),
-            )
+                    rows_test=len(df_test),
+                )
+            timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo"})
             return
 
         # Train policy (diffPG)
@@ -368,46 +378,47 @@ class StepEService:
             cost = torch.stack(cost_list, dim=0)
             return reward_next, pos, cost, gross
 
-        for ep in range(1, int(cfg.epochs) + 1):
-            net.train()
-            opt.zero_grad()
+        with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"policy": "diffpg"}):
+            for ep in range(1, int(cfg.epochs) + 1):
+                net.train()
+                opt.zero_grad()
 
-            ret_fit, _, _, _ = _rollout(
-                net,
-                X_train_t[:n_fit],
-                r_soxl_train_t[:n_fit],
-                r_soxs_train_t[:n_fit],
-            )
-            # maximize log equity: sum log(1+ret)
-            obj = -torch.log1p(ret_fit).mean()
-            obj.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            opt.step()
-
-            # validation
-            net.eval()
-            with torch.no_grad():
-                ret_val, _, _, _ = _rollout(
+                ret_fit, _, _, _ = _rollout(
                     net,
-                    X_train_t[n_fit:],
-                    r_soxl_train_t[n_fit:],
-                    r_soxs_train_t[n_fit:],
+                    X_train_t[:n_fit],
+                    r_soxl_train_t[:n_fit],
+                    r_soxs_train_t[:n_fit],
                 )
-                val_loss = float((-torch.log1p(ret_val).mean()).item())
+                # maximize log equity: sum log(1+ret)
+                obj = -torch.log1p(ret_fit).mean()
+                obj.backward()
+                torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+                opt.step()
 
-            if cfg.verbose:
-                print(f"[StepE] ep={ep:03d} fit_loss={float(obj.item()):.6f} val_loss={val_loss:.6f}")
+                # validation
+                net.eval()
+                with torch.no_grad():
+                    ret_val, _, _, _ = _rollout(
+                        net,
+                        X_train_t[n_fit:],
+                        r_soxl_train_t[n_fit:],
+                        r_soxs_train_t[n_fit:],
+                    )
+                    val_loss = float((-torch.log1p(ret_val).mean()).item())
 
-            if val_loss + 1e-8 < best_val:
-                best_val = val_loss
-                best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
-                wait = 0
-            else:
-                wait += 1
-                if wait >= int(cfg.patience):
-                    if cfg.verbose:
-                        print(f"[StepE] early stop at ep={ep}")
-                    break
+                if cfg.verbose:
+                    print(f"[StepE] ep={ep:03d} fit_loss={float(obj.item()):.6f} val_loss={val_loss:.6f}")
+
+                if val_loss + 1e-8 < best_val:
+                    best_val = val_loss
+                    best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+                    wait = 0
+                else:
+                    wait += 1
+                    if wait >= int(cfg.patience):
+                        if cfg.verbose:
+                            print(f"[StepE] early stop at ep={ep}")
+                        break
 
         if best_state is not None:
             net.load_state_dict(best_state)
@@ -454,10 +465,11 @@ class StepEService:
             df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
 
         eq_path = out_dir / f"stepE_equity_{cfg.agent}_{symbol}.csv"
-        df_eq.to_csv(eq_path, index=False)
+        with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent)):
+            df_eq.to_csv(eq_path, index=False)
 
-        log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
-        df_log.to_csv(log_path, index=False)
+            log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
+            df_log.to_csv(log_path, index=False)
 
         # Summary metrics (test) using metrics_summary.csv-aligned definitions.
         # Read back from saved daily log to guarantee summary uses persisted data.
