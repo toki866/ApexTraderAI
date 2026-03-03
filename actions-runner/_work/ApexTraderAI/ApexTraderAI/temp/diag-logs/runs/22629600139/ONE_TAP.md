@@ -2,12 +2,12 @@
 
 - run_id: 22629600139
 - sha: ecaafc907e36f3d19f7cc7dc8929aa0ae2d5613a
-- mode: live
+- mode: sim
 - symbols: SOXL,SOXS
 - test_start: 2022-01-03
 - train_years: 8
 - test_months: 3
-- output_root: C:/work/apex_work/runs/gh22629600139_att1_live_20260304_001842_ecaafc9/output
+- output_root: C:/work/apex_work/runs/gh22629600139_att1_sim_20260304_002134_ecaafc9/output
 
 ## StepE metrics
 not found
@@ -15,7 +15,7 @@ not found
 ## StepF metrics
 | step  | mode | source_csv | status    |
 | ----- | ---- | ---------- | --------- |
-| StepF | live | not found  | not found |
+| StepF | sim  | not found  | not found |
 
 ## Key CSV files
 - No target CSV files found
@@ -65,13 +65,13 @@ Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\becky\appdata\loca
 Requirement already satisfied: mpmath<1.4,>=1.1.0 in c:\users\becky\appdata\local\programs\python\python310\lib\site-packages (from sympy>=1.13.3->torch<3.0,>=2.3->stable-baselines3->-r requirements.txt (line 9)) (1.3.0)
 Requirement already satisfied: MarkupSafe>=2.0 in c:\users\becky\appdata\roaming\python\python310\site-packages (from jinja2->torch<3.0,>=2.3->stable-baselines3->-r requirements.txt (line 9)) (3.0.3)
 
-[CMD] "python" tools\run_with_python.py tools\prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir "C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data"
-[prepare_data] wrote C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data\prices_SOXL.csv (2086 rows)
-[prepare_data] wrote C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data\prices_SOXS.csv (2086 rows)
-[CMD] 'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe' 'tools\prepare_data.py' --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir 'C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data'
+[CMD] "python" tools\run_with_python.py tools\prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir "C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data"
+[prepare_data] wrote C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data\prices_SOXL.csv (2086 rows)
+[prepare_data] wrote C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data\prices_SOXS.csv (2086 rows)
+[CMD] 'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe' 'tools\prepare_data.py' --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir 'C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data'
 [RC] 0
 
-[CMD] "python" tools\run_with_python.py tools\run_pipeline.py --symbol SOXL --steps "A,B,C,DPRIME,E,F" --test-start 2022-01-03 --train-years 8 --test-months 3 --mode live --output-root "C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\output" --data-dir "C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data" --auto-prepare-data 0  --enable-mamba
+[CMD] "python" tools\run_with_python.py tools\run_pipeline.py --symbol SOXL --steps "A,B,C,DPRIME,E,F" --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root "C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\output" --data-dir "C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data" --auto-prepare-data 0  --enable-mamba
 Traceback (most recent call last):
   File "C:\work\apex_repo_cache\ApexTraderAI\tools\run_pipeline.py", line 1699, in <module>
     raise SystemExit(main())
@@ -80,17 +80,17 @@ Traceback (most recent call last):
   File "C:\work\apex_repo_cache\ApexTraderAI\ai_core\utils\timing_logger.py", line 34, in __init__
     self.host = os.uname().nodename
 AttributeError: module 'os' has no attribute 'uname'. Did you mean: 'name'?
-[CMD] 'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe' 'tools\run_pipeline.py' --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start 2022-01-03 --train-years 8 --test-months 3 --mode live --output-root 'C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\output' --data-dir 'C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data' --auto-prepare-data 0 --enable-mamba
+[CMD] 'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe' 'tools\run_pipeline.py' --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root 'C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\output' --data-dir 'C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data' --auto-prepare-data 0 --enable-mamba
 [RC] 1
 [RC] 
-[FAILED] command="python" tools\run_with_python.py tools\run_pipeline.py --symbol SOXL --steps "A,B,C,DPRIME,E,F" --test-start 2022-01-03 --train-years 8 --test-months 3 --mode live --output-root "C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\output" --data-dir "C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\data" --auto-prepare-data 0  --enable-mamba
+[FAILED] command="python" tools\run_with_python.py tools\run_pipeline.py --symbol SOXL --steps "A,B,C,DPRIME,E,F" --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root "C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\output" --data-dir "C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\data" --auto-prepare-data 0  --enable-mamba
 [FAILED] exit_code=
-[FAILED] run_id=gh22629600139_att1_live_20260304_001842_ecaafc9
-[FAILED] log=C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\logs\run_gh22629600139_att1_live_20260304_001842_ecaafc9.log
+[FAILED] run_id=gh22629600139_att1_sim_20260304_002134_ecaafc9
+[FAILED] log=C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\logs\run_gh22629600139_att1_sim_20260304_002134_ecaafc9.log
 [STEP] package_diagnostics_to_onedrive
 [INFO] diag_script=C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
-[PUBLISH] run_dir=C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9
-[PUBLISH] output_root=C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9\output
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9
+[PUBLISH] output_root=C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9\output
 [WARN] publish issue: D' state CSV missing under output/stepD_prime/<mode>.
 [WARN] publish issue: D' embeddings CSV missing under output/stepD_prime/<mode>/embeddings.
 [OK] package_diagnostics_to_onedrive
@@ -99,6 +99,6 @@ AttributeError: module 'os' has no attribute 'uname'. Did you mean: 'name'?
 [STEP] resolve_latest_run_artifacts
 [INFO] work_root=C:\work\apex_work\runs
 [OK] resolve_latest_run_artifacts
-[OK] run_dir=C:\work\apex_work\runs\gh22629600139_att1_live_20260304_001842_ecaafc9
-[OK] run_id=gh22629600139_att1_live_20260304_001842_ecaafc9
+[OK] run_dir=C:\work\apex_work\runs\gh22629600139_att1_sim_20260304_002134_ecaafc9
+[OK] run_id=gh22629600139_att1_sim_20260304_002134_ecaafc9
 ```
