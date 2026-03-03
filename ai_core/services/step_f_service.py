@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -12,6 +13,7 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.utils.metrics_utils import compute_split_metrics
+from ai_core.utils.timing_logger import TimingLogger
 
 try:
     import hdbscan
@@ -48,6 +50,10 @@ class StepFRouterConfig:
     pos_l2_lambda: float = 0.0
     eps_ir: float = 1e-8
     verbose: bool = True
+    retrain: str = "off"
+    branch_id: str = "default"
+    input_mode: str = ""
+    model_source_dir: str = ""
 
 
 StepFConfig = StepFRouterConfig
@@ -57,6 +63,8 @@ StepFConfig = StepFRouterConfig
 class StepFResult:
     daily_log_path: str
     summary_path: str
+    ratio_path: str = ""
+    run_summary_path: str = ""
 
 
 class StepFService:
@@ -76,14 +84,23 @@ class StepFService:
             resolved_mode = "live"
         return self._run_router(cfg, date_range, symbol=symbol, mode=resolved_mode)
 
-    def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str) -> StepFResult:
+    def run_live(self, date_range, symbol: str, retrain: str = "off", branch_id: str = "default", data_cutoff: str = "") -> StepFResult:
+        cfg: StepFRouterConfig = deepcopy(getattr(self.app_config, "stepF", None))
+        if cfg is None:
+            raise ValueError("app_config.stepF is missing")
+        cfg.retrain = "on" if str(retrain).lower() == "on" else "off"
+        cfg.branch_id = str(branch_id or "default")
+        return self._run_router(cfg, date_range, symbol=symbol, mode="live", data_cutoff=data_cutoff)
+
+    def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "") -> StepFResult:
         timing = self._timing()
         with timing.stage("stepF.total"):
             if hdbscan is None or hdbscan_prediction is None:
                 raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
 
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
-            out_dir = out_root / "stepF" / mode
+            retrain = "on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off"
+            out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
             router_dir = out_dir / "router"
             phase2_dir = out_dir / "phase2"
             router_dir.mkdir(parents=True, exist_ok=True)
@@ -104,10 +121,13 @@ class StepFService:
                     if len(safe_set) >= min(2, len(agents)):
                         break
 
+            input_mode = str(getattr(cfg, "input_mode", "") or mode)
+            if mode == "live" and not (out_root / "stepA" / input_mode).exists():
+                input_mode = "sim"
             with timing.stage("stepF.load_prices_logs"):
-                prices_soxl = self._load_stepa_price_tech(out_root, mode, "SOXL")
-                prices_soxs = self._load_stepa_price_tech(out_root, mode, "SOXS")
-                logs_map = self._load_stepe_logs(out_root, mode, symbol, agents)
+                prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
+                prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
+                logs_map = self._load_stepe_logs(out_root, input_mode, symbol, agents)
             soxl_px = prices_soxl[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
             soxs_px = prices_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"})
             price_pair = soxl_px.merge(soxs_px, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
@@ -117,13 +137,20 @@ class StepFService:
             if cfg.phase2_state_path:
                 phase2 = pd.read_csv(cfg.phase2_state_path)
                 phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
+            elif mode == "live" and retrain == "off":
+                source_dir = Path(getattr(cfg, "model_source_dir", "") or (out_root / "stepF" / "live" / "retrain_on"))
+                source_p = source_dir / "phase2" / f"phase2_state_{symbol}.csv"
+                if not source_p.exists():
+                    source_p = out_root / "stepF" / "sim" / "phase2" / f"phase2_state_{symbol}.csv"
+                phase2 = pd.read_csv(source_p)
+                phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
             else:
                 with timing.stage("stepF.build_phase2_state"):
                     phase2 = self._build_phase2_state(
                         cfg=cfg,
                         date_range=date_range,
                         symbol=symbol,
-                        mode=mode,
+                        mode=input_mode,
                         out_root=out_root,
                         price_tech=prices_soxl,
                     )
@@ -140,31 +167,48 @@ class StepFService:
             merged = merged.sort_values("Date").reset_index(drop=True)
             merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
 
-            with timing.stage("stepF.build_edge_table"):
-                edge_table = self._build_regime_edge_table(merged, agents, cfg)
+            if mode == "live" and retrain == "off":
+                source_dir = Path(getattr(cfg, "model_source_dir", "") or (out_root / "stepF" / "live" / "retrain_on"))
+                edge_path_src = source_dir / "router" / f"regime_edge_table_{symbol}.csv"
+                allow_path_src = source_dir / "router" / f"router_allowlist_{symbol}.csv"
+                if not edge_path_src.exists() or not allow_path_src.exists():
+                    edge_path_src = out_root / "stepF" / "sim" / "router" / f"regime_edge_table_{symbol}.csv"
+                    allow_path_src = out_root / "stepF" / "sim" / "router" / f"router_allowlist_{symbol}.csv"
+                edge_table = pd.read_csv(edge_path_src)
+                allowlist = pd.read_csv(allow_path_src)
+            else:
+                with timing.stage("stepF.build_edge_table"):
+                    edge_table = self._build_regime_edge_table(merged, agents, cfg)
+                with timing.stage("stepF.build_allowlist"):
+                    allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
             edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
             edge_table.to_csv(edge_path, index=False)
 
             safe_set = self._stabilize_safe_set(safe_set=safe_set, edge_table=edge_table, agents=agents)
 
-            with timing.stage("stepF.build_allowlist"):
-                allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
 
             with timing.stage("stepF.router_sim"):
                 daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
 
+            if data_cutoff:
+                cutoff_dt = pd.to_datetime(data_cutoff, errors="coerce")
+                if pd.notna(cutoff_dt):
+                    daily = daily[pd.to_datetime(daily["Date"], errors="coerce") <= cutoff_dt].copy()
+
             log_router_path = out_dir / f"stepF_daily_log_router_{symbol}.csv"
             summary_router_path = out_dir / f"stepF_summary_router_{symbol}.json"
             log_marl_path = out_dir / f"stepF_daily_log_marl_{symbol}.csv"
             eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
+            ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
             with timing.stage("stepF.persist_outputs"):
                 daily.to_csv(log_router_path, index=False)
                 daily.to_csv(log_marl_path, index=False)
                 eq_df = daily[daily["Split"] == "test"][["Date", "ratio", "ret", "equity"]].copy()
                 eq_df.to_csv(eq_marl_path, index=False)
+                daily[["Date", "ratio"]].to_csv(ratio_live_path, index=False)
 
                 daily_for_summary = pd.read_csv(log_router_path)
                 if "Split" not in daily_for_summary.columns:
@@ -193,7 +237,7 @@ class StepFService:
                 print(f"[StepF-router] wrote daily={log_router_path}")
                 print(f"[StepF-router] wrote summary={summary_router_path}")
 
-            return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path))
+            return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path), ratio_path=str(ratio_live_path))
 
     def _load_stepa_price_tech(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         base = out_root / "stepA" / mode

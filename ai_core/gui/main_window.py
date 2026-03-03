@@ -120,6 +120,7 @@ class HeaderWidget(QGroupBox):
     symbolChanged = Signal(str)
     testStartDateChanged = Signal(object)  # datetime.date
     runAllStepsRequested = Signal()
+    runLiveRequested = Signal(str)
 
     def __init__(self, app_config: AppConfig, parent: Optional[QWidget] = None) -> None:
         super().__init__("設定・実行", parent)
@@ -150,10 +151,16 @@ class HeaderWidget(QGroupBox):
 
         self.btn_run_all = QPushButton("A→F 全ステップ実行")
         self.btn_run_all.clicked.connect(self._on_click_run_all)
+        self.btn_live_off = QPushButton("Live推論（再学習なし）")
+        self.btn_live_on = QPushButton("Live推論（再学習あり）")
+        self.btn_live_off.clicked.connect(lambda: self.runLiveRequested.emit("off"))
+        self.btn_live_on.clicked.connect(lambda: self.runLiveRequested.emit("on"))
 
         layout.addWidget(symbol_box)
         layout.addWidget(date_box)
         layout.addWidget(self.btn_run_all)
+        layout.addWidget(self.btn_live_off)
+        layout.addWidget(self.btn_live_on)
         layout.addStretch(1)
 
     def _on_date_changed(self, qdate) -> None:
@@ -164,6 +171,10 @@ class HeaderWidget(QGroupBox):
 
     def set_run_all_enabled(self, enabled: bool) -> None:
         self.btn_run_all.setEnabled(enabled)
+
+    def set_live_enabled(self, enabled: bool) -> None:
+        self.btn_live_off.setEnabled(enabled)
+        self.btn_live_on.setEnabled(enabled)
 
 
 # =====================================================
@@ -206,6 +217,7 @@ class MainWindow(QMainWindow):
         self.header.symbolChanged.connect(self._on_symbol_changed)
         self.header.testStartDateChanged.connect(self._on_test_start_changed)
         self.header.runAllStepsRequested.connect(self._on_run_all_steps_requested)
+        self.header.runLiveRequested.connect(self._on_run_live_requested)
 
         self.tabs = QTabWidget()
 
@@ -343,6 +355,26 @@ class MainWindow(QMainWindow):
                     tab.set_symbol_and_range(sym, dr)
                 except Exception as e:  # noqa: BLE001
                     self._append_log(f"[UI] set_symbol_and_range 失敗: {type(e).__name__}: {e}")
+
+
+    def _on_run_live_requested(self, retrain: str) -> None:
+        self.header.set_live_enabled(False)
+        branch_id = "default"
+        data_cutoff = ""
+
+        def _done(_: object) -> None:
+            self.header.set_live_enabled(True)
+            self._append_log(f"[Live] completed retrain={retrain}")
+
+        def _err(msg: str) -> None:
+            self.header.set_live_enabled(True)
+            self._append_log(f"[Live] error retrain={retrain}: {msg}")
+
+        if hasattr(self.backend, "start_stepF_live"):
+            self.backend.start_stepF_live(retrain=retrain, branch_id=branch_id, data_cutoff=data_cutoff, on_finished=_done, on_error=_err)
+        else:
+            self.header.set_live_enabled(True)
+            self._append_log("[Live] backend.start_stepF_live is not available.")
 
     def _on_run_all_steps_requested(self) -> None:
         if self.current_date_range is None:

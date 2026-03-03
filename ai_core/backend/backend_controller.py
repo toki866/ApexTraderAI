@@ -118,6 +118,7 @@ class BackendController(QObject):
     # 型互換のため Signal(object) を使う（PySide6 はジェネリクスに弱い）
     stepE_finished = Signal(object)
     stepF_finished = Signal(object)
+    stepF_live_finished = Signal(object)
     log_message = Signal(str)
 
     def __init__(self, app_config: AppConfig, parent: Optional[QObject] = None) -> None:
@@ -206,7 +207,7 @@ class BackendController(QObject):
 
         self._run_in_thread(job, job_name="StepE", on_finished=lambda r: self._on_stepE_finished(r))
 
-    def start_stepF_training(self, cfg: StepFConfig) -> None:
+    def start_stepF_training(self, cfg: StepFConfig, on_finished: Optional[Callable[[object], None]] = None, on_error: Optional[Callable[[str], None]] = None) -> None:
         """
         StepF を非同期で実行。cfg に symbol/date_range を注入。
         """
@@ -239,7 +240,34 @@ class BackendController(QObject):
                     return getattr(service, name)(cfg)
             raise AttributeError("StepFService has no train/run method.")
 
-        self._run_in_thread(job, job_name="StepF", on_finished=lambda r: self._on_stepF_finished(r))
+        done_cb = on_finished or (lambda r: self._on_stepF_finished(r))
+        self._run_in_thread(job, job_name="StepF", on_finished=done_cb, on_error=on_error)
+
+
+    def start_stepF_live(self, retrain: str = "off", branch_id: str = "default", data_cutoff: str = "", on_finished: Optional[Callable[[object], None]] = None, on_error: Optional[Callable[[str], None]] = None) -> None:
+        if self._symbol is None or self._date_range is None:
+            self._log("[StepF-Live] symbol/date_range が未設定です。")
+            return
+        if self._stepF_service is None:
+            self._log("[StepF-Live] StepFService が利用できません。")
+            return
+
+        self._log(f"[StepF-Live] start retrain={retrain} branch={branch_id} symbol={self._symbol}")
+
+        def job() -> object:
+            service = self._stepF_service
+            if hasattr(service, "run_live"):
+                return service.run_live(
+                    date_range=self._date_range,
+                    symbol=self._symbol,
+                    retrain=retrain,
+                    branch_id=branch_id,
+                    data_cutoff=data_cutoff,
+                )
+            raise AttributeError("StepFService.run_live is not available.")
+
+        done_cb = on_finished or (lambda r: self._on_stepF_live_finished(r))
+        self._run_in_thread(job, job_name="StepF-Live", on_finished=done_cb, on_error=on_error)
 
     def request_cancel(self, target: str) -> None:
         """
@@ -309,7 +337,11 @@ class BackendController(QObject):
             status = "success" if bool(success) else "failed"
             self._log(f"[StepF] 終了 ({status}): {message}")
 
-    def _run_in_thread(self, fn: Callable[[], object], job_name: str, on_finished: Callable[[object], None]) -> None:
+    def _on_stepF_live_finished(self, result_obj: object) -> None:
+        self.stepF_live_finished.emit(result_obj)
+        self._log("[StepF-Live] 終了")
+
+    def _run_in_thread(self, fn: Callable[[], object], job_name: str, on_finished: Callable[[object], None], on_error: Optional[Callable[[str], None] ] = None) -> None:
         worker = Worker(fn)
 
         worker.signals.log.connect(self._log)
@@ -319,6 +351,8 @@ class BackendController(QObject):
 
         def _handle_error(msg: str) -> None:
             self._log(f"[{job_name}] ERROR:\n{msg}")
+            if on_error is not None:
+                on_error(msg)
 
         worker.signals.finished.connect(_handle_finished)
         worker.signals.error.connect(_handle_error)
