@@ -34,7 +34,8 @@ import dataclasses
 import inspect
 import os
 import sys
-from datetime import date
+import uuid
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, List
 
@@ -48,6 +49,7 @@ from ai_core.utils.leak_audit_utils import (
     audit_stepF_market_alignment,
     write_audit_reports,
 )
+from ai_core.utils.timing_logger import TimingLogger
 class _DateRangeShim:
     """Wrapper for DateRange that can carry extra attributes like `future_end` safely."""
 
@@ -1193,6 +1195,7 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
         "output_root": out_root,
         "seed": 42,
         "device": "auto",
+        "timing_logger": _get_timing_logger(app_config),
     }
     cfg = StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **raw_cfg))
     svc = StepDPrimeService()
@@ -1315,6 +1318,31 @@ def _run_leak_audits(output_root: Path, mode: str, symbol: str, fail_on_audit: b
             raise RuntimeError(f"Leak audit failed: {failed}")
 
 
+def _auto_run_id() -> str:
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{now}_{uuid.uuid4().hex[:8]}"
+
+
+def _auto_branch_id(steps: Sequence[str], stepe_agents_csv: Optional[str]) -> str:
+    stepe = (stepe_agents_csv or "all").strip() or "all"
+    return f"steps={','.join(steps)}|stepe={stepe}"
+
+
+def _set_timing_logger(app_config: Any, timing: TimingLogger) -> None:
+    if isinstance(app_config, dict):
+        app_config["_timing_logger"] = timing
+    else:
+        setattr(app_config, "_timing_logger", timing)
+
+
+def _get_timing_logger(app_config: Any) -> TimingLogger:
+    if isinstance(app_config, dict):
+        t = app_config.get("_timing_logger")
+    else:
+        t = getattr(app_config, "_timing_logger", None)
+    return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
@@ -1357,6 +1385,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--fail-on-audit", type=int, default=0, choices=[0, 1], help="If 1, fail pipeline when leak audit reports FAIL.")
     ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
     ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
+    ap.add_argument("--timing", type=int, default=0, choices=[0, 1], help="Enable timing event logging.")
+    ap.add_argument("--run-id", dest="run_id", default=None, help="Optional run identifier for timing logs.")
+    ap.add_argument("--branch-id", dest="branch_id", default=None, help="Optional branch identifier for timing logs.")
+    ap.add_argument("--execution-mode", dest="execution_mode", default="sequential", help="Execution mode label for timing logs.")
+    ap.add_argument("--clear-timing", type=int, default=0, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
+    ap.add_argument("--stepe-agents", dest="stepe_agents", default=None, help="Optional CSV subset of StepE agents to run.")
     args = ap.parse_args(argv)
 
     repo_root = _repo_root()
@@ -1388,6 +1422,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
+
+    timing_enabled = bool(int(args.timing))
+    run_id = args.run_id or _auto_run_id()
+    branch_id = args.branch_id or _auto_branch_id(steps, args.stepe_agents)
+    timing = TimingLogger(
+        output_root=resolved_output_root,
+        mode=resolved_mode,
+        run_id=run_id,
+        branch_id=branch_id,
+        execution_mode=str(args.execution_mode or "sequential"),
+        enabled=timing_enabled,
+        clear=bool(int(args.clear_timing)) and timing_enabled,
+    )
+    _set_timing_logger(app_config, timing)
     print(
         f"[headless] output_root_resolved={resolved_output_root} "
         f"cfg_output_root={getattr(app_config, 'output_root', None)} "
@@ -1422,17 +1470,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     data_start = args.data_start
     data_end = args.data_end or date.today().isoformat()
 
-    _prepare_missing_data_if_needed(
-        repo_root=repo_root,
-        data_root=data_root,
-        primary_symbol=symbol,
-        auto_prepare_data=auto_prepare_data,
-        data_start=data_start,
-        data_end=data_end,
-    )
+    with timing.stage("common.prepare_data"):
+        _prepare_missing_data_if_needed(
+            repo_root=repo_root,
+            data_root=data_root,
+            primary_symbol=symbol,
+            auto_prepare_data=auto_prepare_data,
+            data_start=data_start,
+            data_end=data_end,
+        )
 
     future_end = args.future_end or _env_get("AUTODEBUG_FUTURE_END", "FUTURE_END", "FUTURE_END_DATE")
-    date_range = _build_date_range(
+    with timing.stage("common.build_date_range"):
+        date_range = _build_date_range(
         symbol,
         repo_root,
         args.test_start,
@@ -1494,6 +1544,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[headless] StepE default config injected: agents={','.join(_OFFICIAL_STEPE_AGENTS)} seed=42+idx device=auto")
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
+
+    if args.stepe_agents:
+        requested_agents = {a.strip() for a in str(args.stepe_agents).split(",") if a.strip()}
+        raw_step_e_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+        if raw_step_e_cfgs is not None:
+            cfg_list = list(raw_step_e_cfgs) if isinstance(raw_step_e_cfgs, (list, tuple)) else [raw_step_e_cfgs]
+            cfg_list = [cfg for cfg in cfg_list if getattr(cfg, "agent", "") in requested_agents]
+            if isinstance(app_config, dict):
+                app_config["stepE"] = cfg_list
+            else:
+                setattr(app_config, "stepE", cfg_list)
+            print(f"[headless] StepE filtered agents={','.join(sorted(requested_agents))} retained={len(cfg_list)}")
 
     if "F" in steps:
         step_f_cfg = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
@@ -1566,21 +1628,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[headless] env_horizons={','.join(str(x) for x in env_horizon_list)}")
 
     try:
-        if "A" in steps:
-            stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
-            print(f"[StepA] start symbols={','.join(stepa_symbols)}")
-            for stepa_symbol in stepa_symbols:
-                stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
-                if stepa_symbol == symbol:
-                    results["stepA_result"] = stepa_result
-            print("[StepA] done")
+        with timing.stage("branch.total"):
+            if "A" in steps:
+                stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
+                print(f"[StepA] start symbols={','.join(stepa_symbols)}")
+                for stepa_symbol in stepa_symbols:
+                    with timing.stage("stepA.run"):
+                        stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
+                    if stepa_symbol == symbol:
+                        results["stepA_result"] = stepa_result
+                print("[StepA] done")
 
-        if "B" in steps:
-            print("[StepB] start")
-            mamba_horizons_list = _parse_int_list(args.mamba_horizons)
-            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
-            print(f"[StepB] agents: mamba={enable_mamba}")
-            print("[StepB] done")
+            if "B" in steps:
+                print("[StepB] start")
+                mamba_horizons_list = _parse_int_list(args.mamba_horizons)
+                with timing.stage("stepB.run"):
+                    results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                print(f"[StepB] agents: mamba={enable_mamba}")
+                print("[StepB] done")
             # Ensure contract artifact exists
             try:
                 p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
@@ -1588,34 +1653,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as e:
                 print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
 
-        if "C" in steps:
-            print("[StepC] start")
-            results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
-            print("[StepC] done")
+            if "C" in steps:
+                print("[StepC] start")
+                with timing.stage("stepC.run"):
+                    results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+                print("[StepC] done")
 
-        if "DPRIME" in steps:
-            print("[StepDPrime] start")
-            results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
-            _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
-            print("[StepDPrime] done")
+            if "DPRIME" in steps:
+                print("[StepDPrime] start")
+                with timing.stage("stepDPrime.run"):
+                    results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+                _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
+                print("[StepDPrime] done")
 
-        for step in ("D", "E", "F"):
-            if step not in steps:
-                continue
-            print(f"[Step{step}] start")
-            step_result = _run_step_generic(step, app_config, symbol, date_range, results)
-            results[f"step{step}_result"] = step_result
-            if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
-                reason = step_result.get("reason", "unknown")
-                raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
-            print(f"[Step{step}] done")
+            for step in ("D", "E", "F"):
+                if step not in steps:
+                    continue
+                print(f"[Step{step}] start")
+                stage_name = "stepE.run" if step == "E" else ("stepF.run" if step == "F" else f"step{step}.run")
+                with timing.stage(stage_name):
+                    step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                results[f"step{step}_result"] = step_result
+                if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
+                    reason = step_result.get("reason", "unknown")
+                    raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
+                print(f"[Step{step}] done")
 
-        _run_leak_audits(
-            output_root=Path(resolved_output_root),
-            mode=resolved_mode,
-            symbol=symbol,
-            fail_on_audit=bool(args.fail_on_audit),
-        )
+            with timing.stage("audit.leak"):
+                _run_leak_audits(
+                    output_root=Path(resolved_output_root),
+                    mode=resolved_mode,
+                    symbol=symbol,
+                    fail_on_audit=bool(args.fail_on_audit),
+                )
 
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")

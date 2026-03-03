@@ -63,6 +63,10 @@ class StepFService:
     def __init__(self, app_config):
         self.app_config = app_config
 
+    def _timing(self) -> TimingLogger:
+        t = getattr(self.app_config, "_timing_logger", None)
+        return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
+
     def run(self, date_range, symbol: str, mode: Optional[str] = None) -> StepFResult:
         cfg: StepFRouterConfig = getattr(self.app_config, "stepF", None)
         if cfg is None:
@@ -73,116 +77,123 @@ class StepFService:
         return self._run_router(cfg, date_range, symbol=symbol, mode=resolved_mode)
 
     def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str) -> StepFResult:
-        if hdbscan is None or hdbscan_prediction is None:
-            raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
+        timing = self._timing()
+        with timing.stage("stepF.total"):
+            if hdbscan is None or hdbscan_prediction is None:
+                raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
 
-        out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
-        out_dir = out_root / "stepF" / mode
-        router_dir = out_dir / "router"
-        phase2_dir = out_dir / "phase2"
-        router_dir.mkdir(parents=True, exist_ok=True)
-        phase2_dir.mkdir(parents=True, exist_ok=True)
+            out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
+            out_dir = out_root / "stepF" / mode
+            router_dir = out_dir / "router"
+            phase2_dir = out_dir / "phase2"
+            router_dir.mkdir(parents=True, exist_ok=True)
+            phase2_dir.mkdir(parents=True, exist_ok=True)
 
-        agents = [a.strip() for a in str(cfg.agents or "").split(",") if a.strip()]
-        if not agents:
-            raise ValueError("StepF agents is empty")
+            agents = [a.strip() for a in str(cfg.agents or "").split(",") if a.strip()]
+            if not agents:
+                raise ValueError("StepF agents is empty")
 
-        safe_set = [a.strip() for a in str(cfg.safe_set or "").split(",") if a.strip()]
-        safe_set = [a for a in safe_set if a in agents]
-        if "dprime_mix_3scale" in agents and "dprime_mix_3scale" not in safe_set:
-            safe_set.append("dprime_mix_3scale")
-        if len(safe_set) < 2:
-            for a in agents:
-                if a not in safe_set:
-                    safe_set.append(a)
-                if len(safe_set) >= min(2, len(agents)):
-                    break
+            safe_set = [a.strip() for a in str(cfg.safe_set or "").split(",") if a.strip()]
+            safe_set = [a for a in safe_set if a in agents]
+            if "dprime_mix_3scale" in agents and "dprime_mix_3scale" not in safe_set:
+                safe_set.append("dprime_mix_3scale")
+            if len(safe_set) < 2:
+                for a in agents:
+                    if a not in safe_set:
+                        safe_set.append(a)
+                    if len(safe_set) >= min(2, len(agents)):
+                        break
 
-        prices_soxl = self._load_stepa_price_tech(out_root, mode, "SOXL")
-        prices_soxs = self._load_stepa_price_tech(out_root, mode, "SOXS")
-        soxl_px = prices_soxl[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
-        soxs_px = prices_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"})
-        price_pair = soxl_px.merge(soxs_px, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
-        price_pair["r_soxl"] = (price_pair["price_soxl"].shift(-1) / price_pair["price_soxl"] - 1.0).fillna(0.0)
-        price_pair["r_soxs"] = (price_pair["price_soxs"].shift(-1) / price_pair["price_soxs"] - 1.0).fillna(0.0)
+            with timing.stage("stepF.load_prices_logs"):
+                prices_soxl = self._load_stepa_price_tech(out_root, mode, "SOXL")
+                prices_soxs = self._load_stepa_price_tech(out_root, mode, "SOXS")
+                logs_map = self._load_stepe_logs(out_root, mode, symbol, agents)
+            soxl_px = prices_soxl[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
+            soxs_px = prices_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"})
+            price_pair = soxl_px.merge(soxs_px, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
+            price_pair["r_soxl"] = (price_pair["price_soxl"].shift(-1) / price_pair["price_soxl"] - 1.0).fillna(0.0)
+            price_pair["r_soxs"] = (price_pair["price_soxs"].shift(-1) / price_pair["price_soxs"] - 1.0).fillna(0.0)
 
-        logs_map = self._load_stepe_logs(out_root, mode, symbol, agents)
+            if cfg.phase2_state_path:
+                phase2 = pd.read_csv(cfg.phase2_state_path)
+                phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
+            else:
+                with timing.stage("stepF.build_phase2_state"):
+                    phase2 = self._build_phase2_state(
+                        cfg=cfg,
+                        date_range=date_range,
+                        symbol=symbol,
+                        mode=mode,
+                        out_root=out_root,
+                        price_tech=prices_soxl,
+                    )
 
-        if cfg.phase2_state_path:
-            phase2 = pd.read_csv(cfg.phase2_state_path)
-            phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
-        else:
-            phase2 = self._build_phase2_state(
-                cfg=cfg,
-                date_range=date_range,
-                symbol=symbol,
-                mode=mode,
-                out_root=out_root,
-                price_tech=prices_soxl,
-            )
+            phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
+            phase2.to_csv(phase2_path, index=False)
 
-        phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
-        phase2.to_csv(phase2_path, index=False)
+            merged = phase2[["Date", "regime_id"]].merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
+            for agent in agents:
+                adf = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
+                adf = adf.rename(columns={"ratio": f"ratio_{agent}", "stepE_ret_for_stats": f"ret_{agent}", "Split": f"Split_{agent}"})
+                merged = merged.merge(adf, on="Date", how="left")
 
-        merged = phase2[["Date", "regime_id"]].merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
-        for agent in agents:
-            adf = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
-            adf = adf.rename(columns={"ratio": f"ratio_{agent}", "stepE_ret_for_stats": f"ret_{agent}", "Split": f"Split_{agent}"})
-            merged = merged.merge(adf, on="Date", how="left")
+            merged = merged.sort_values("Date").reset_index(drop=True)
+            merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
 
-        merged = merged.sort_values("Date").reset_index(drop=True)
-        merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
+            with timing.stage("stepF.build_edge_table"):
+                edge_table = self._build_regime_edge_table(merged, agents, cfg)
+            edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
+            edge_table.to_csv(edge_path, index=False)
 
-        edge_table = self._build_regime_edge_table(merged, agents, cfg)
-        edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
-        edge_table.to_csv(edge_path, index=False)
+            safe_set = self._stabilize_safe_set(safe_set=safe_set, edge_table=edge_table, agents=agents)
 
-        safe_set = self._stabilize_safe_set(safe_set=safe_set, edge_table=edge_table, agents=agents)
+            with timing.stage("stepF.build_allowlist"):
+                allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
+            allow_path = router_dir / f"router_allowlist_{symbol}.csv"
+            allowlist.to_csv(allow_path, index=False)
 
-        allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
-        allow_path = router_dir / f"router_allowlist_{symbol}.csv"
-        allowlist.to_csv(allow_path, index=False)
+            with timing.stage("stepF.router_sim"):
+                daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
 
-        daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
+            log_router_path = out_dir / f"stepF_daily_log_router_{symbol}.csv"
+            summary_router_path = out_dir / f"stepF_summary_router_{symbol}.json"
+            log_marl_path = out_dir / f"stepF_daily_log_marl_{symbol}.csv"
+            eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
 
-        log_router_path = out_dir / f"stepF_daily_log_router_{symbol}.csv"
-        summary_router_path = out_dir / f"stepF_summary_router_{symbol}.json"
-        log_marl_path = out_dir / f"stepF_daily_log_marl_{symbol}.csv"
-        eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
+            with timing.stage("stepF.persist_outputs"):
+                daily.to_csv(log_router_path, index=False)
+                daily.to_csv(log_marl_path, index=False)
+                eq_df = daily[daily["Split"] == "test"][["Date", "ratio", "ret", "equity"]].copy()
+                eq_df.to_csv(eq_marl_path, index=False)
 
-        daily.to_csv(log_router_path, index=False)
-        daily.to_csv(log_marl_path, index=False)
-        eq_df = daily[daily["Split"] == "test"][ ["Date", "ratio", "ret", "equity"] ].copy()
-        eq_df.to_csv(eq_marl_path, index=False)
+                daily_for_summary = pd.read_csv(log_router_path)
+                if "Split" not in daily_for_summary.columns:
+                    daily_for_summary["Split"] = self._assign_split_by_date(daily_for_summary["Date"], date_range)
+                metrics = compute_split_metrics(daily_for_summary, split="test", equity_col="equity", ret_col="ret")
+                test_df = daily_for_summary[daily_for_summary["Split"].astype(str).str.lower() == "test"].copy()
+                summary = {
+                    **metrics,
+                    "test_return_pct": metrics["total_return_pct"],
+                    "test_sharpe": metrics["sharpe"],
+                    "test_max_dd": metrics["max_dd_pct"],
+                    "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
+                    "max_drawdown": metrics["max_dd_pct"],
+                    "equity_end": metrics["equity_end"],
+                    "num_trades": int(np.sum(np.abs(np.diff(test_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not test_df.empty else 0,
+                    "turnover_sum": float(test_df["turnover"].astype(float).sum()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
+                    "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
+                }
+                summary.update({"mode": mode, "symbol": symbol, "agents": agents})
+                summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        daily_for_summary = pd.read_csv(log_router_path)
-        if "Split" not in daily_for_summary.columns:
-            daily_for_summary["Split"] = self._assign_split_by_date(daily_for_summary["Date"], date_range)
-        metrics = compute_split_metrics(daily_for_summary, split="test", equity_col="equity", ret_col="ret")
-        test_df = daily_for_summary[daily_for_summary["Split"].astype(str).str.lower() == "test"].copy()
-        summary = {
-            **metrics,
-            "test_return_pct": metrics["total_return_pct"],
-            "test_sharpe": metrics["sharpe"],
-            "test_max_dd": metrics["max_dd_pct"],
-            "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
-            "max_drawdown": metrics["max_dd_pct"],
-            "equity_end": metrics["equity_end"],
-            "num_trades": int(np.sum(np.abs(np.diff(test_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not test_df.empty else 0,
-            "turnover_sum": float(test_df["turnover"].astype(float).sum()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
-            "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
-        }
-        summary.update({"mode": mode, "symbol": symbol, "agents": agents})
-        summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            if cfg.verbose:
+                print(f"[StepF-router] wrote phase2={phase2_path}")
+                print(f"[StepF-router] wrote edge={edge_path}")
+                print(f"[StepF-router] wrote allowlist={allow_path}")
+                print(f"[StepF-router] wrote daily={log_router_path}")
+                print(f"[StepF-router] wrote summary={summary_router_path}")
 
-        if cfg.verbose:
-            print(f"[StepF-router] wrote phase2={phase2_path}")
-            print(f"[StepF-router] wrote edge={edge_path}")
-            print(f"[StepF-router] wrote allowlist={allow_path}")
-            print(f"[StepF-router] wrote daily={log_router_path}")
-            print(f"[StepF-router] wrote summary={summary_router_path}")
-
-        return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path))
+            return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path))
 
     def _load_stepa_price_tech(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         base = out_root / "stepA" / mode
