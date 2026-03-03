@@ -13,7 +13,19 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.utils.metrics_utils import compute_split_metrics
-from ai_core.utils.timing_logger import TimingLogger
+try:
+    from ai_core.utils.timing_logger import TimingLogger
+except Exception:  # pragma: no cover
+    from contextlib import contextmanager
+
+    class TimingLogger:  # type: ignore[override]
+        @staticmethod
+        def disabled() -> "TimingLogger":
+            return TimingLogger()
+
+        @contextmanager
+        def stage(self, _name: str):
+            yield
 
 try:
     import hdbscan
