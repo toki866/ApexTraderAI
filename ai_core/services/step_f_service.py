@@ -40,10 +40,11 @@ class StepFRouterConfig:
     min_samples_regime: int = 20
     fallback_set: str = "all"
     topk_filter_ev_positive: bool = True
+    shrink_k: int = 30
     softmax_beta: float = 1.0
-    ema_alpha: float = 0.3
+    ema_alpha: float = 0.5
     pos_limit: float = 1.0
-    trade_cost_bps: float = 10.0
+    trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
     eps_ir: float = 1e-8
     verbose: bool = True
@@ -88,6 +89,8 @@ class StepFService:
 
         safe_set = [a.strip() for a in str(cfg.safe_set or "").split(",") if a.strip()]
         safe_set = [a for a in safe_set if a in agents]
+        if "dprime_mix_3scale" in agents and "dprime_mix_3scale" not in safe_set:
+            safe_set.append("dprime_mix_3scale")
         if len(safe_set) < 2:
             for a in agents:
                 if a not in safe_set:
@@ -128,11 +131,13 @@ class StepFService:
             merged = merged.merge(adf, on="Date", how="left")
 
         merged = merged.sort_values("Date").reset_index(drop=True)
-        merged["Split"] = merged[[f"Split_{a}" for a in agents]].bfill(axis=1).iloc[:, 0].fillna("test")
+        merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
 
         edge_table = self._build_regime_edge_table(merged, agents, cfg)
         edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
         edge_table.to_csv(edge_path, index=False)
+
+        safe_set = self._stabilize_safe_set(safe_set=safe_set, edge_table=edge_table, agents=agents)
 
         allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
         allow_path = router_dir / f"router_allowlist_{symbol}.csv"
@@ -151,7 +156,10 @@ class StepFService:
         eq_df.to_csv(eq_marl_path, index=False)
 
         daily_for_summary = pd.read_csv(log_router_path)
+        if "Split" not in daily_for_summary.columns:
+            daily_for_summary["Split"] = self._assign_split_by_date(daily_for_summary["Date"], date_range)
         metrics = compute_split_metrics(daily_for_summary, split="test", equity_col="equity", ret_col="ret")
+        test_df = daily_for_summary[daily_for_summary["Split"].astype(str).str.lower() == "test"].copy()
         summary = {
             **metrics,
             "test_return_pct": metrics["total_return_pct"],
@@ -160,7 +168,9 @@ class StepFService:
             "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
             "max_drawdown": metrics["max_dd_pct"],
             "equity_end": metrics["equity_end"],
-            "num_trades": int(np.sum(np.abs(np.diff(eq_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not eq_df.empty else 0,
+            "num_trades": int(np.sum(np.abs(np.diff(test_df["ratio"].astype(float).to_numpy())) > 1e-9)) if not test_df.empty else 0,
+            "turnover_sum": float(test_df["turnover"].astype(float).sum()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
+            "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
         }
         summary.update({"mode": mode, "symbol": symbol, "agents": agents})
         summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -310,6 +320,20 @@ class StepFService:
     def _build_regime_edge_table(self, merged: pd.DataFrame, agents: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
         rows = []
         train_df = merged[merged["Split"].astype(str).str.lower() == "train"].copy()
+        global_stats: Dict[str, Dict[str, float]] = {}
+        for agent in agents:
+            sub_g = pd.to_numeric(train_df.get(f"ret_{agent}"), errors="coerce").dropna().astype(float)
+            if len(sub_g) == 0:
+                global_stats[agent] = {"n_global": 0, "EV_global": float("nan"), "IR_global": float("nan")}
+                continue
+            ev_g = float(sub_g.mean())
+            sd_g = float(sub_g.std(ddof=0))
+            global_stats[agent] = {
+                "n_global": int(len(sub_g)),
+                "EV_global": ev_g,
+                "IR_global": float(ev_g / (sd_g + float(cfg.eps_ir))),
+            }
+
         for rid in sorted(train_df["regime_id"].dropna().astype(int).unique().tolist()):
             for agent in agents:
                 col = f"ret_{agent}"
@@ -325,36 +349,85 @@ class StepFService:
                 eq = np.cumprod(1.0 + sub.to_numpy(dtype=float))
                 peak = np.maximum.accumulate(eq)
                 dd_proxy = float(np.min(eq / np.where(peak == 0, 1.0, peak) - 1.0))
-                rows.append({"regime_id": int(rid), "agent": agent, "n_days": int(len(sub)), "EV": ev, "IR": ir, "p_win": p_win, "q05": q05, "q95": q95, "dd_proxy": dd_proxy})
+                g = global_stats.get(agent, {})
+                n_days = int(len(sub))
+                w = float(n_days) / float(n_days + max(1, int(cfg.shrink_k)))
+                ir_g = float(g.get("IR_global", np.nan))
+                ev_g = float(g.get("EV_global", np.nan))
+                ir_shrink = float(w * ir + (1.0 - w) * ir_g) if np.isfinite(ir_g) else ir
+                ev_shrink = float(w * ev + (1.0 - w) * ev_g) if np.isfinite(ev_g) else ev
+                rows.append(
+                    {
+                        "regime_id": int(rid),
+                        "agent": agent,
+                        "n_days": n_days,
+                        "EV": ev,
+                        "IR": ir,
+                        "EV_shrink": ev_shrink,
+                        "IR_shrink": ir_shrink,
+                        "w_shrink": w,
+                        "n_global": int(g.get("n_global", 0)),
+                        "EV_global": ev_g,
+                        "IR_global": ir_g,
+                        "p_win": p_win,
+                        "q05": q05,
+                        "q95": q95,
+                        "dd_proxy": dd_proxy,
+                    }
+                )
         return pd.DataFrame(rows)
 
     def _build_allowlist(self, edge_table: pd.DataFrame, agents: List[str], safe_set: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
+        topk_global = self._topk_global_agents(edge_table=edge_table, topk=max(1, int(cfg.topK)))
         if edge_table.empty:
-            return pd.DataFrame([{"regime_id": -1, "allowed_agents": "|".join(safe_set)}])
-        out_rows = [{"regime_id": -1, "allowed_agents": "|".join(safe_set)}]
+            base = list(dict.fromkeys(safe_set + topk_global))
+            return pd.DataFrame([{"regime_id": -1, "allowed_agents": "|".join(base)}])
+        out_rows = [{"regime_id": -1, "allowed_agents": "|".join(list(dict.fromkeys(safe_set + topk_global)))}]
         for rid, df_r in edge_table.groupby("regime_id"):
             rid = int(rid)
             if rid == -1:
                 continue
             if int(df_r["n_days"].max()) < int(cfg.min_samples_regime):
-                allowed = list(dict.fromkeys(safe_set + agents)) if cfg.fallback_set == "all" else safe_set
+                allowed = list(dict.fromkeys(safe_set + topk_global))
             else:
                 cands = df_r.copy()
                 if cfg.topk_filter_ev_positive:
-                    pos = cands[cands["EV"] > 0].copy()
+                    ev_col = "EV_shrink" if "EV_shrink" in cands.columns else "EV"
+                    pos = cands[cands[ev_col] > 0].copy()
                     if not pos.empty:
                         cands = pos
-                cands = cands.sort_values(["IR", "EV", "dd_proxy", "n_days"], ascending=[False, False, True, False])
+                ir_col = "IR_shrink" if "IR_shrink" in cands.columns else "IR"
+                ev_col = "EV_shrink" if "EV_shrink" in cands.columns else "EV"
+                cands = cands.sort_values([ir_col, ev_col, "dd_proxy", "n_days"], ascending=[False, False, True, False])
                 picked = cands["agent"].tolist()[: int(cfg.topK)]
                 allowed = list(dict.fromkeys(safe_set + picked))
             out_rows.append({"regime_id": rid, "allowed_agents": "|".join(allowed)})
         return pd.DataFrame(out_rows)
 
+    def _topk_global_agents(self, edge_table: pd.DataFrame, topk: int) -> List[str]:
+        if edge_table.empty:
+            return []
+        cols = [c for c in ["IR_global", "EV_global", "n_global"] if c in edge_table.columns]
+        if len(cols) < 3:
+            return []
+        gdf = edge_table[["agent", "IR_global", "EV_global", "n_global"]].drop_duplicates(subset=["agent"])
+        gdf = gdf.sort_values(["IR_global", "EV_global", "n_global"], ascending=[False, False, False])
+        return gdf["agent"].tolist()[: max(1, int(topk))]
+
+    def _stabilize_safe_set(self, safe_set: List[str], edge_table: pd.DataFrame, agents: List[str]) -> List[str]:
+        base = [a for a in safe_set if a in agents]
+        if not base:
+            base = self._topk_global_agents(edge_table=edge_table, topk=min(3, len(agents)))
+        if not base:
+            base = agents[: min(3, len(agents))]
+        return list(dict.fromkeys(base))
+
     def _run_router_sim(self, merged: pd.DataFrame, agents: List[str], edge_table: pd.DataFrame, allowlist: pd.DataFrame, safe_set: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
         allow_map = {int(r.regime_id): [a for a in str(r.allowed_agents).split("|") if a] for r in allowlist.itertuples(index=False)}
         ir_map: Dict[Tuple[int, str], float] = {}
+        score_col = "IR_shrink" if "IR_shrink" in edge_table.columns else "IR"
         for r in edge_table.itertuples(index=False):
-            ir_map[(int(r.regime_id), str(r.agent))] = float(r.IR)
+            ir_map[(int(r.regime_id), str(r.agent))] = float(getattr(r, score_col, np.nan))
 
         w_prev = {a: 0.0 for a in agents}
         out = []
@@ -401,6 +474,7 @@ class StepFService:
             ratio = float(np.clip(ratio, -float(cfg.pos_limit), float(cfg.pos_limit)))
 
             cost = float(cfg.trade_cost_bps) * 1e-4 * abs(ratio - ratio_prev)
+            turnover = float(abs(ratio - ratio_prev))
             penalty = float(cfg.pos_l2_lambda) * (ratio ** 2)
             pos_plus = max(ratio, 0.0)
             pos_minus = max(-ratio, 0.0)
@@ -417,6 +491,7 @@ class StepFService:
                 "ratio": ratio,
                 "ret": ret,
                 "cost": cost,
+                "turnover": turnover,
                 "equity": eq,
                 "allowed_agents": "|".join(allowed),
                 "r_soxl": r_soxl,
@@ -429,3 +504,14 @@ class StepFService:
             ratio_prev = ratio
 
         return pd.DataFrame(out)
+
+    def _assign_split_by_date(self, dates: pd.Series, date_range) -> pd.Series:
+        d = pd.to_datetime(dates, errors="coerce").dt.normalize()
+        tr_s = pd.to_datetime(getattr(date_range, "train_start"), errors="coerce")
+        tr_e = pd.to_datetime(getattr(date_range, "train_end"), errors="coerce")
+        te_s = pd.to_datetime(getattr(date_range, "test_start"), errors="coerce")
+        te_e = pd.to_datetime(getattr(date_range, "test_end"), errors="coerce")
+        split = pd.Series(np.full(len(d), "other", dtype=object), index=dates.index)
+        split[(d >= tr_s) & (d <= tr_e)] = "train"
+        split[(d >= te_s) & (d <= te_e)] = "test"
+        return split

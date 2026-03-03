@@ -1520,9 +1520,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 for a in sorted(unique_agents):
                     if a not in ordered_agents:
                         ordered_agents.append(a)
-                safe_defaults = ["dprime_bnf_h01", "dprime_all_features_h01"]
-                if not all(x in ordered_agents for x in safe_defaults):
-                    safe_defaults = ordered_agents[: min(2, len(ordered_agents))]
+                safe_defaults = ["dprime_bnf_h01", "dprime_all_features_h01", "dprime_mix_3scale"]
+                safe_defaults = [x for x in safe_defaults if x in ordered_agents]
+                if len(safe_defaults) < 2:
+                    safe_defaults = ordered_agents[: min(3, len(ordered_agents))]
 
                 cfgF = StepFRouterConfig(
                     output_root=out_root,
@@ -1530,8 +1531,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     mode=str(mode),
                     safe_set=",".join(safe_defaults),
                     use_z_pred=False,
-                    trade_cost_bps=10.0,
-                    ema_alpha=0.3,
+                    trade_cost_bps=15.0,
+                    ema_alpha=0.5,
                     softmax_beta=1.0,
                 )
 
