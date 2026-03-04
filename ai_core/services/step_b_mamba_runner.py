@@ -158,6 +158,14 @@ def _require_torch() -> None:
         ) from e
 
 
+def _require_mamba_ssm() -> None:
+    if not _MAMBA_SSM_AVAILABLE or _MambaSSM is None:
+        raise RuntimeError(
+            "StepB(Mamba) requires mamba-ssm, but it is not available. "
+            "Install it (pip install mamba-ssm) and re-run."
+        )
+
+
 @dataclass
 class StepBAgentResult:
     success: bool
@@ -457,32 +465,6 @@ def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp,
     return train_start, train_end, test_start, test_end, mode
 
 
-def _make_torch_ssm_fallback_block(dim: int, hidden_dim: int):
-    import torch.nn as nn
-
-    class TorchSSMFallbackBlock(nn.Module):
-        """Pure-PyTorch SSM-compatible fallback block (no mamba-ssm dependency)."""
-
-        def __init__(self, dim: int, hidden_dim: int) -> None:
-            super().__init__()
-            self.in_proj = nn.Linear(dim, hidden_dim)
-            self.dw_conv = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim)
-            self.gate = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.Sigmoid(),
-            )
-            self.out_proj = nn.Linear(hidden_dim, hidden_dim)
-            self.norm = nn.LayerNorm(hidden_dim)
-
-        def forward(self, x):
-            h = self.in_proj(x)  # (B, T, H)
-            y = self.dw_conv(h.transpose(1, 2)).transpose(1, 2)  # (B, T, H)
-            y = y * self.gate(h)
-            y = self.out_proj(y)
-            return self.norm(h + y)
-
-    return TorchSSMFallbackBlock(dim=dim, hidden_dim=hidden_dim)
-
 
 class WaveletMambaRunner:
     """Public import-stable symbol used by CI/import sanity."""
@@ -494,13 +476,10 @@ class WaveletMambaRunner:
         class _WaveletMambaTorchModel(nn.Module):
             def __init__(self, input_dim: int, hidden_dim: int, out_dim: int) -> None:
                 super().__init__()
+                _require_mamba_ssm()
                 self.input_proj = nn.Linear(input_dim, hidden_dim)
-                if _MAMBA_SSM_AVAILABLE and _MambaSSM is not None:
-                    self.ssm = _MambaSSM(d_model=hidden_dim, d_state=16, d_conv=4, expand=2)
-                    self.model_arch = "Mamba(mamba-ssm)"
-                else:
-                    self.ssm = _make_torch_ssm_fallback_block(dim=hidden_dim, hidden_dim=hidden_dim)
-                    self.model_arch = "Mamba(torch-ssm-fallback)"
+                self.ssm = _MambaSSM(d_model=hidden_dim, d_state=16, d_conv=4, expand=2)
+                self.model_arch = "Mamba(mamba-ssm)"
                 self.head = nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
@@ -649,7 +628,9 @@ def run_mamba_multi_model_by_horizon(
     idx_of_date: Dict[pd.Timestamp, int] = {pd.Timestamp(d).normalize(): i for i, d in enumerate(dates)}
     close_of_date: Dict[pd.Timestamp, float] = {pd.Timestamp(d).normalize(): float(close[i]) for i, d in enumerate(dates)}
 
+    _require_mamba_ssm()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[StepB:mamba:{out_tag}] backend=mamba-ssm available={_MAMBA_SSM_AVAILABLE} device={device} epochs={epochs} horizons={horizons}")
 
     # ---- Train a model per horizon, then infer for all anchors ----
     all_anchor_idx = list(range(lookback_days - 1, len(df) - 1))
@@ -993,7 +974,7 @@ def run_mamba_multi_model_by_horizon(
     df_path.to_csv(pred_path_path, index=False, encoding="utf-8-sig")
     out_win[["Date", f"Delta_Close_pred_{col_agent}"]].to_csv(delta_path, index=False, encoding="utf-8-sig")
 
-    model_arch = "Mamba(mamba-ssm)" if _MAMBA_SSM_AVAILABLE else "Mamba(torch-ssm-fallback)"
+    model_arch = "Mamba(mamba-ssm)"
 
     meta = {
         "symbol": sym,
