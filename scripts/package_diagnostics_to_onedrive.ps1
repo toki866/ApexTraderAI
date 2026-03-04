@@ -156,6 +156,8 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
   $runLogs = Join-Path $RunDir 'logs'
   $pipTail = Join-Path $runLogs 'pip_install_tail_200.txt'
   $pipLog = Join-Path $runLogs 'pip_install_requirements.log'
+  $pipMambaTail = Join-Path $runLogs 'pip_install_mamba_ssm_tail_200.txt'
+  $pipMambaLog = Join-Path $runLogs 'pip_install_mamba_ssm.log'
 
   if (Test-Path $pipTail) {
     $sourceItems[$pipTail] = $true
@@ -164,8 +166,19 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
     Get-Content -Path $pipTail | Add-Content -Path $oneTapReport -Encoding UTF8
   }
 
+  if (Test-Path $pipMambaTail) {
+    $sourceItems[$pipMambaTail] = $true
+    Add-Content -Path $oneTapReport -Encoding UTF8 -Value ""
+    Add-Content -Path $oneTapReport -Encoding UTF8 -Value '---- pip_install_mamba_ssm_tail_200 ----'
+    Get-Content -Path $pipMambaTail | Add-Content -Path $oneTapReport -Encoding UTF8
+  }
+
   if (Test-Path $pipLog) {
     $sourceItems[$pipLog] = $true
+  }
+
+  if (Test-Path $pipMambaLog) {
+    $sourceItems[$pipMambaLog] = $true
   }
 }
 
