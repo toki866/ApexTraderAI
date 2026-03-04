@@ -182,6 +182,10 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
   }
 }
 
+if (Test-Path $oneTapReport) {
+  $sourceItems[$oneTapReport] = $true
+}
+
 if (Test-Path $summaryPath) {
   $sourceItems[$summaryPath] = $true
 }
