@@ -151,6 +151,24 @@ $oneTapReport = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
 if (Test-Path $oneTapReport) {
   $sourceItems[$oneTapReport] = $true
 }
+
+if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
+  $runLogs = Join-Path $RunDir 'logs'
+  $pipTail = Join-Path $runLogs 'pip_install_tail_200.txt'
+  $pipLog = Join-Path $runLogs 'pip_install_requirements.log'
+
+  if (Test-Path $pipTail) {
+    $sourceItems[$pipTail] = $true
+    Add-Content -Path $oneTapReport -Encoding UTF8 -Value ""
+    Add-Content -Path $oneTapReport -Encoding UTF8 -Value '---- pip_install_tail_200 ----'
+    Get-Content -Path $pipTail | Add-Content -Path $oneTapReport -Encoding UTF8
+  }
+
+  if (Test-Path $pipLog) {
+    $sourceItems[$pipLog] = $true
+  }
+}
+
 if (Test-Path $summaryPath) {
   $sourceItems[$summaryPath] = $true
 }

@@ -37,6 +37,8 @@ set "OUTPUT_DIR=%RUN_DIR%\output"
 set "LOG_DIR=%RUN_DIR%\logs"
 set "LOG_FILE=%LOG_DIR%\run_%RUN_ID%.log"
 set "ZIP_FILE=%RUN_DIR%\run_%RUN_ID%.zip"
+set "PIP_REQ_LOG=%LOG_DIR%\pip_install_requirements.log"
+set "PIP_REQ_TAIL=%LOG_DIR%\pip_install_tail_200.txt"
 
 mkdir "%LOG_DIR%" >nul 2>&1
 if not exist "%LOG_DIR%" (
@@ -110,7 +112,7 @@ echo [RUN] Installing/updating Python dependencies from requirements.txt>> "%LOG
 call :run_python -m pip install -U pip setuptools wheel
 if errorlevel 1 goto :failed
 
-call :run_python -m pip install -r requirements.txt
+call :pip_install_requirements
 if errorlevel 1 goto :failed
 
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
@@ -265,11 +267,34 @@ if defined PYTHON_EXE (
 )
 exit /b %ERRORLEVEL%
 
+:pip_install_requirements
+set "LAST_CMD=%PYTHON_EXE% -m pip install -r requirements.txt"
+echo.>> "%LOG_FILE%"
+echo [CMD] "%PYTHON_EXE%" -m pip install -r requirements.txt>> "%LOG_FILE%"
+echo [INFO] pip_req_log=%PIP_REQ_LOG%>> "%LOG_FILE%"
+echo [INFO] pip_req_tail=%PIP_REQ_TAIL%>> "%LOG_FILE%"
+del /f /q "%PIP_REQ_LOG%" "%PIP_REQ_TAIL%" >nul 2>&1
+"%PYTHON_EXE%" -m pip install -r requirements.txt > "%PIP_REQ_LOG%" 2>&1
+set "PIP_RC=%ERRORLEVEL%"
+type "%PIP_REQ_LOG%" >> "%LOG_FILE%" 2>&1
+set "LAST_EXIT=%PIP_RC%"
+echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
+if %PIP_RC% GEQ 1 (
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath '%PIP_REQ_LOG%' -Tail 200 | Set-Content -LiteralPath '%PIP_REQ_TAIL%' -Encoding UTF8"
+  echo [INFO] wrote pip_tail=%PIP_REQ_TAIL%>> "%LOG_FILE%"
+  exit /b %PIP_RC%
+)
+exit /b 0
+
 :failed
 set "_LAST_EXIT_NUM=%LAST_EXIT%"
 for /f "delims=0123456789-" %%A in ("%_LAST_EXIT_NUM%") do set "_LAST_EXIT_NUM=-1"
 if not defined _LAST_EXIT_NUM set "_LAST_EXIT_NUM=-1"
 set "LAST_EXIT=%_LAST_EXIT_NUM%"
+if defined PIP_REQ_TAIL if exist "%PIP_REQ_TAIL%" (
+  echo [FAILED] pip_tail=%PIP_REQ_TAIL%>> "%LOG_FILE%"
+  echo [FAILED] pip_tail=%PIP_REQ_TAIL%
+)
 echo [FAILED] command=%LAST_CMD%>> "%LOG_FILE%"
 echo [FAILED] exit_code=%LAST_EXIT%>> "%LOG_FILE%"
 echo [FAILED] run_id=%RUN_ID%>> "%LOG_FILE%"
