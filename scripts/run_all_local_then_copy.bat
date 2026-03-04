@@ -120,9 +120,12 @@ if errorlevel 1 goto :failed
 set "INSTALL_MAMBA_SSM=0"
 if "%ENABLE_MAMBA%"=="1" set "INSTALL_MAMBA_SSM=1"
 if "%ENABLE_MAMBA_PERIODIC%"=="1" set "INSTALL_MAMBA_SSM=1"
+echo [RUN] enable_mamba=%ENABLE_MAMBA% enable_mamba_periodic=%ENABLE_MAMBA_PERIODIC% install_mamba_ssm=%INSTALL_MAMBA_SSM%>> "%LOG_FILE%"
 if "%INSTALL_MAMBA_SSM%"=="1" (
   call :pip_install_mamba_ssm
   if errorlevel 1 goto :failed
+) else (
+  echo [RUN] skip pip install mamba-ssm because ENABLE_MAMBA and ENABLE_MAMBA_PERIODIC are not set to 1>> "%LOG_FILE%"
 )
 
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
