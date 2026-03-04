@@ -47,6 +47,7 @@ import torch
 from torch import nn
 
 from ai_core.utils.metrics_utils import compute_split_metrics
+from ai_core.utils.timing_logger import TimingLogger
 
 
 # ---------------------------
