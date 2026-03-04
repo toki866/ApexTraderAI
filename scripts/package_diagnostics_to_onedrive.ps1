@@ -164,6 +164,7 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
     Add-Content -Path $oneTapReport -Encoding UTF8 -Value ""
     Add-Content -Path $oneTapReport -Encoding UTF8 -Value '---- pip_install_tail_200 ----'
     Get-Content -Path $pipTail | Add-Content -Path $oneTapReport -Encoding UTF8
+    $sourceItems[$oneTapReport] = $true
   }
 
   if (Test-Path $pipMambaTail) {
@@ -171,6 +172,7 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
     Add-Content -Path $oneTapReport -Encoding UTF8 -Value ""
     Add-Content -Path $oneTapReport -Encoding UTF8 -Value '---- pip_install_mamba_ssm_tail_200 ----'
     Get-Content -Path $pipMambaTail | Add-Content -Path $oneTapReport -Encoding UTF8
+    $sourceItems[$oneTapReport] = $true
   }
 
   if (Test-Path $pipLog) {
