@@ -1,0 +1,2 @@
+file,agent,test_days,equity_multiple,max_dd,mean_ret,std_ret,sharpe,status
+stepE_daily_log_dprime_bnf_h01_SOXL.csv,dprime_bnf_h01,63,1.515669468258472,-0.2754265220953953,0.00839657831703592,0.0746600867430533,1.7853119968003228,OK

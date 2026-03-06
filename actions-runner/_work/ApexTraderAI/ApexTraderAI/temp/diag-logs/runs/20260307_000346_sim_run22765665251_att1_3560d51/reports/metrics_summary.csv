@@ -1,0 +1,4 @@
+step,mode,source_csv,symbol,test_days,total_return_pct,cagr_pct,sharpe,max_dd_pct,win_rate,avg_daily_ret,vol_annual,num_trades,avg_hold_days,status,reason
+StepE,sim,C:/work/apex_work/runs/gh22765665251_att1_sim_20260306_223344_3560d51/output/stepE/sim/stepE_daily_log_dprime_bnf_h01_SOXL.csv,SOXL,63,51.5669468258472,427.7375651112168,1.7853119968003228,-27.542652209539533,0.5555555555555556,0.00839657831703592,1.185192134307776,63.0,63.0,ok,split=test
+StepA,sim,C:/work/apex_work/runs/gh22765665251_att1_sim_20260306_223344_3560d51/output/stepA/sim/stepA_prices_test_SOXL.csv,SOXL,63,,,,,,,,,,ok,date>=2022-01-03
+StepA,sim,C:/work/apex_work/runs/gh22765665251_att1_sim_20260306_223344_3560d51/output/stepA/sim/stepA_prices_test_SOXS.csv,SOXS,63,,,,,,,,,,ok,date>=2022-01-03
