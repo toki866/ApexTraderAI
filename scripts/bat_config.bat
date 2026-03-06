@@ -25,8 +25,8 @@ rem --- WSL execution settings (used when ENABLE_MAMBA=1) ---
 rem WSL_DISTRO: WSL distro name (empty = use default distro)
 rem WSL_PYTHON: Python executable inside WSL (must have mamba_ssm installed)
 rem WSL_REPO_ROOT: repo path in WSL (auto-computed via wslpath if not set)
-if not defined WSL_DISTRO set "WSL_DISTRO="
-if not defined WSL_PYTHON set "WSL_PYTHON=python3"
+if not defined WSL_DISTRO set "WSL_DISTRO=Ubuntu"
+if not defined WSL_PYTHON set "WSL_PYTHON=/home/becky/miniforge3/envs/mamba_cuda/bin/python"
 
 endlocal & (
   set "SYMBOL=%SYMBOL%"

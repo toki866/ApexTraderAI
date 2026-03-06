@@ -153,11 +153,11 @@ if not defined WSL_REPO_ROOT (
   for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%CD%"') do set "WSL_REPO_ROOT=%%P"
 )
 
-echo [RUN] wsl_distro=%WSL_DISTRO%>> "%LOG_FILE%"
-echo [RUN] wsl_python=%WSL_PYTHON%>> "%LOG_FILE%"
+echo [RUN] selected_wsl_distro=%WSL_DISTRO%>> "%LOG_FILE%"
+echo [RUN] selected_wsl_python=%WSL_PYTHON%>> "%LOG_FILE%"
 echo [RUN] wsl_repo_root=%WSL_REPO_ROOT%>> "%LOG_FILE%"
-echo [RUN] wsl_distro=%WSL_DISTRO%
-echo [RUN] wsl_python=%WSL_PYTHON%
+echo [RUN] selected_wsl_distro=%WSL_DISTRO%
+echo [RUN] selected_wsl_python=%WSL_PYTHON%
 echo [RUN] wsl_repo_root=%WSL_REPO_ROOT%
 
 rem Verify mamba_ssm is importable in the specified WSL Python; fail fast if not

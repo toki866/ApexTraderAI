@@ -688,8 +688,8 @@ jobs:
           # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
           # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
           # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
-          WSL_DISTRO: Ubuntu-22.04
-          WSL_PYTHON: /home/becky/venv/bin/python
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location $env:REPO_ROOT
@@ -2907,8 +2907,8 @@ jobs:
           # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
           # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
           # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
-          WSL_DISTRO: Ubuntu-22.04
-          WSL_PYTHON: /home/becky/venv/bin/python
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location $env:REPO_ROOT
