@@ -1402,10 +1402,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if skip_stepe and "E" in steps:
         steps = tuple(step for step in steps if step != "E")
 
-    # StepB is Mamba-only. If user didn't specify, default to enabled.
     enable_mamba = bool(args.enable_mamba)
-    if not enable_mamba:
-        enable_mamba = True
 
 
     # Ensure repo_root is on sys.path

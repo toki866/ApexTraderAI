@@ -118,12 +118,25 @@ if errorlevel 1 goto :failed
 echo [RUN] mamba-ssm install step removed for Windows runner (Linux-only package)>> "%LOG_FILE%"
 echo [RUN] enable_mamba=%ENABLE_MAMBA% enable_mamba_periodic=%ENABLE_MAMBA_PERIODIC%>> "%LOG_FILE%"
 
+rem --- mamba_ssm availability check ---
+"%PYTHON_EXE%" -c "import mamba_ssm" >nul 2>&1
+if errorlevel 1 (
+  echo [RUN] mamba_ssm unavailable on this runner; disable --enable-mamba>> "%LOG_FILE%"
+  echo [RUN] effective_enable_mamba=0 effective_enable_mamba_periodic=0>> "%LOG_FILE%"
+  set "EFFECTIVE_ENABLE_MAMBA=0"
+  set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=0"
+) else (
+  echo [RUN] mamba_ssm available; effective_enable_mamba=%ENABLE_MAMBA% effective_enable_mamba_periodic=%ENABLE_MAMBA_PERIODIC%>> "%LOG_FILE%"
+  set "EFFECTIVE_ENABLE_MAMBA=%ENABLE_MAMBA%"
+  set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
+)
+
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
 set "PIPELINE_FLAGS="
-if "%ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
-if "%ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
+if "%EFFECTIVE_ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
+if "%EFFECTIVE_ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
 
 call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%" --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
