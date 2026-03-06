@@ -684,6 +684,12 @@ jobs:
           APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           PYTHON_EXE: python
+          ENABLE_MAMBA: 1
+          # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
+          # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
+          # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
+          WSL_DISTRO: Ubuntu-22.04
+          WSL_PYTHON: /home/becky/venv/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location $env:REPO_ROOT
@@ -2897,6 +2903,12 @@ jobs:
           APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           PYTHON_EXE: python
+          ENABLE_MAMBA: 1
+          # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
+          # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
+          # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
+          WSL_DISTRO: Ubuntu-22.04
+          WSL_PYTHON: /home/becky/venv/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location $env:REPO_ROOT
