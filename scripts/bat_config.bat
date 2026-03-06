@@ -15,6 +15,8 @@ if not defined RUN_MODE set "RUN_MODE=sim"
 
 if not defined ENABLE_MAMBA set "ENABLE_MAMBA=1"
 if not defined ENABLE_MAMBA_PERIODIC set "ENABLE_MAMBA_PERIODIC=0"
+if not defined REUSE_OUTPUT set "REUSE_OUTPUT=1"
+if not defined FORCE_REBUILD set "FORCE_REBUILD=0"
 
 if not defined WORK_ROOT set "WORK_ROOT=C:\work\apex_work\runs"
 if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
@@ -40,6 +42,8 @@ endlocal & (
   set "RUN_MODE=%RUN_MODE%"
   set "ENABLE_MAMBA=%ENABLE_MAMBA%"
   set "ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
+  set "REUSE_OUTPUT=%REUSE_OUTPUT%"
+  set "FORCE_REBUILD=%FORCE_REBUILD%"
   set "WORK_ROOT=%WORK_ROOT%"
   set "ZIP_ON_SUCCESS=%ZIP_ON_SUCCESS%"
   set "AUTO_PREPARE_DATA=%AUTO_PREPARE_DATA%"

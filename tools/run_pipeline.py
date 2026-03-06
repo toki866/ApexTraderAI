@@ -1391,6 +1391,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--execution-mode", dest="execution_mode", default="sequential", help="Execution mode label for timing logs.")
     ap.add_argument("--clear-timing", type=int, default=0, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default=None, help="Optional CSV subset of StepE agents to run.")
+    ap.add_argument("--reuse-output", dest="reuse_output", type=int, default=0, choices=[0, 1],
+                    help="If 1, reuse artifacts from prior runs with matching signature (skip complete steps).")
+    ap.add_argument("--force-rebuild", dest="force_rebuild", type=int, default=0, choices=[0, 1],
+                    help="If 1, ignore existing artifacts and rebuild all steps even if reuse-output=1.")
     args = ap.parse_args(argv)
 
     repo_root = _repo_root()
@@ -1403,7 +1407,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         steps = tuple(step for step in steps if step != "E")
 
     enable_mamba = bool(args.enable_mamba)
-
+    reuse_output = bool(int(args.reuse_output or _env_get("REUSE_OUTPUT") or 0))
+    force_rebuild = bool(int(args.force_rebuild or _env_get("FORCE_REBUILD") or 0))
+    if force_rebuild:
+        reuse_output = True  # force_rebuild implies reuse_output context (manifest is written)
 
     # Ensure repo_root is on sys.path
     if str(repo_root) not in sys.path:
@@ -1419,6 +1426,64 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
+
+    # --- Run-reuse manifest (initialised early; steps update it as they complete) ---
+    _run_manifest = None
+    if reuse_output:
+        try:
+            from tools.run_manifest import (  # lazy import to avoid hard dep
+                RunManifest,
+                build_run_signature,
+                check_step_artifacts,
+                check_stepe_agent_artifact,
+            )
+            _mamba_horizons_for_sig = tuple(_parse_int_list(args.mamba_horizons or ""))
+            _stepe_agents_for_sig: Optional[Tuple[str, ...]] = None
+            if args.stepe_agents:
+                _stepe_agents_for_sig = tuple(a.strip() for a in args.stepe_agents.split(",") if a.strip())
+            _run_sig = build_run_signature(
+                symbol=symbol,
+                mode=resolved_mode,
+                test_start=args.test_start or "",
+                train_years=int(args.train_years),
+                test_months=int(args.test_months),
+                steps=steps,
+                enable_mamba=enable_mamba,
+                enable_mamba_periodic=bool(args.enable_mamba_periodic),
+                mamba_lookback=args.mamba_lookback,
+                mamba_horizons=_mamba_horizons_for_sig,
+                stepe_agents=_stepe_agents_for_sig,
+            )
+            _run_manifest = RunManifest.load_or_create(
+                resolved_output_root, _run_sig, reuse_output, force_rebuild
+            )
+            print(
+                f"[reuse] manifest loaded: hash={_run_sig.stable_hash()} "
+                f"reuse={reuse_output} force_rebuild={force_rebuild} "
+                f"output_root={resolved_output_root}"
+            )
+        except Exception as _e:
+            print(f"[reuse] WARNING: failed to initialise run manifest: {type(_e).__name__}: {_e}", file=sys.stderr)
+            _run_manifest = None
+
+    def _can_reuse_step(step_key: str) -> bool:
+        """Return True iff step can be skipped due to reuse."""
+        if not reuse_output or force_rebuild or _run_manifest is None:
+            return False
+        try:
+            return (
+                _run_manifest.can_reuse_step(step_key)
+                and check_step_artifacts(step_key, resolved_output_root, symbol, resolved_mode)
+            )
+        except Exception:
+            return False
+
+    def _mark_step(step_key: str, status: str) -> None:
+        if _run_manifest is not None:
+            try:
+                _run_manifest.mark_step(step_key, status)
+            except Exception:
+                pass
 
     timing_enabled = bool(int(args.timing))
     run_id = args.run_id or _auto_run_id()
@@ -1613,6 +1678,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if future_end:
         print(f"[headless] future_end={future_end}")
     print(f"[headless] steps={','.join(steps)}")
+    print(f"[headless] reuse_output={int(reuse_output)} force_rebuild={int(force_rebuild)}")
     print(f"[headless] skip_stepe={int(skip_stepe)}")
     print(f"[headless] auto_prepare_data={int(auto_prepare_data)} data_start={data_start} data_end={data_end}")
     if args.mamba_lookback is not None:
@@ -1627,22 +1693,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         with timing.stage("branch.total"):
             if "A" in steps:
-                stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
-                print(f"[StepA] start symbols={','.join(stepa_symbols)}")
-                for stepa_symbol in stepa_symbols:
-                    with timing.stage("stepA.run"):
-                        stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
-                    if stepa_symbol == symbol:
-                        results["stepA_result"] = stepa_result
-                print("[StepA] done")
+                if _can_reuse_step("A"):
+                    print(f"[StepA] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                    _mark_step("A", "reuse")
+                else:
+                    stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
+                    print(f"[StepA] start symbols={','.join(stepa_symbols)}")
+                    _mark_step("A", "running")
+                    for stepa_symbol in stepa_symbols:
+                        with timing.stage("stepA.run"):
+                            stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
+                        if stepa_symbol == symbol:
+                            results["stepA_result"] = stepa_result
+                    _mark_step("A", "complete")
+                    print("[StepA] done")
 
             if "B" in steps:
-                print("[StepB] start")
-                mamba_horizons_list = _parse_int_list(args.mamba_horizons)
-                with timing.stage("stepB.run"):
-                    results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
-                print(f"[StepB] agents: mamba={enable_mamba}")
-                print("[StepB] done")
+                if _can_reuse_step("B"):
+                    print(f"[StepB] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                    _mark_step("B", "reuse")
+                else:
+                    print("[StepB] start")
+                    mamba_horizons_list = _parse_int_list(args.mamba_horizons)
+                    _mark_step("B", "running")
+                    with timing.stage("stepB.run"):
+                        results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                    _mark_step("B", "complete")
+                    print(f"[StepB] agents: mamba={enable_mamba}")
+                    print("[StepB] done")
             # Ensure contract artifact exists
             try:
                 p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
@@ -1651,29 +1729,113 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
 
             if "C" in steps:
-                print("[StepC] start")
-                with timing.stage("stepC.run"):
-                    results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
-                print("[StepC] done")
+                if _can_reuse_step("C"):
+                    print(f"[StepC] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                    _mark_step("C", "reuse")
+                else:
+                    print("[StepC] start")
+                    _mark_step("C", "running")
+                    with timing.stage("stepC.run"):
+                        results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+                    _mark_step("C", "complete")
+                    print("[StepC] done")
 
             if "DPRIME" in steps:
-                print("[StepDPrime] start")
-                with timing.stage("stepDPrime.run"):
-                    results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
-                _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
-                print("[StepDPrime] done")
+                if _can_reuse_step("DPRIME"):
+                    print(f"[StepDPrime] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                    _mark_step("DPRIME", "reuse")
+                else:
+                    print("[StepDPrime] start")
+                    _mark_step("DPRIME", "running")
+                    with timing.stage("stepDPrime.run"):
+                        results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+                    _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
+                    _mark_step("DPRIME", "complete")
+                    print("[StepDPrime] done")
 
             for step in ("D", "E", "F"):
                 if step not in steps:
                     continue
-                print(f"[Step{step}] start")
                 stage_name = "stepE.run" if step == "E" else ("stepF.run" if step == "F" else f"step{step}.run")
+
+                # --- StepE: per-agent reuse ---
+                if step == "E" and reuse_output and _run_manifest is not None and not force_rebuild:
+                    try:
+                        from tools.run_manifest import check_stepe_agent_artifact as _check_agent_art  # noqa: F811
+                        _raw_e_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                        _all_agents: List[str]
+                        if _raw_e_cfgs is not None:
+                            _cfg_list_e = list(_raw_e_cfgs) if isinstance(_raw_e_cfgs, (list, tuple)) else [_raw_e_cfgs]
+                            _all_agents = [getattr(c, "agent", "") for c in _cfg_list_e if getattr(c, "agent", "")]
+                        else:
+                            _all_agents = list(_OFFICIAL_STEPE_AGENTS)
+
+                        _run_manifest.ensure_stepe_agents(_all_agents)
+
+                        # Per-agent: reuse if manifest complete AND artifact exists
+                        _done_agents = [
+                            a for a in _all_agents
+                            if _run_manifest.can_reuse_stepe_agent(a)
+                            and _check_agent_art(a, resolved_output_root, symbol, resolved_mode)
+                        ]
+                        _pending_agents = [a for a in _all_agents if a not in _done_agents]
+
+                        if _done_agents:
+                            print(f"[StepE] status=partial_reuse reused={','.join(_done_agents)}")
+                        if not _pending_agents:
+                            print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                            _mark_step("E", "reuse")
+                            results["stepE_result"] = {"reused": True, "agents": _done_agents}
+                            continue
+
+                        # Filter app_config.stepE to pending agents only
+                        if _raw_e_cfgs is not None:
+                            _cfg_list_e2 = list(_raw_e_cfgs) if isinstance(_raw_e_cfgs, (list, tuple)) else [_raw_e_cfgs]
+                            _pending_cfgs = [c for c in _cfg_list_e2 if getattr(c, "agent", "") in _pending_agents]
+                            if isinstance(app_config, dict):
+                                app_config["stepE"] = _pending_cfgs
+                            else:
+                                setattr(app_config, "stepE", _pending_cfgs)
+                        print(f"[StepE] status=partial_run pending={','.join(_pending_agents)}")
+                        _mark_step("E", "running")
+                        with timing.stage(stage_name):
+                            step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                        results[f"step{step}_result"] = step_result
+                        if isinstance(step_result, dict) and step_result.get("skipped"):
+                            reason = step_result.get("reason", "unknown")
+                            raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
+                        # Mark newly completed agents
+                        for _a in _pending_agents:
+                            if _check_agent_art(_a, resolved_output_root, symbol, resolved_mode):
+                                _run_manifest.mark_stepe_agent(_a, "complete")
+                        # Mark E complete only if all agents done
+                        _still_missing = [a for a in _all_agents if not _check_agent_art(a, resolved_output_root, symbol, resolved_mode)]
+                        if not _still_missing:
+                            _mark_step("E", "complete")
+                        else:
+                            print(f"[StepE] WARNING: {len(_still_missing)} agents still missing after run: {','.join(_still_missing)}", file=sys.stderr)
+                        print(f"[StepE] done")
+                        continue
+                    except Exception as _reuse_e:
+                        print(f"[StepE] reuse logic error ({type(_reuse_e).__name__}: {_reuse_e}); running step normally", file=sys.stderr)
+
+                # --- StepF: reuse ---
+                if step == "F" and _can_reuse_step("F"):
+                    print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
+                    _mark_step("F", "reuse")
+                    results["stepF_result"] = {"reused": True}
+                    continue
+
+                # --- Generic run (D, or E/F without reuse) ---
+                print(f"[Step{step}] start")
+                _mark_step(step if step != "D" else "D", "running")
                 with timing.stage(stage_name):
                     step_result = _run_step_generic(step, app_config, symbol, date_range, results)
                 results[f"step{step}_result"] = step_result
                 if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
                     reason = step_result.get("reason", "unknown")
                     raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
+                _mark_step(step if step != "D" else "D", "complete")
                 print(f"[Step{step}] done")
 
             with timing.stage("audit.leak"):

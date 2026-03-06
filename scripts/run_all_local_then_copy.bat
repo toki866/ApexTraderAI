@@ -181,6 +181,24 @@ for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%OUTPUT_DIR%"') do
 echo [RUN] wsl_data_dir=%WSL_DATA_DIR%>> "%LOG_FILE%"
 echo [RUN] wsl_output_dir=%WSL_OUTPUT_DIR%>> "%LOG_FILE%"
 
+rem --- Auto-scan for reuse: find prior run with matching signature (WSL path) ---
+if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
+  set "WSL_WORK_ROOT="
+  for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%WORK_ROOT%"') do set "WSL_WORK_ROOT=%%P"
+  if defined WSL_WORK_ROOT (
+    set "WSL_REUSE_FOUND="
+    for /f "delims=" %%Q in ('wsl.exe %WSL_DIST_FLAG% -- bash -c "cd '!WSL_REPO_ROOT!' && '!WSL_PYTHON!' tools/run_with_python.py tools/find_reuse_run.py --scan-root '!WSL_WORK_ROOT!' --symbol !SYMBOL! --mode !RUN_MODE! --test-start !TEST_START! --train-years !TRAIN_YEARS! --test-months !TEST_MONTHS! --steps '!STEPS!' --enable-mamba !EFFECTIVE_ENABLE_MAMBA! --enable-mamba-periodic !EFFECTIVE_ENABLE_MAMBA_PERIODIC! 2>/dev/null"') do set "WSL_REUSE_FOUND=%%Q"
+    if defined WSL_REUSE_FOUND (
+      echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!>> "%LOG_FILE%"
+      echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!
+      set "WSL_OUTPUT_DIR=!WSL_REUSE_FOUND!"
+    ) else (
+      echo [REUSE] No matching prior run found; using fresh output_root>> "%LOG_FILE%"
+    )
+  )
+)
+echo [RUN] effective_wsl_output_dir=%WSL_OUTPUT_DIR%>> "%LOG_FILE%"
+
 rem --- prepare_data via WSL ---
 set "LAST_CMD=wsl prepare_data"
 echo.>> "%LOG_FILE%"
@@ -195,6 +213,8 @@ set "PIPELINE_FLAGS="
 if "%EFFECTIVE_ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%EFFECTIVE_ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
+if "%REUSE_OUTPUT%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --reuse-output 1"
+if "%FORCE_REBUILD%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --force-rebuild 1"
 
 set "LAST_CMD=wsl run_pipeline"
 echo.>> "%LOG_FILE%"
@@ -207,6 +227,19 @@ goto :after_exec
 
 :exec_data_and_pipeline
 rem --- Windows Python execution path (ENABLE_MAMBA=0) ---
+rem --- Auto-scan for reuse (Windows Python path) ---
+if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
+  set "WIN_REUSE_FOUND="
+  for /f "delims=" %%P in ('"%PYTHON_EXE%" tools\run_with_python.py tools\find_reuse_run.py --scan-root "%WORK_ROOT%" --symbol %SYMBOL% --mode %RUN_MODE% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --steps "%STEPS%" 2^>nul') do set "WIN_REUSE_FOUND=%%P"
+  if defined WIN_REUSE_FOUND (
+    echo [REUSE] Found matching prior run: !WIN_REUSE_FOUND!>> "%LOG_FILE%"
+    echo [REUSE] Found matching prior run: !WIN_REUSE_FOUND!
+    set "OUTPUT_DIR=!WIN_REUSE_FOUND!"
+  ) else (
+    echo [REUSE] No matching prior run found; using fresh output_root>> "%LOG_FILE%"
+  )
+)
+
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
@@ -214,6 +247,8 @@ set "PIPELINE_FLAGS="
 if "%EFFECTIVE_ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
 if "%EFFECTIVE_ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
 if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
+if "%REUSE_OUTPUT%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --reuse-output 1"
+if "%FORCE_REBUILD%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --force-rebuild 1"
 
 call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%" --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed
