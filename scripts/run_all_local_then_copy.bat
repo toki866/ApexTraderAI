@@ -118,19 +118,95 @@ if errorlevel 1 goto :failed
 echo [RUN] mamba-ssm install step removed for Windows runner (Linux-only package)>> "%LOG_FILE%"
 echo [RUN] enable_mamba=%ENABLE_MAMBA% enable_mamba_periodic=%ENABLE_MAMBA_PERIODIC%>> "%LOG_FILE%"
 
-rem --- mamba_ssm availability check ---
-"%PYTHON_EXE%" -c "import mamba_ssm" >nul 2>&1
+rem --- Decide execution backend based on mamba requirement ---
+rem  ENABLE_MAMBA=1 -> must use WSL Python (mamba_ssm is Linux-only; Windows Python check is skipped)
+rem  ENABLE_MAMBA=0 -> use Windows Python as before
+set "_NEED_MAMBA=0"
+if "%ENABLE_MAMBA%"=="1" set "_NEED_MAMBA=1"
+if "%ENABLE_MAMBA_PERIODIC%"=="1" set "_NEED_MAMBA=1"
+if "%_NEED_MAMBA%"=="1" goto :check_wsl_for_mamba
+
+rem --- Mamba not requested: Windows Python path ---
+echo [RUN] backend=windows_python (mamba not requested)>> "%LOG_FILE%"
+set "EFFECTIVE_ENABLE_MAMBA=0"
+set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=0"
+goto :exec_data_and_pipeline
+
+:check_wsl_for_mamba
+rem --- ENABLE_MAMBA=1: route to WSL Python; do NOT fall back to disabling mamba ---
+echo [RUN] backend=wsl_mamba (ENABLE_MAMBA=1; Windows Python mamba check skipped)>> "%LOG_FILE%"
+where wsl.exe >nul 2>&1
 if errorlevel 1 (
-  echo [RUN] mamba_ssm unavailable on this runner; disable --enable-mamba>> "%LOG_FILE%"
-  echo [RUN] effective_enable_mamba=0 effective_enable_mamba_periodic=0>> "%LOG_FILE%"
-  set "EFFECTIVE_ENABLE_MAMBA=0"
-  set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=0"
-) else (
-  echo [RUN] mamba_ssm available; effective_enable_mamba=%ENABLE_MAMBA% effective_enable_mamba_periodic=%ENABLE_MAMBA_PERIODIC%>> "%LOG_FILE%"
-  set "EFFECTIVE_ENABLE_MAMBA=%ENABLE_MAMBA%"
-  set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
+  echo [FATAL] ENABLE_MAMBA=1 but wsl.exe not found on this runner>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but wsl.exe not found on this runner
+  set "LAST_CMD=check wsl.exe"
+  set "LAST_EXIT=5"
+  goto :failed
 )
 
+if not defined WSL_PYTHON set "WSL_PYTHON=python3"
+set "WSL_DIST_FLAG="
+if defined WSL_DISTRO if not "%WSL_DISTRO%"=="" set "WSL_DIST_FLAG=-d %WSL_DISTRO%"
+
+rem Auto-compute WSL repo root from current Windows path (CD = repo root after pushd)
+if not defined WSL_REPO_ROOT (
+  for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%CD%"') do set "WSL_REPO_ROOT=%%P"
+)
+
+echo [RUN] wsl_distro=%WSL_DISTRO%>> "%LOG_FILE%"
+echo [RUN] wsl_python=%WSL_PYTHON%>> "%LOG_FILE%"
+echo [RUN] wsl_repo_root=%WSL_REPO_ROOT%>> "%LOG_FILE%"
+echo [RUN] wsl_distro=%WSL_DISTRO%
+echo [RUN] wsl_python=%WSL_PYTHON%
+echo [RUN] wsl_repo_root=%WSL_REPO_ROOT%
+
+rem Verify mamba_ssm is importable in the specified WSL Python; fail fast if not
+wsl.exe %WSL_DIST_FLAG% %WSL_PYTHON% -c "import mamba_ssm" >nul 2>&1
+if errorlevel 1 (
+  echo [FATAL] ENABLE_MAMBA=1 but mamba_ssm not importable via WSL python=%WSL_PYTHON%>> "%LOG_FILE%"
+  echo [FATAL] Install mamba_ssm in WSL first. Refusing to silently disable mamba.>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but mamba_ssm not importable via WSL python=%WSL_PYTHON%
+  set "LAST_CMD=wsl mamba_ssm import check"
+  set "LAST_EXIT=5"
+  goto :failed
+)
+
+echo [RUN] mamba_ssm importable in WSL; proceeding with wsl_mamba backend>> "%LOG_FILE%"
+set "EFFECTIVE_ENABLE_MAMBA=%ENABLE_MAMBA%"
+set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
+
+rem Compute WSL-side paths for data and output directories
+for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%DATA_DIR%"') do set "WSL_DATA_DIR=%%P"
+for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%OUTPUT_DIR%"') do set "WSL_OUTPUT_DIR=%%P"
+echo [RUN] wsl_data_dir=%WSL_DATA_DIR%>> "%LOG_FILE%"
+echo [RUN] wsl_output_dir=%WSL_OUTPUT_DIR%>> "%LOG_FILE%"
+
+rem --- prepare_data via WSL ---
+set "LAST_CMD=wsl prepare_data"
+echo.>> "%LOG_FILE%"
+echo [CMD] wsl %WSL_DIST_FLAG% prepare_data.py --symbols %SYMBOLS%>> "%LOG_FILE%"
+wsl.exe %WSL_DIST_FLAG% -- bash -c "cd '%WSL_REPO_ROOT%' && '%WSL_PYTHON%' tools/run_with_python.py tools/prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir '%WSL_DATA_DIR%'" >> "%LOG_FILE%" 2>&1
+set "LAST_EXIT=!ERRORLEVEL!"
+echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
+if !LAST_EXIT! GEQ 1 goto :failed
+
+rem --- run_pipeline via WSL ---
+set "PIPELINE_FLAGS="
+if "%EFFECTIVE_ENABLE_MAMBA%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba"
+if "%EFFECTIVE_ENABLE_MAMBA_PERIODIC%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --enable-mamba-periodic"
+if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
+
+set "LAST_CMD=wsl run_pipeline"
+echo.>> "%LOG_FILE%"
+echo [CMD] wsl %WSL_DIST_FLAG% run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%"!PIPELINE_FLAGS!>> "%LOG_FILE%"
+wsl.exe %WSL_DIST_FLAG% -- bash -c "cd '%WSL_REPO_ROOT%' && '%WSL_PYTHON%' tools/run_with_python.py tools/run_pipeline.py --symbol %SYMBOL% --steps '%STEPS%' --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root '%WSL_OUTPUT_DIR%' --data-dir '%WSL_DATA_DIR%' --auto-prepare-data %AUTO_PREPARE_DATA%!PIPELINE_FLAGS!" >> "%LOG_FILE%" 2>&1
+set "LAST_EXIT=!ERRORLEVEL!"
+echo [RC] %LAST_EXIT%>> "%LOG_FILE%"
+if !LAST_EXIT! GEQ 1 goto :failed
+goto :after_exec
+
+:exec_data_and_pipeline
+rem --- Windows Python execution path (ENABLE_MAMBA=0) ---
 call :run_python tools\run_with_python.py tools\prepare_data.py --symbols %SYMBOLS% --start %DATA_START% --end %DATA_END% --force --data-dir "%DATA_DIR%"
 if errorlevel 1 goto :failed
 
@@ -141,6 +217,8 @@ if "%SKIP_STEPE%"=="1" set "PIPELINE_FLAGS=!PIPELINE_FLAGS! --skip-stepe"
 
 call :run_python tools\run_with_python.py tools\run_pipeline.py --symbol %SYMBOL% --steps "%STEPS%" --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --mode %RUN_MODE% --output-root "%OUTPUT_DIR%" --data-dir "%DATA_DIR%" --auto-prepare-data %AUTO_PREPARE_DATA% !PIPELINE_FLAGS!
 if errorlevel 1 goto :failed
+
+:after_exec
 
 > "%OUTPUT_DIR%\DONE.txt" (
   echo run_id=%RUN_ID%

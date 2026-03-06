@@ -21,6 +21,13 @@ if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
 if not defined AUTO_PREPARE_DATA set "AUTO_PREPARE_DATA=0"
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
 
+rem --- WSL execution settings (used when ENABLE_MAMBA=1) ---
+rem WSL_DISTRO: WSL distro name (empty = use default distro)
+rem WSL_PYTHON: Python executable inside WSL (must have mamba_ssm installed)
+rem WSL_REPO_ROOT: repo path in WSL (auto-computed via wslpath if not set)
+if not defined WSL_DISTRO set "WSL_DISTRO="
+if not defined WSL_PYTHON set "WSL_PYTHON=python3"
+
 endlocal & (
   set "SYMBOL=%SYMBOL%"
   set "SYMBOLS=%SYMBOLS%"
@@ -37,4 +44,6 @@ endlocal & (
   set "ZIP_ON_SUCCESS=%ZIP_ON_SUCCESS%"
   set "AUTO_PREPARE_DATA=%AUTO_PREPARE_DATA%"
   set "PYTHON_EXE=%PYTHON_EXE%"
+  set "WSL_DISTRO=%WSL_DISTRO%"
+  set "WSL_PYTHON=%WSL_PYTHON%"
 )
