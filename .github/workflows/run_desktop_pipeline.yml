@@ -680,163 +680,25 @@ jobs:
           SYMBOLS: ${{ inputs.symbols }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $tempDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
           $null = New-Item -Path $tempDir -ItemType Directory -Force
           $bootstrap = Join-Path $tempDir ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
-          $null = New-Item -ItemType File -Path $bootstrap -Force
-          "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "[BOOTSTRAP] prepare_environment invoked" | Set-Content -Path $bootstrap -Encoding UTF8
+          "BOOTSTRAP_LOG=$bootstrap" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          function Write-Bootstrap([string]$m) {
-            Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
-            Write-Host $m
-          }
-
-          if (-not (Test-Path $rp)) {
-            $null = New-Item -Path $rp -ItemType File -Force
-          }
-          Add-Content $rp '[STEP] prepare_environment'
-
-          try {
-            Write-Bootstrap "[PREPARE] status=run"
-            Write-Bootstrap "[PREPARE] env=mode=$env:MODE symbols=$env:SYMBOLS"
-            Write-Bootstrap "[PREPARE] repo_root=$env:REPO_ROOT"
-            Write-Bootstrap "[PREPARE] work_root=$env:WORK_ROOT"
-            Write-Bootstrap "[PREPARE] run_id=$env:APEX_RUN_ID"
-            & where.exe python 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            python --version 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-
-            $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
-            $winDataDir   = Join-Path $winRunDir 'data'
-            $winOutputDir = Join-Path $winRunDir 'output'
-            $winLogDir    = Join-Path $winRunDir 'logs'
-            New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
-            "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            $prepareLog = Join-Path $winLogDir 'prepare_environment.log'
-            $null = New-Item -ItemType File -Path $prepareLog -Force
-            "PREPARE_LOG=$prepareLog"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            function Write-PrepareLog([string]$m) {
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value $m
-              Write-Bootstrap $m
-            }
-            function Invoke-WslCapture([string[]]$WslArgs, [string]$Label) {
-              $stdoutPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stdout.log" -f $env:APEX_RUN_ID, $Label)
-              $stderrPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stderr.log" -f $env:APEX_RUN_ID, $Label)
-              if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force }
-              if (Test-Path $stderrPath) { Remove-Item $stderrPath -Force }
-              $proc = Start-Process -FilePath 'wsl.exe' -ArgumentList $WslArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-              $stdoutRaw = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
-              $stderrRaw = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
-              return [pscustomobject]@{
-                Command = ('wsl.exe ' + ($WslArgs -join ' '))
-                ExitCode = $proc.ExitCode
-                StdOutRaw = $stdoutRaw
-                StdErrRaw = $stderrRaw
-              }
-            }
-            function ConvertTo-BashSingleQuoted([string]$Value) {
-              if ($null -eq $Value) { return "''" }
-              $escaped = $Value.Replace("'", "'`\"'`\"'")
-              return "'" + $escaped + "'"
-            }
-            function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
-              if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
-                throw "[$Label] Windows path is null or empty"
-              }
-              $quotedPath = ConvertTo-BashSingleQuoted -Value $WindowsPath
-              $bashCommand = "wslpath -u -- $quotedPath"
-              $wslArgs = @('-d', $env:WSL_DISTRO, '--', 'bash', '-lc', $bashCommand)
-              $capture = Invoke-WslCapture -WslArgs $wslArgs -Label $Label
-              Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
-              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WindowsPath")
-              Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
-              Write-PrepareLog ("[PREPARE] wsl_rc($Label)=$($capture.ExitCode)")
-              Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
-              Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
-              if ($capture.ExitCode -ne 0) {
-                throw "[$Label] wslpath failed rc=$($capture.ExitCode)"
-              }
-              if ([string]::IsNullOrWhiteSpace($capture.StdOutRaw)) {
-                throw "[$Label] wslpath returned null/empty stdout"
-              }
-              $resolved = $capture.StdOutRaw.Trim()
-              if ([string]::IsNullOrWhiteSpace($resolved)) {
-                throw "[$Label] wslpath stdout became empty after trim"
-              }
-              return $resolved
-            }
-
-            if (-not (Test-Path $env:REPO_ROOT)) {
-              throw "REPO_ROOT does not exist: $env:REPO_ROOT"
-            }
-            $wslRepoRoot  = Resolve-WslPathStrict -Label 'repo_root' -WindowsPath $env:REPO_ROOT
-            $wslDataDir   = Resolve-WslPathStrict -Label 'data_dir' -WindowsPath $winDataDir
-            $wslOutputDir = Resolve-WslPathStrict -Label 'output_dir' -WindowsPath $winOutputDir
-            "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            Write-PrepareLog "[PREPARE] selected_python=python"
-            Write-PrepareLog "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
-            Write-PrepareLog "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
-            Write-PrepareLog "[PREPARE] wsl_repo_root=$wslRepoRoot"
-            Write-PrepareLog "[PREPARE] wsl_output_dir=$wslOutputDir"
-
-            python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
-
-            $prepScriptWin = Join-Path $tempDir ("prepare_data_{0}.sh" -f $env:APEX_RUN_ID)
-            @(
-              '#!/usr/bin/env bash',
-              'set -euo pipefail',
-              ('cd {0}' -f (ConvertTo-BashSingleQuoted -Value $wslRepoRoot)),
-              'exec "$@"'
-            ) | Set-Content -Path $prepScriptWin -Encoding utf8
-            $prepScriptWsl = Resolve-WslPathStrict -Label 'prepare_script' -WindowsPath $prepScriptWin
-
-            $prepArgs = @(
-              '-d', $env:WSL_DISTRO,
-              '--',
-              'bash',
-              $prepScriptWsl,
-              $env:WSL_PYTHON,
-              'tools/run_with_python.py',
-              'tools/prepare_data.py',
-              '--symbols', $env:SYMBOLS,
-              '--start', $env:DATA_START,
-              '--end', $env:DATA_END,
-              '--force',
-              '--data-dir', $wslDataDir
-            )
-            $prepareCapture = Invoke-WslCapture -WslArgs $prepArgs -Label 'prepare_data'
-            Write-PrepareLog ("[PREPARE] prepare_data_command={0}" -f $prepareCapture.Command)
-            Write-PrepareLog ("[PREPARE] prepare_data_rc={0}" -f $prepareCapture.ExitCode)
-            if (-not [string]::IsNullOrEmpty($prepareCapture.StdOutRaw)) {
-              $prepareCapture.StdOutRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            }
-            if (-not [string]::IsNullOrEmpty($prepareCapture.StdErrRaw)) {
-              $prepareCapture.StdErrRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            }
-            if ($prepareCapture.ExitCode -ne 0) { throw "prepare_data failed rc=$($prepareCapture.ExitCode)" }
-
-            Add-Content $rp '[OK] prepare_environment'
-            Write-Bootstrap "[PREPARE] status=success"
-          } catch {
-            Write-Bootstrap "[PREPARE] status=failed"
-            Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
-            if ($prepareLog -and (Test-Path $prepareLog)) {
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value "[PREPARE] status=failed"
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value (("[PREPARE] error={0}" -f $_.Exception.Message))
-            }
-            Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
-            throw
-          }
-
+          $scriptPath = Join-Path $env:REPO_ROOT 'scripts\prepare_environment.ps1'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath `
+            -RepoRoot $env:REPO_ROOT `
+            -WorkRoot $env:WORK_ROOT `
+            -ApexRunId $env:APEX_RUN_ID `
+            -WslDistro $env:WSL_DISTRO `
+            -WslPython $env:WSL_PYTHON `
+            -Symbols $env:SYMBOLS `
+            -DataStart $env:DATA_START `
+            -DataEnd $env:DATA_END `
+            -GithubWorkspace $env:GITHUB_WORKSPACE `
+            -RunnerTemp $env:RUNNER_TEMP `
+            -GithubEnvPath $env:GITHUB_ENV
       - name: Resolve reuse source
         id: resolve_reuse
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -3290,163 +3152,25 @@ jobs:
           SYMBOLS: ${{ inputs.symbols }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $tempDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
           $null = New-Item -Path $tempDir -ItemType Directory -Force
           $bootstrap = Join-Path $tempDir ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
-          $null = New-Item -ItemType File -Path $bootstrap -Force
-          "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "[BOOTSTRAP] prepare_environment invoked" | Set-Content -Path $bootstrap -Encoding UTF8
+          "BOOTSTRAP_LOG=$bootstrap" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          function Write-Bootstrap([string]$m) {
-            Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
-            Write-Host $m
-          }
-
-          if (-not (Test-Path $rp)) {
-            $null = New-Item -Path $rp -ItemType File -Force
-          }
-          Add-Content $rp '[STEP] prepare_environment'
-
-          try {
-            Write-Bootstrap "[PREPARE] status=run"
-            Write-Bootstrap "[PREPARE] env=mode=$env:MODE symbols=$env:SYMBOLS"
-            Write-Bootstrap "[PREPARE] repo_root=$env:REPO_ROOT"
-            Write-Bootstrap "[PREPARE] work_root=$env:WORK_ROOT"
-            Write-Bootstrap "[PREPARE] run_id=$env:APEX_RUN_ID"
-            & where.exe python 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            python --version 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-
-            $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
-            $winDataDir   = Join-Path $winRunDir 'data'
-            $winOutputDir = Join-Path $winRunDir 'output'
-            $winLogDir    = Join-Path $winRunDir 'logs'
-            New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
-            "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            $prepareLog = Join-Path $winLogDir 'prepare_environment.log'
-            $null = New-Item -ItemType File -Path $prepareLog -Force
-            "PREPARE_LOG=$prepareLog"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            function Write-PrepareLog([string]$m) {
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value $m
-              Write-Bootstrap $m
-            }
-            function Invoke-WslCapture([string[]]$WslArgs, [string]$Label) {
-              $stdoutPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stdout.log" -f $env:APEX_RUN_ID, $Label)
-              $stderrPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stderr.log" -f $env:APEX_RUN_ID, $Label)
-              if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force }
-              if (Test-Path $stderrPath) { Remove-Item $stderrPath -Force }
-              $proc = Start-Process -FilePath 'wsl.exe' -ArgumentList $WslArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-              $stdoutRaw = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
-              $stderrRaw = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
-              return [pscustomobject]@{
-                Command = ('wsl.exe ' + ($WslArgs -join ' '))
-                ExitCode = $proc.ExitCode
-                StdOutRaw = $stdoutRaw
-                StdErrRaw = $stderrRaw
-              }
-            }
-            function ConvertTo-BashSingleQuoted([string]$Value) {
-              if ($null -eq $Value) { return "''" }
-              $escaped = $Value.Replace("'", "'`\"'`\"'")
-              return "'" + $escaped + "'"
-            }
-            function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
-              if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
-                throw "[$Label] Windows path is null or empty"
-              }
-              $quotedPath = ConvertTo-BashSingleQuoted -Value $WindowsPath
-              $bashCommand = "wslpath -u -- $quotedPath"
-              $wslArgs = @('-d', $env:WSL_DISTRO, '--', 'bash', '-lc', $bashCommand)
-              $capture = Invoke-WslCapture -WslArgs $wslArgs -Label $Label
-              Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
-              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WindowsPath")
-              Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
-              Write-PrepareLog ("[PREPARE] wsl_rc($Label)=$($capture.ExitCode)")
-              Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
-              Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
-              if ($capture.ExitCode -ne 0) {
-                throw "[$Label] wslpath failed rc=$($capture.ExitCode)"
-              }
-              if ([string]::IsNullOrWhiteSpace($capture.StdOutRaw)) {
-                throw "[$Label] wslpath returned null/empty stdout"
-              }
-              $resolved = $capture.StdOutRaw.Trim()
-              if ([string]::IsNullOrWhiteSpace($resolved)) {
-                throw "[$Label] wslpath stdout became empty after trim"
-              }
-              return $resolved
-            }
-
-            if (-not (Test-Path $env:REPO_ROOT)) {
-              throw "REPO_ROOT does not exist: $env:REPO_ROOT"
-            }
-            $wslRepoRoot  = Resolve-WslPathStrict -Label 'repo_root' -WindowsPath $env:REPO_ROOT
-            $wslDataDir   = Resolve-WslPathStrict -Label 'data_dir' -WindowsPath $winDataDir
-            $wslOutputDir = Resolve-WslPathStrict -Label 'output_dir' -WindowsPath $winOutputDir
-            "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            Write-PrepareLog "[PREPARE] selected_python=python"
-            Write-PrepareLog "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
-            Write-PrepareLog "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
-            Write-PrepareLog "[PREPARE] wsl_repo_root=$wslRepoRoot"
-            Write-PrepareLog "[PREPARE] wsl_output_dir=$wslOutputDir"
-
-            python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
-
-            $prepScriptWin = Join-Path $tempDir ("prepare_data_{0}.sh" -f $env:APEX_RUN_ID)
-            @(
-              '#!/usr/bin/env bash',
-              'set -euo pipefail',
-              ('cd {0}' -f (ConvertTo-BashSingleQuoted -Value $wslRepoRoot)),
-              'exec "$@"'
-            ) | Set-Content -Path $prepScriptWin -Encoding utf8
-            $prepScriptWsl = Resolve-WslPathStrict -Label 'prepare_script' -WindowsPath $prepScriptWin
-
-            $prepArgs = @(
-              '-d', $env:WSL_DISTRO,
-              '--',
-              'bash',
-              $prepScriptWsl,
-              $env:WSL_PYTHON,
-              'tools/run_with_python.py',
-              'tools/prepare_data.py',
-              '--symbols', $env:SYMBOLS,
-              '--start', $env:DATA_START,
-              '--end', $env:DATA_END,
-              '--force',
-              '--data-dir', $wslDataDir
-            )
-            $prepareCapture = Invoke-WslCapture -WslArgs $prepArgs -Label 'prepare_data'
-            Write-PrepareLog ("[PREPARE] prepare_data_command={0}" -f $prepareCapture.Command)
-            Write-PrepareLog ("[PREPARE] prepare_data_rc={0}" -f $prepareCapture.ExitCode)
-            if (-not [string]::IsNullOrEmpty($prepareCapture.StdOutRaw)) {
-              $prepareCapture.StdOutRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            }
-            if (-not [string]::IsNullOrEmpty($prepareCapture.StdErrRaw)) {
-              $prepareCapture.StdErrRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            }
-            if ($prepareCapture.ExitCode -ne 0) { throw "prepare_data failed rc=$($prepareCapture.ExitCode)" }
-
-            Add-Content $rp '[OK] prepare_environment'
-            Write-Bootstrap "[PREPARE] status=success"
-          } catch {
-            Write-Bootstrap "[PREPARE] status=failed"
-            Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
-            if ($prepareLog -and (Test-Path $prepareLog)) {
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value "[PREPARE] status=failed"
-              Add-Content -Path $prepareLog -Encoding UTF8 -Value (("[PREPARE] error={0}" -f $_.Exception.Message))
-            }
-            Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
-            throw
-          }
-
+          $scriptPath = Join-Path $env:REPO_ROOT 'scripts\prepare_environment.ps1'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath `
+            -RepoRoot $env:REPO_ROOT `
+            -WorkRoot $env:WORK_ROOT `
+            -ApexRunId $env:APEX_RUN_ID `
+            -WslDistro $env:WSL_DISTRO `
+            -WslPython $env:WSL_PYTHON `
+            -Symbols $env:SYMBOLS `
+            -DataStart $env:DATA_START `
+            -DataEnd $env:DATA_END `
+            -GithubWorkspace $env:GITHUB_WORKSPACE `
+            -RunnerTemp $env:RUNNER_TEMP `
+            -GithubEnvPath $env:GITHUB_ENV
       - name: Resolve reuse source
         id: resolve_reuse
         if: ${{ steps.prep_repo.outcome == 'success' }}
