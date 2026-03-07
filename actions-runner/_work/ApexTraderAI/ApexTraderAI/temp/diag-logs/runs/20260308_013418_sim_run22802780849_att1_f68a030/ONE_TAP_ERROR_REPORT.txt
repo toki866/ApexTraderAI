@@ -1,0 +1,81 @@
+﻿=== ONE TAP ERROR REPORT ===
+timestamp=2026-03-08 01:32:08 +09:00
+repo=toki866/ApexTraderAI
+ref=refs/heads/main
+sha=f68a0303d885d4b135d555314e2d4e159757f350
+run_id=22802780849
+run_attempt=1
+
+[STEP] initialize_one_tap_report
+[OK] report initialized
+[PATH] C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\ONE_TAP_ERROR_REPORT.txt
+[INFO] prep_repo_outcome=success
+[INFO] REPO_ROOT=C:\work\apex_repo_cache\ApexTraderAI
+
+[INFO] HEAD=f68a030
+
+## GPU_DIAGNOSTICS
+torch 2.10.0+cu126
+cuda_available True
+gpu NVIDIA GeForce RTX 3080 Ti
+timestamp, utilization.gpu [%], utilization.memory [%], memory.used [MiB]
+2026/03/08 01:32:12.025, 0 %, 4 %, 1994 MiB
+
+[STEP] compute_steps
+[INFO] computed_steps=A,B,C,DPRIME,E,F
+[INFO] steps_source=toggle
+[INFO] effective_skip_stepe=0
+
+[STEP] compute_derived_date_window
+[INFO] test_start_date=2022-01-03
+[INFO] data_start_date=2013-12-27
+[INFO] data_end_date=2022-04-10
+
+
+[STEP] append_error_tails
+timestamp=2026-03-08 01:32:16 +09:00
+[INFO] apex_run_id=gh22802780849_att1_sim_20260308_013215_f68a030
+---- python_env ----
+C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+Python 3.10.6
+C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+[INFO] console_log=C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\run_all_local_then_copy_console.log
+[WARN] console log not found
+[INFO] bootstrap_log=
+[WARN] bootstrap log not found
+[INFO] work_root=C:\work\apex_work\runs
+[INFO] latest_run_dir=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f
+[WARN] run_*.log not found under latest_run_dir\logs
+[STEP] package_diagnostics_to_onedrive
+[INFO] diag_script=C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f
+[PUBLISH] output_root=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f\output
+[WARN] publish issue: D' state CSV missing under output/stepDprime/<mode> or stepD_prime/<mode>.
+[WARN] publish issue: D' embeddings CSV missing under output/stepDprime/<mode>/embeddings or stepD_prime/<mode>/embeddings.
+[OK] package_diagnostics_to_onedrive
+[OK] diag_dir=C:\Users\becky\OneDrive\ApexTraderAI\diagnostics
+
+[STEP] resolve_latest_run_artifacts
+[INFO] work_root=C:\work\apex_work\runs
+[OK] resolve_latest_run_artifacts
+[OK] run_dir=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f
+[OK] run_id=gh22802780849_att1_sim_20260308_013215_f68a030
+
+
+[CSV_REPORT]
+- diag_report_index=https://github.com/toki866/ApexTraderAI/blob/diag-logs/reports/22802780849_1/sim/index.md
+- diag_report_path=reports/22802780849_1/sim/index.md
+- metrics_md=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.md
+- metrics_csv=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.csv
+- metrics_plots=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/plots
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f
+[PUBLISH] output_root=C:\work\apex_work\runs\gh22802585511_att1_sim_20260308_011950_3445e5f\output
+[PUBLISH] output_root_source=workflow_output
+
+## publish_diag_logs warnings
+[WARN] publish issue: no files matched target step/mode patterns.
+[WARN] publish issue: StepA files missing in diag publish output.
+[WARN] publish issue: StepB files missing in diag publish output.
+[WARN] publish issue: StepDPrime files missing in diag publish output.
+[WARN] publish issue: StepE files missing in diag publish output.
+[WARN] publish issue: StepF files missing in diag publish output.
