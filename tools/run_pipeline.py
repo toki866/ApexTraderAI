@@ -100,6 +100,17 @@ class _ConfigShim:
 
 
 
+def _try_set(obj: Any, attr: str, value: Any) -> bool:
+    """Best-effort setattr; returns True on success."""
+    if hasattr(obj, attr):
+        try:
+            setattr(obj, attr, value)
+            return True
+        except Exception:
+            return False
+    return False
+
+
 def _parse_int_list(v: Optional[str]) -> Optional[List[int]]:
     """Parse comma/space-separated ints like '1,5,10,20' or '1 5 10 20'."""
     if v is None:
@@ -139,13 +150,6 @@ def _apply_mamba_overrides_to_stepb_config(cfg: Any, mamba_lookback: Optional[in
 
     def _is_dc(obj: Any) -> bool:
         return hasattr(obj, '__dataclass_fields__')
-
-    def _try_set(obj: Any, name: str, value: Any) -> bool:
-        try:
-            setattr(obj, name, value)
-            return True
-        except Exception:
-            return False
 
     # Normalize values
     lb = int(mamba_lookback) if mamba_lookback is not None else None
@@ -1081,15 +1085,6 @@ def _apply_config_output_root(app_config: Any, output_root: Path) -> Any:
 
 def _enable_stepb_agents(cfg, enable_mamba: bool) -> None:
     """Best-effort enabling of StepB Mamba across differing config schemas."""
-    def _try_set(obj, attr: str, value):
-        if hasattr(obj, attr):
-            try:
-                setattr(obj, attr, value)
-                return True
-            except Exception:
-                return False
-        return False
-
     def _try_set_in_mapping(obj, key: str, value):
         try:
             if isinstance(obj, dict):

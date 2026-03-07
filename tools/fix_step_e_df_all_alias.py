@@ -82,7 +82,7 @@ def main() -> int:
     block = [l.rstrip("\n") for l in lines[start:end]]
 
     if _has_df_all_alias(block):
-        print(f"[fix] OK: df_all alias already present. No changes made.")
+        print("[fix] OK: df_all alias already present. No changes made.")
         return 0
 
     # Insert after def line and optional docstring

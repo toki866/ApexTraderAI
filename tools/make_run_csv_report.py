@@ -185,7 +185,7 @@ def main() -> int:
         for item in grouped[step]:
             index_lines.append(f"- `{item['csv']}`: [table]({item['table']})")
             if item["plot"]:
-                index_lines.append(f"  ")
+                index_lines.append("  ")
                 index_lines.append(f"  ![]({item['plot']})")
         index_lines.append("")
 

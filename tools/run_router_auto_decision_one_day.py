@@ -241,7 +241,7 @@ def _replay_until_date(
     df_router_log: pd.DataFrame,
     agent_ratio_by_agent: Dict[str, pd.Series],
     target_date: str,
-) -> Tuple[np.ndarray, RouterDecision, float, int]:
+) -> Tuple[np.ndarray, RouterDecision, float, int]:  # noqa: F821
     """Replay router decisions from the first date in router_log up to target_date.
 
     This reproduces BanditRouter's internal state (_last_action/_hold_counter) exactly,
@@ -259,7 +259,7 @@ def _replay_until_date(
     action_prev = 0
 
     last_x: Optional[np.ndarray] = None
-    last_dec: Optional[RouterDecision] = None
+    last_dec: Optional[RouterDecision] = None  # noqa: F821
     last_seed_pos = 0.0
     last_seed_action = 0
 
