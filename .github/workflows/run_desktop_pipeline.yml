@@ -681,17 +681,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          if (-not (Test-Path $rp)) {
-            $null = New-Item -Path $rp -ItemType File -Force
-          }
-          Add-Content $rp '[STEP] prepare_environment'
-          $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
+          $tempDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $tempDir -ItemType Directory -Force
+          $bootstrap = Join-Path $tempDir ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
           $null = New-Item -ItemType File -Path $bootstrap -Force
           "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
           function Write-Bootstrap([string]$m) {
             Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
             Write-Host $m
           }
+
+          if (-not (Test-Path $rp)) {
+            $null = New-Item -Path $rp -ItemType File -Force
+          }
+          Add-Content $rp '[STEP] prepare_environment'
 
           try {
             Write-Bootstrap "[PREPARE] status=run"
@@ -736,7 +740,8 @@ jobs:
             }
             function ConvertTo-BashSingleQuoted([string]$Value) {
               if ($null -eq $Value) { return "''" }
-              return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+              $escaped = $Value.Replace("'", "'`\"'`\"'")
+              return "'" + $escaped + "'"
             }
             function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
               if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
@@ -3256,17 +3261,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          if (-not (Test-Path $rp)) {
-            $null = New-Item -Path $rp -ItemType File -Force
-          }
-          Add-Content $rp '[STEP] prepare_environment'
-          $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
+          $tempDir = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $null = New-Item -Path $tempDir -ItemType Directory -Force
+          $bootstrap = Join-Path $tempDir ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
           $null = New-Item -ItemType File -Path $bootstrap -Force
           "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
           function Write-Bootstrap([string]$m) {
             Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
             Write-Host $m
           }
+
+          if (-not (Test-Path $rp)) {
+            $null = New-Item -Path $rp -ItemType File -Force
+          }
+          Add-Content $rp '[STEP] prepare_environment'
 
           try {
             Write-Bootstrap "[PREPARE] status=run"
@@ -3311,7 +3320,8 @@ jobs:
             }
             function ConvertTo-BashSingleQuoted([string]$Value) {
               if ($null -eq $Value) { return "''" }
-              return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+              $escaped = $Value.Replace("'", "'`\"'`\"'")
+              return "'" + $escaped + "'"
             }
             function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
               if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
