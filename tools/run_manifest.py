@@ -39,7 +39,7 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 )
 
 _MANIFEST_FILENAME = "run_manifest.json"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +213,9 @@ class RunManifest:
 
         # Validate schema and signature match
         if existing is not None:
+            if existing.get("schema_version") == 1:
+                # Migrate v1 → v2 in-place (non-destructive: only adds new fields)
+                existing = cls._migrate_v1_to_v2(existing)
             if existing.get("schema_version") != _SCHEMA_VERSION:
                 existing = None
             elif existing.get("signature_hash") != sig.stable_hash():
@@ -243,18 +246,39 @@ class RunManifest:
             "force_rebuild": force_rebuild,
             "requested_steps": list(sig.steps),
             "steps": {
-                "A":      {"status": "pending", "completed_at": None},
-                "B":      {"status": "pending", "completed_at": None},
-                "C":      {"status": "pending", "completed_at": None},
-                "DPRIME": {"status": "pending", "completed_at": None},
+                "A":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
+                "B":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
+                "C":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
+                "DPRIME": {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
                 "E": {
                     "status": "pending",
                     "completed_at": None,
-                    "agents": {a: {"status": "pending", "completed_at": None} for a in agent_list},
+                    "elapsed_sec": None,
+                    "audit_status": None,
+                    "agents": {
+                        a: {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None}
+                        for a in agent_list
+                    },
                 },
-                "F":      {"status": "pending", "completed_at": None},
+                "F":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
             },
         }
+
+    @classmethod
+    def _migrate_v1_to_v2(cls, data: dict) -> dict:
+        """Add v2 fields (elapsed_sec, audit_status) to a v1 manifest in-place."""
+        for step, info in data.get("steps", {}).items():
+            if not isinstance(info, dict):
+                continue
+            info.setdefault("elapsed_sec", None)
+            info.setdefault("audit_status", None)
+            # StepE agents
+            for _agent, ainfo in info.get("agents", {}).items():
+                if isinstance(ainfo, dict):
+                    ainfo.setdefault("elapsed_sec", None)
+                    ainfo.setdefault("audit_status", None)
+        data["schema_version"] = _SCHEMA_VERSION
+        return data
 
     # ------------------------------------------------------------------
     # Step status helpers
@@ -299,12 +323,47 @@ class RunManifest:
         self._data["updated_at"] = _utcnow_iso()
         self.save()
 
+    def mark_step_elapsed(self, step: str, elapsed_sec: float) -> None:
+        s = self._data["steps"].setdefault(step.upper(), {})
+        s["elapsed_sec"] = round(float(elapsed_sec), 3)
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+
+    def mark_step_audit(self, step: str, status: str) -> None:
+        """Set audit_status for a step. status should be 'PASS', 'FAIL', or 'SKIP'."""
+        s = self._data["steps"].setdefault(step.upper(), {})
+        s["audit_status"] = str(status)
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+
+    def mark_stepe_agent_elapsed(self, agent: str, elapsed_sec: float) -> None:
+        agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
+        agents.setdefault(agent, {})["elapsed_sec"] = round(float(elapsed_sec), 3)
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+
+    def mark_stepe_agent_audit(self, agent: str, status: str) -> None:
+        """Set audit_status for a single StepE agent. status: 'PASS' / 'FAIL'."""
+        agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
+        agents.setdefault(agent, {})["audit_status"] = str(status)
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+
+    def stepe_agent_audit_status(self, agent: str) -> Optional[str]:
+        """Return audit_status for agent, or None if not yet set."""
+        return self._agents_data().get(agent, {}).get("audit_status")
+
     def ensure_stepe_agents(self, all_agents: List[str]) -> None:
         """Ensure all_agents are represented in the manifest E.agents dict."""
         agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
         for a in all_agents:
             if a not in agents:
-                agents[a] = {"status": "pending", "completed_at": None}
+                agents[a] = {
+                    "status": "pending",
+                    "completed_at": None,
+                    "elapsed_sec": None,
+                    "audit_status": None,
+                }
         self.save()
 
     def pending_stepe_agents(self, all_agents: List[str]) -> List[str]:
