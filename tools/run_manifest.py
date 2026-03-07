@@ -244,6 +244,8 @@ class RunManifest:
             "updated_at": now,
             "reuse_enabled": reuse_enabled,
             "force_rebuild": force_rebuild,
+            "source_output_root": None,
+            "run_id": None,
             "requested_steps": list(sig.steps),
             "steps": {
                 "A":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
@@ -278,6 +280,8 @@ class RunManifest:
                     ainfo.setdefault("elapsed_sec", None)
                     ainfo.setdefault("audit_status", None)
         data["schema_version"] = _SCHEMA_VERSION
+        data.setdefault("source_output_root", None)
+        data.setdefault("run_id", None)
         return data
 
     # ------------------------------------------------------------------
@@ -352,6 +356,18 @@ class RunManifest:
     def stepe_agent_audit_status(self, agent: str) -> Optional[str]:
         """Return audit_status for agent, or None if not yet set."""
         return self._agents_data().get(agent, {}).get("audit_status")
+
+    def mark_source_output_root(self, path: str, run_id: Optional[str] = None) -> None:
+        """Record the output_root path used by this pipeline run.
+
+        When reuse is active, this is the prior run's output_root, not the new run_dir/output.
+        Useful for lineage tracing and diagnostics.
+        """
+        self._data["source_output_root"] = str(path) if path else None
+        if run_id is not None:
+            self._data["run_id"] = str(run_id)
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
 
     def ensure_stepe_agents(self, all_agents: List[str]) -> None:
         """Ensure all_agents are represented in the manifest E.agents dict."""

@@ -1077,6 +1077,16 @@ jobs:
             }
           }
 
+          # Also try to read output_root from console log ([OK] output_root= line written by BAT).
+          # This handles reuse runs where the actual artifacts are in a prior run's output dir.
+          $outputRootFromLog = ''
+          if (Test-Path $consoleLog) {
+            $orLine = Select-String -Path $consoleLog -Pattern '^\[OK\] output_root=' | Select-Object -Last 1
+            if ($orLine) {
+              $outputRootFromLog = ($orLine.Line -replace '^\[OK\] output_root=', '').Trim()
+            }
+          }
+
           if ($runId) {
             "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host "Resolved run_id=$runId"
@@ -1089,7 +1099,13 @@ jobs:
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
             $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-            $outputRoot = Join-Path $runDir.FullName 'output'
+            if ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+              $outputRoot = $outputRootFromLog
+              Write-Host "Resolved output_root from console log (reuse): $outputRoot"
+            } else {
+              $outputRoot = Join-Path $runDir.FullName 'output'
+              Write-Host "Resolved output_root from run_dir: $outputRoot"
+            }
             "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -3298,6 +3314,16 @@ jobs:
             }
           }
 
+          # Also try to read output_root from console log ([OK] output_root= line written by BAT).
+          # This handles reuse runs where the actual artifacts are in a prior run's output dir.
+          $outputRootFromLog = ''
+          if (Test-Path $consoleLog) {
+            $orLine = Select-String -Path $consoleLog -Pattern '^\[OK\] output_root=' | Select-Object -Last 1
+            if ($orLine) {
+              $outputRootFromLog = ($orLine.Line -replace '^\[OK\] output_root=', '').Trim()
+            }
+          }
+
           if ($runId) {
             "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             Write-Host "Resolved run_id=$runId"
@@ -3310,7 +3336,13 @@ jobs:
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
             $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-            $outputRoot = Join-Path $runDir.FullName 'output'
+            if ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+              $outputRoot = $outputRootFromLog
+              Write-Host "Resolved output_root from console log (reuse): $outputRoot"
+            } else {
+              $outputRoot = Join-Path $runDir.FullName 'output'
+              Write-Host "Resolved output_root from run_dir: $outputRoot"
+            }
             "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "run_log_path=$runLogPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append

@@ -192,12 +192,16 @@ if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!
       set "WSL_OUTPUT_DIR=!WSL_REUSE_FOUND!"
+      for /f "delims=" %%W in ('wsl.exe %WSL_DIST_FLAG% wslpath -w "!WSL_REUSE_FOUND!" 2^>nul') do set "OUTPUT_DIR=%%W"
+      echo [REUSE] source_output_root=!WSL_REUSE_FOUND!>> "%LOG_FILE%"
+      echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!>> "%LOG_FILE%"
+      echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!
     ) else (
       echo [REUSE] No matching prior run found; using fresh output_root>> "%LOG_FILE%"
     )
   )
 )
-echo [RUN] effective_wsl_output_dir=%WSL_OUTPUT_DIR%>> "%LOG_FILE%"
+echo [RUN] effective_wsl_output_dir=!WSL_OUTPUT_DIR!>> "%LOG_FILE%"
 
 rem --- prepare_data via WSL ---
 set "LAST_CMD=wsl prepare_data"
@@ -372,6 +376,7 @@ if exist "%SNAPSHOT_ZIP%" attrib +R "%SNAPSHOT_ZIP%" >nul 2>&1
 ) >> "%LOG_FILE%" 2>&1
 
 echo [OK] run_id=%RUN_ID%
+echo [OK] output_root=!OUTPUT_DIR!
 echo [OK] local=%RUN_DIR%
 echo [OK] onedrive=%ONE_DEST%
 popd >nul

@@ -1468,6 +1468,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
+    print(f"[PIPELINE] resolved_output_root={resolved_output_root}")
+    print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
+    print(f"[PIPELINE] cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}")
 
     # --- Run-reuse manifest (initialised early; steps update it as they complete) ---
     _run_manifest = None
@@ -1504,6 +1507,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"reuse={reuse_output} force_rebuild={force_rebuild} "
                 f"output_root={resolved_output_root}"
             )
+            print(f"[REUSE] source_output_root={resolved_output_root}")
+            try:
+                _run_manifest.mark_source_output_root(str(resolved_output_root))
+            except Exception:
+                pass
         except Exception as _e:
             print(f"[reuse] WARNING: failed to initialise run manifest: {type(_e).__name__}: {_e}", file=sys.stderr)
             _run_manifest = None
@@ -1757,7 +1765,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _miss_a = validate_step_a(Path(resolved_output_root), symbol, resolved_mode)
                         if _miss_a:
                             print(f"[StepA] WARN contract: missing {_miss_a}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("A", "SKIP")
+                        _run_manifest.mark_step_audit("A", "FAIL" if _miss_a else "PASS")
                     print("[StepA] done")
 
             if "B" in steps:
@@ -1787,7 +1795,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
                         if _miss_b:
                             print(f"[StepB] WARN contract: missing {_miss_b}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("B", "SKIP")
+                        _run_manifest.mark_step_audit("B", "FAIL" if _miss_b else "PASS")
                     print("[StepB] done")
 
             if "C" in steps:
@@ -1809,7 +1817,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _miss_c = validate_step_c(Path(resolved_output_root), symbol, resolved_mode)
                         if _miss_c:
                             print(f"[StepC] WARN contract: missing {_miss_c}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("C", "SKIP")
+                        _run_manifest.mark_step_audit("C", "FAIL" if _miss_c else "PASS")
                     print("[StepC] done")
 
             if "DPRIME" in steps:
@@ -1831,7 +1839,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("DPRIME", "complete")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("DPRIME", _elapsed_dp)
-                        _run_manifest.mark_step_audit("DPRIME", "SKIP")
+                        _miss_dp2 = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _OFFICIAL_STEPE_AGENTS)
+                        _run_manifest.mark_step_audit("DPRIME", "FAIL" if _miss_dp2 else "PASS")
                     print("[StepDPrime] done")
 
             for step in ("D", "E", "F"):
