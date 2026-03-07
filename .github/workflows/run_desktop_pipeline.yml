@@ -569,6 +569,14 @@ jobs:
             $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
           }
 
+          if ($computedSteps.Count -eq 0) {
+            Write-Warning '[WARN] computed_steps was empty. Falling back to standard steps.'
+            $computedSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
+            if ($effectiveSkipStepE) {
+              $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
+            }
+          }
+
           $computedStepsString = ($computedSteps -join ',')
           $effectiveSkipStepEStr = if ($effectiveSkipStepE) { '1' } else { '0' }
 
@@ -750,6 +758,24 @@ jobs:
             Add-Content $rp "[OK] resolve_reuse_source reuse=false"
           }
 
+      - name: Validate pipeline launch context
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @('EFFECTIVE_WIN_OUTPUT','EFFECTIVE_WSL_OUTPUT','RUN_LOG_PATH','RUN_CONSOLE_LOG','WSL_REPO_ROOT','WSL_DATA_DIR')
+          $missing = @()
+          foreach ($name in $required) {
+            if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue) -or [string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              $missing += $name
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing required env vars for pipeline launch: {0}" -f ($missing -join ', '))
+            exit 1
+          }
+          Write-Host ("[PIPELINE] launch_context_ready output={0}" -f $env:EFFECTIVE_WIN_OUTPUT)
+
       - name: StepA
         id: step_a
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -762,8 +788,26 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
+          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
+          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
+          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
+          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
+          $pipelineStart = "[PIPELINE] start run_id=$env:APEX_RUN_ID mode=$env:MODE"
+          $stepStart = "[STEPA] start run_id=$env:APEX_RUN_ID"
+          foreach ($line in @($pipelineStart, $stepStart)) {
+            Write-Host $line
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $line
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $line
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
-          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
+          if ('A' -notin $stepList) {
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested"
+            Write-Host $skipLine
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
+            exit 0
+          }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -775,11 +819,6 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=A status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --run-id '$env:APEX_RUN_ID'"
-          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
-          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
-          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
-          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
-          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
           $launchLine = "[PIPELINE_LAUNCH] StepA command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           Write-Host $launchLine
           Add-Content -Path $consoleLog -Encoding UTF8 -Value $launchLine
@@ -1126,7 +1165,7 @@ jobs:
           exit 0
 
       - name: Package diagnostics to OneDrive (always)
-        if: always()
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.compute_steps.outputs.computed_steps != '' }}
         id: package_diag
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -3050,6 +3089,14 @@ jobs:
             $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
           }
 
+          if ($computedSteps.Count -eq 0) {
+            Write-Warning '[WARN] computed_steps was empty. Falling back to standard steps.'
+            $computedSteps = @('A', 'B', 'C', 'DPRIME', 'E', 'F')
+            if ($effectiveSkipStepE) {
+              $computedSteps = $computedSteps | Where-Object { $_ -ne 'E' }
+            }
+          }
+
           $computedStepsString = ($computedSteps -join ',')
           $effectiveSkipStepEStr = if ($effectiveSkipStepE) { '1' } else { '0' }
 
@@ -3231,6 +3278,24 @@ jobs:
             Add-Content $rp "[OK] resolve_reuse_source reuse=false"
           }
 
+      - name: Validate pipeline launch context
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @('EFFECTIVE_WIN_OUTPUT','EFFECTIVE_WSL_OUTPUT','RUN_LOG_PATH','RUN_CONSOLE_LOG','WSL_REPO_ROOT','WSL_DATA_DIR')
+          $missing = @()
+          foreach ($name in $required) {
+            if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue) -or [string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              $missing += $name
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing required env vars for pipeline launch: {0}" -f ($missing -join ', '))
+            exit 1
+          }
+          Write-Host ("[PIPELINE] launch_context_ready output={0}" -f $env:EFFECTIVE_WIN_OUTPUT)
+
       - name: StepA
         id: step_a
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -3243,8 +3308,26 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
+          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
+          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
+          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
+          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
+          $pipelineStart = "[PIPELINE] start run_id=$env:APEX_RUN_ID mode=$env:MODE"
+          $stepStart = "[STEPA] start run_id=$env:APEX_RUN_ID"
+          foreach ($line in @($pipelineStart, $stepStart)) {
+            Write-Host $line
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $line
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $line
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
-          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
+          if ('A' -notin $stepList) {
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested"
+            Write-Host $skipLine
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
+            exit 0
+          }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -3256,11 +3339,6 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=A status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --run-id '$env:APEX_RUN_ID'"
-          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
-          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
-          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
-          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
-          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
           $launchLine = "[PIPELINE_LAUNCH] StepA command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           Write-Host $launchLine
           Add-Content -Path $consoleLog -Encoding UTF8 -Value $launchLine
@@ -3607,7 +3685,7 @@ jobs:
           exit 0
 
       - name: Package diagnostics to OneDrive (always)
-        if: always()
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.compute_steps.outputs.computed_steps != '' }}
         id: package_diag
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
