@@ -279,9 +279,29 @@ def _env_get(*keys: str) -> Optional[str]:
     return None
 
 
+
 def _repo_root() -> Path:
     return get_repo_root()
 
+
+def _ensure_run_log_file(run_id: str, output_root: Path) -> Optional[Path]:
+    """Create run_<run_id>.log under sibling logs/ directory (best-effort)."""
+    try:
+        run_id = (run_id or '').strip()
+        if not run_id:
+            return None
+        run_dir = output_root.parent
+        log_dir = run_dir / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run_log = log_dir / f'run_{run_id}.log'
+        run_log.touch(exist_ok=True)
+        with run_log.open('a', encoding='utf-8') as fh:
+            fh.write(f"[PIPELINE] run_log_initialized run_id={run_id}\n")
+            fh.write(f"[PIPELINE] output_root={output_root}\n")
+        return run_log
+    except Exception as e:
+        print(f"[PIPELINE] WARN run log initialization failed: {type(e).__name__}: {e}")
+        return None
 
 
 
@@ -1553,6 +1573,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"cfg_output_root={getattr(app_config, 'output_root', None)} "
         f"cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}"
     )
+
+    run_log_path = _ensure_run_log_file(run_id=run_id, output_root=resolved_output_root)
+    if run_log_path is not None:
+        print(f"[PIPELINE] run_log_path={run_log_path}")
 
     resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
     app_config = _apply_config_data_dir(app_config, resolved_data_root)

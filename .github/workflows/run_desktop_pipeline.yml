@@ -774,9 +774,22 @@ jobs:
           Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=A status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
-          $rc = $LASTEXITCODE; Write-Host "[StepA] rc=$rc"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --run-id '$env:APEX_RUN_ID'"
+          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
+          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
+          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
+          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
+          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
+          $launchLine = "[PIPELINE_LAUNCH] StepA command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+          Write-Host $launchLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $launchLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $launchLine
+          & wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $consoleLog -Append | Tee-Object -FilePath $runLogPath -Append | Write-Host
+          $rc = $LASTEXITCODE
+          $rcLine = "[StepA] rc=$rc"
+          Write-Host $rcLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $rcLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $rcLine
           if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_a'
 
@@ -3242,9 +3255,22 @@ jobs:
           Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=A status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
-          $rc = $LASTEXITCODE; Write-Host "[StepA] rc=$rc"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --run-id '$env:APEX_RUN_ID'"
+          $consoleLog = if ($env:RUN_CONSOLE_LOG) { $env:RUN_CONSOLE_LOG } else { Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log' }
+          $runLogPath = if ($env:RUN_LOG_PATH) { $env:RUN_LOG_PATH } else { Join-Path (Join-Path $env:WIN_RUN_DIR 'logs') ("run_{0}.log" -f $env:APEX_RUN_ID) }
+          $null = New-Item -Path (Split-Path -Parent $runLogPath) -ItemType Directory -Force
+          if (!(Test-Path $consoleLog)) { $null = New-Item -ItemType File -Path $consoleLog -Force }
+          if (!(Test-Path $runLogPath)) { $null = New-Item -ItemType File -Path $runLogPath -Force }
+          $launchLine = "[PIPELINE_LAUNCH] StepA command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+          Write-Host $launchLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $launchLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $launchLine
+          & wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $consoleLog -Append | Tee-Object -FilePath $runLogPath -Append | Write-Host
+          $rc = $LASTEXITCODE
+          $rcLine = "[StepA] rc=$rc"
+          Write-Host $rcLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $rcLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $rcLine
           if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_a'
 
