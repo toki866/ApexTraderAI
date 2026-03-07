@@ -1746,6 +1746,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("A"):
                     print(f"[StepA] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("A", "reuse")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("A", 0.0)
                 else:
                     stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
                     print(f"[StepA] start symbols={','.join(stepa_symbols)}")
@@ -1772,6 +1774,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("B"):
                     print(f"[StepB] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("B", "reuse")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("B", 0.0)
                 else:
                     print("[StepB] start")
                     mamba_horizons_list = _parse_int_list(args.mamba_horizons)
@@ -1802,6 +1806,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("C"):
                     print(f"[StepC] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("C", "reuse")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("C", 0.0)
                 else:
                     print("[StepC] start")
                     _mark_step("C", "running")
@@ -1824,6 +1830,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("DPRIME"):
                     print(f"[StepDPrime] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("DPRIME", "reuse")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("DPRIME", 0.0)
                 else:
                     print("[StepDPrime] start")
                     _mark_step("DPRIME", "running")
@@ -1871,10 +1879,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _pending_agents = [a for a in _all_agents if a not in _done_agents]
 
                         if _done_agents:
+                            for a in _done_agents:
+                                _run_manifest.mark_stepe_agent(a, "reuse")
+                                _run_manifest.mark_stepe_agent_elapsed(a, 0.0)
                             print(f"[StepE] status=partial_reuse reused={','.join(_done_agents)}")
                         if not _pending_agents:
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                             _mark_step("E", "reuse")
+                            _run_manifest.mark_step_elapsed("E", 0.0)
                             results["stepE_result"] = {"reused": True, "agents": _done_agents}
                             continue
 
@@ -1932,6 +1944,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if step == "F" and _can_reuse_step("F"):
                     print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("F", "reuse")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("F", 0.0)
                     results["stepF_result"] = {"reused": True}
                     continue
 
@@ -2002,6 +2016,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     fail_on_audit=bool(args.fail_on_audit),
                 )
 
+        if _run_manifest is not None and steps:
+            _final_step = steps[-1]
+            _final_status = _run_manifest.step_status(_final_step)
+            if _final_status not in ("complete", "reuse"):
+                raise RuntimeError(f"final step incomplete: step={_final_step} status={_final_status}")
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
         return 0

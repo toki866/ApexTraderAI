@@ -682,45 +682,62 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] prepare_environment'
-          Write-Host "=== Prepare environment ==="
-          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
-          # Windows paths for this run
-          $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
-          $winDataDir   = Join-Path $winRunDir 'data'
-          $winOutputDir = Join-Path $winRunDir 'output'
-          $winLogDir    = Join-Path $winRunDir 'logs'
-          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
-          "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          # WSL paths
-          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
-          "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "[PREPARE] win_run_dir=$winRunDir"
-          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
-          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
-          # pip install
-          & where.exe python 2>&1 | Write-Host
-          python --version 2>&1 | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
-            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
+          $null = New-Item -ItemType File -Path $bootstrap -Force
+          "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          function Write-Bootstrap([string]$m) {
+            Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
+            Write-Host $m
           }
-          # prepare_data via WSL
-          $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
-            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+
+          try {
+            Write-Bootstrap "[PREPARE] status=run"
+            Write-Bootstrap "[PREPARE] env=mode=$env:MODE symbols=$env:SYMBOLS"
+            Write-Bootstrap "[PREPARE] repo_root=$env:REPO_ROOT"
+            Write-Bootstrap "[PREPARE] work_root=$env:WORK_ROOT"
+            Write-Bootstrap "[PREPARE] run_id=$env:APEX_RUN_ID"
+            & where.exe python 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            python --version 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+
+            $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
+            $winDataDir   = Join-Path $winRunDir 'data'
+            $winOutputDir = Join-Path $winRunDir 'output'
+            $winLogDir    = Join-Path $winRunDir 'logs'
+            New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+            "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
+            $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
+            $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+            "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            Write-Bootstrap "[PREPARE] selected_python=python"
+            Write-Bootstrap "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
+            Write-Bootstrap "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
+            Write-Bootstrap "[PREPARE] wsl_repo_root=$wslRepoRoot"
+            Write-Bootstrap "[PREPARE] wsl_output_dir=$wslOutputDir"
+
+            python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
+
+            $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "prepare_data failed rc=$LASTEXITCODE" }
+
+            Add-Content $rp '[OK] prepare_environment'
+            Write-Bootstrap "[PREPARE] status=success"
+          } catch {
+            Write-Bootstrap "[PREPARE] status=failed"
+            Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
+            Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
+            throw
           }
-          Add-Content $rp '[OK] prepare_environment'
 
       - name: Resolve reuse source
         id: resolve_reuse
@@ -749,7 +766,7 @@ jobs:
           $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
           $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
-          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
+          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
           $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
           $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
           if ($wslReuse) {
@@ -757,10 +774,15 @@ jobs:
             $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
             $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
             if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+              $wslSourceRunDir = (wsl.exe -d $env:WSL_DISTRO -- bash -lc "dirname '$wslReuse'").Trim()
+              $winSourceRunDir = if ($wslSourceRunDir) { (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslSourceRunDir").Trim() } else { "" }
+              Write-Host "[REUSE] source_run_dir=$wslSourceRunDir"
               Write-Host "[REUSE] source_output_root=$wslReuse"
+              Write-Host "[RUN] effective_wsl_output_dir=$wslReuse"
               Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
               "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
               "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "REUSE_SOURCE_RUN_DIR_WIN=$winSourceRunDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
               "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
               Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
             } else {
@@ -916,7 +938,7 @@ jobs:
               $m = Get-Content $mPath -Raw | ConvertFrom-Json
               $stepStatus = $m.steps.E.status
               if ($stepStatus -in @('complete','reuse')) {
-                $agentStatuses = @($m.stepe_agents.PSObject.Properties.Value | ForEach-Object { $_.status })
+                $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
                 if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
                   $status = 'reuse'
                 } else {
@@ -931,7 +953,22 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
           wsl.exe -d $env:WSL_DISTRO -- bash -c $c
           $rc = $LASTEXITCODE; Write-Host "[StepE] rc=$rc"
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_e rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) { Add-Content $rp "[STEP_STATUS] step=E status=failed rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          $mPathAfter = Join-Path $outRoot 'run_manifest.json'
+          if (Test-Path $mPathAfter) {
+            try {
+              $mAfter = Get-Content $mPathAfter -Raw | ConvertFrom-Json
+              $agentSummary = @()
+              foreach ($prop in $mAfter.steps.E.agents.PSObject.Properties) {
+                $agentSummary += "$($prop.Name)=$($prop.Value.status)"
+              }
+              if ($agentSummary.Count -gt 0) {
+                Write-Host "[StepE] agents_status=$($agentSummary -join ',')"
+              }
+            } catch {
+              Write-Warning "[StepE] failed to render agent summary: $($_.Exception.Message)"
+            }
+          }
           Add-Content $rp '[OK] step_e'
 
       - name: StepF
@@ -978,12 +1015,33 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
           if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
           if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
+          if ($skipStepE) { $stepList = @($stepList | Where-Object { $_ -ne 'E' }) }
+          $finalStep = if ($stepList.Count -gt 0) { $stepList[-1] } else { '' }
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          $finalStatus = ''
+          if ($finalStep -and (Test-Path $mPath)) {
+            try {
+              $m = Get-Content $mPath -Raw | ConvertFrom-Json
+              $finalStatus = $m.steps.$finalStep.status
+            } catch {
+              $finalStatus = ''
+            }
+          }
+          if (-not $finalStep -or $finalStatus -notin @('complete','reuse')) {
+            Add-Content $rp ("[NG] finalize final_step_incomplete step=$finalStep status=$finalStatus")
+            Write-Error "final step incomplete; step=$finalStep status=$finalStatus"
+            exit 1
+          }
           # DONE.txt → correct artifact dir
           @("run_id=$env:APEX_RUN_ID",
             "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
             "commit=$env:GITHUB_SHA",
-            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
-          Write-Host "[OK] DONE.txt written to $outRoot"
+            "mode=$env:MODE",
+            "final_step=$finalStep",
+            "final_step_status=$finalStatus") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
+          Write-Host "[OK] DONE.txt written to $outRoot final_step=$finalStep status=$finalStatus"
           Write-Host "[OK] run_id=$env:APEX_RUN_ID"
           Write-Host "[OK] output_root=$outRoot"
           # robocopy to OneDrive
@@ -1054,6 +1112,16 @@ jobs:
             (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
           } else {
             Add-Content $report "[WARN] console log not found"
+          }
+
+          # bootstrap prepare log tail
+          $bootstrapLog = $env:BOOTSTRAP_LOG
+          Add-Content $report ("[INFO] bootstrap_log={0}" -f $bootstrapLog)
+          if ($bootstrapLog -and (Test-Path $bootstrapLog)) {
+            Add-Content $report "---- bootstrap_prepare_tail (last 250 lines) ----"
+            (Get-Content $bootstrapLog -Tail 250 -ErrorAction SilentlyContinue) | Add-Content $report
+          } else {
+            Add-Content $report "[WARN] bootstrap log not found"
           }
 
           # run_*.log tail (best effort)
@@ -3126,45 +3194,62 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] prepare_environment'
-          Write-Host "=== Prepare environment ==="
-          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
-          # Windows paths for this run
-          $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
-          $winDataDir   = Join-Path $winRunDir 'data'
-          $winOutputDir = Join-Path $winRunDir 'output'
-          $winLogDir    = Join-Path $winRunDir 'logs'
-          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
-          "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          # WSL paths
-          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
-          "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "[PREPARE] win_run_dir=$winRunDir"
-          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
-          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
-          # pip install
-          & where.exe python 2>&1 | Write-Host
-          python --version 2>&1 | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
-            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
+          $null = New-Item -ItemType File -Path $bootstrap -Force
+          "BOOTSTRAP_LOG=$bootstrap" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          function Write-Bootstrap([string]$m) {
+            Add-Content -Path $bootstrap -Encoding UTF8 -Value $m
+            Write-Host $m
           }
-          # prepare_data via WSL
-          $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
-            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+
+          try {
+            Write-Bootstrap "[PREPARE] status=run"
+            Write-Bootstrap "[PREPARE] env=mode=$env:MODE symbols=$env:SYMBOLS"
+            Write-Bootstrap "[PREPARE] repo_root=$env:REPO_ROOT"
+            Write-Bootstrap "[PREPARE] work_root=$env:WORK_ROOT"
+            Write-Bootstrap "[PREPARE] run_id=$env:APEX_RUN_ID"
+            & where.exe python 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            python --version 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+
+            $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
+            $winDataDir   = Join-Path $winRunDir 'data'
+            $winOutputDir = Join-Path $winRunDir 'output'
+            $winLogDir    = Join-Path $winRunDir 'logs'
+            New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+            "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
+            $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
+            $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+            "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            Write-Bootstrap "[PREPARE] selected_python=python"
+            Write-Bootstrap "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
+            Write-Bootstrap "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
+            Write-Bootstrap "[PREPARE] wsl_repo_root=$wslRepoRoot"
+            Write-Bootstrap "[PREPARE] wsl_output_dir=$wslOutputDir"
+
+            python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
+
+            $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "prepare_data failed rc=$LASTEXITCODE" }
+
+            Add-Content $rp '[OK] prepare_environment'
+            Write-Bootstrap "[PREPARE] status=success"
+          } catch {
+            Write-Bootstrap "[PREPARE] status=failed"
+            Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
+            Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
+            throw
           }
-          Add-Content $rp '[OK] prepare_environment'
 
       - name: Resolve reuse source
         id: resolve_reuse
@@ -3193,7 +3278,7 @@ jobs:
           $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
           $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
-          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
+          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
           $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
           $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
           if ($wslReuse) {
@@ -3201,10 +3286,15 @@ jobs:
             $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
             $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
             if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+              $wslSourceRunDir = (wsl.exe -d $env:WSL_DISTRO -- bash -lc "dirname '$wslReuse'").Trim()
+              $winSourceRunDir = if ($wslSourceRunDir) { (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslSourceRunDir").Trim() } else { "" }
+              Write-Host "[REUSE] source_run_dir=$wslSourceRunDir"
               Write-Host "[REUSE] source_output_root=$wslReuse"
+              Write-Host "[RUN] effective_wsl_output_dir=$wslReuse"
               Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
               "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
               "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "REUSE_SOURCE_RUN_DIR_WIN=$winSourceRunDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
               "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
               Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
             } else {
@@ -3360,7 +3450,7 @@ jobs:
               $m = Get-Content $mPath -Raw | ConvertFrom-Json
               $stepStatus = $m.steps.E.status
               if ($stepStatus -in @('complete','reuse')) {
-                $agentStatuses = @($m.stepe_agents.PSObject.Properties.Value | ForEach-Object { $_.status })
+                $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
                 if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
                   $status = 'reuse'
                 } else {
@@ -3375,7 +3465,22 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
           wsl.exe -d $env:WSL_DISTRO -- bash -c $c
           $rc = $LASTEXITCODE; Write-Host "[StepE] rc=$rc"
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_e rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) { Add-Content $rp "[STEP_STATUS] step=E status=failed rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          $mPathAfter = Join-Path $outRoot 'run_manifest.json'
+          if (Test-Path $mPathAfter) {
+            try {
+              $mAfter = Get-Content $mPathAfter -Raw | ConvertFrom-Json
+              $agentSummary = @()
+              foreach ($prop in $mAfter.steps.E.agents.PSObject.Properties) {
+                $agentSummary += "$($prop.Name)=$($prop.Value.status)"
+              }
+              if ($agentSummary.Count -gt 0) {
+                Write-Host "[StepE] agents_status=$($agentSummary -join ',')"
+              }
+            } catch {
+              Write-Warning "[StepE] failed to render agent summary: $($_.Exception.Message)"
+            }
+          }
           Add-Content $rp '[OK] step_e'
 
       - name: StepF
@@ -3422,12 +3527,33 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
           if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
           if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
+          if ($skipStepE) { $stepList = @($stepList | Where-Object { $_ -ne 'E' }) }
+          $finalStep = if ($stepList.Count -gt 0) { $stepList[-1] } else { '' }
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          $finalStatus = ''
+          if ($finalStep -and (Test-Path $mPath)) {
+            try {
+              $m = Get-Content $mPath -Raw | ConvertFrom-Json
+              $finalStatus = $m.steps.$finalStep.status
+            } catch {
+              $finalStatus = ''
+            }
+          }
+          if (-not $finalStep -or $finalStatus -notin @('complete','reuse')) {
+            Add-Content $rp ("[NG] finalize final_step_incomplete step=$finalStep status=$finalStatus")
+            Write-Error "final step incomplete; step=$finalStep status=$finalStatus"
+            exit 1
+          }
           # DONE.txt → correct artifact dir
           @("run_id=$env:APEX_RUN_ID",
             "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
             "commit=$env:GITHUB_SHA",
-            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
-          Write-Host "[OK] DONE.txt written to $outRoot"
+            "mode=$env:MODE",
+            "final_step=$finalStep",
+            "final_step_status=$finalStatus") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
+          Write-Host "[OK] DONE.txt written to $outRoot final_step=$finalStep status=$finalStatus"
           Write-Host "[OK] run_id=$env:APEX_RUN_ID"
           Write-Host "[OK] output_root=$outRoot"
           # robocopy to OneDrive
@@ -3498,6 +3624,16 @@ jobs:
             (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
           } else {
             Add-Content $report "[WARN] console log not found"
+          }
+
+          # bootstrap prepare log tail
+          $bootstrapLog = $env:BOOTSTRAP_LOG
+          Add-Content $report ("[INFO] bootstrap_log={0}" -f $bootstrapLog)
+          if ($bootstrapLog -and (Test-Path $bootstrapLog)) {
+            Add-Content $report "---- bootstrap_prepare_tail (last 250 lines) ----"
+            (Get-Content $bootstrapLog -Tail 250 -ErrorAction SilentlyContinue) | Add-Content $report
+          } else {
+            Add-Content $report "[WARN] bootstrap log not found"
           }
 
           # run_*.log tail (best effort)
