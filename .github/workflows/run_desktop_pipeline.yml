@@ -681,6 +681,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (-not (Test-Path $rp)) {
+            $null = New-Item -Path $rp -ItemType File -Force
+          }
           Add-Content $rp '[STEP] prepare_environment'
           $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
           $null = New-Item -ItemType File -Path $bootstrap -Force
@@ -731,14 +734,22 @@ jobs:
                 StdErrRaw = $stderrRaw
               }
             }
-            function Resolve-WslPath([string]$WinPath, [string]$Label) {
-              if ([string]::IsNullOrWhiteSpace($WinPath)) {
+            function ConvertTo-BashSingleQuoted([string]$Value) {
+              if ($null -eq $Value) { return "''" }
+              return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+            }
+            function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
+              if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
                 throw "[$Label] Windows path is null or empty"
               }
-              $capture = Invoke-WslCapture -WslArgs @('-d', $env:WSL_DISTRO, 'wslpath', '-u', $WinPath) -Label $Label
+              $quotedPath = ConvertTo-BashSingleQuoted -Value $WindowsPath
+              $bashCommand = "wslpath -u -- $quotedPath"
+              $wslArgs = @('-d', $env:WSL_DISTRO, '--', 'bash', '-lc', $bashCommand)
+              $capture = Invoke-WslCapture -WslArgs $wslArgs -Label $Label
               Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
-              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WinPath")
+              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WindowsPath")
               Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
+              Write-PrepareLog ("[PREPARE] wsl_rc($Label)=$($capture.ExitCode)")
               Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
               Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
               if ($capture.ExitCode -ne 0) {
@@ -757,9 +768,9 @@ jobs:
             if (-not (Test-Path $env:REPO_ROOT)) {
               throw "REPO_ROOT does not exist: $env:REPO_ROOT"
             }
-            $wslRepoRoot  = Resolve-WslPath -WinPath $env:REPO_ROOT -Label 'repo_root'
-            $wslDataDir   = Resolve-WslPath -WinPath $winDataDir -Label 'data_dir'
-            $wslOutputDir = Resolve-WslPath -WinPath $winOutputDir -Label 'output_dir'
+            $wslRepoRoot  = Resolve-WslPathStrict -Label 'repo_root' -WindowsPath $env:REPO_ROOT
+            $wslDataDir   = Resolve-WslPathStrict -Label 'data_dir' -WindowsPath $winDataDir
+            $wslOutputDir = Resolve-WslPathStrict -Label 'output_dir' -WindowsPath $winOutputDir
             "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -3245,6 +3256,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          if (-not (Test-Path $rp)) {
+            $null = New-Item -Path $rp -ItemType File -Force
+          }
           Add-Content $rp '[STEP] prepare_environment'
           $bootstrap = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'temp') ("bootstrap_prepare_{0}.log" -f $env:APEX_RUN_ID)
           $null = New-Item -ItemType File -Path $bootstrap -Force
@@ -3295,14 +3309,22 @@ jobs:
                 StdErrRaw = $stderrRaw
               }
             }
-            function Resolve-WslPath([string]$WinPath, [string]$Label) {
-              if ([string]::IsNullOrWhiteSpace($WinPath)) {
+            function ConvertTo-BashSingleQuoted([string]$Value) {
+              if ($null -eq $Value) { return "''" }
+              return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+            }
+            function Resolve-WslPathStrict([string]$Label, [string]$WindowsPath) {
+              if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
                 throw "[$Label] Windows path is null or empty"
               }
-              $capture = Invoke-WslCapture -WslArgs @('-d', $env:WSL_DISTRO, 'wslpath', '-u', $WinPath) -Label $Label
+              $quotedPath = ConvertTo-BashSingleQuoted -Value $WindowsPath
+              $bashCommand = "wslpath -u -- $quotedPath"
+              $wslArgs = @('-d', $env:WSL_DISTRO, '--', 'bash', '-lc', $bashCommand)
+              $capture = Invoke-WslCapture -WslArgs $wslArgs -Label $Label
               Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
-              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WinPath")
+              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WindowsPath")
               Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
+              Write-PrepareLog ("[PREPARE] wsl_rc($Label)=$($capture.ExitCode)")
               Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
               Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
               if ($capture.ExitCode -ne 0) {
@@ -3321,9 +3343,9 @@ jobs:
             if (-not (Test-Path $env:REPO_ROOT)) {
               throw "REPO_ROOT does not exist: $env:REPO_ROOT"
             }
-            $wslRepoRoot  = Resolve-WslPath -WinPath $env:REPO_ROOT -Label 'repo_root'
-            $wslDataDir   = Resolve-WslPath -WinPath $winDataDir -Label 'data_dir'
-            $wslOutputDir = Resolve-WslPath -WinPath $winOutputDir -Label 'output_dir'
+            $wslRepoRoot  = Resolve-WslPathStrict -Label 'repo_root' -WindowsPath $env:REPO_ROOT
+            $wslDataDir   = Resolve-WslPathStrict -Label 'data_dir' -WindowsPath $winDataDir
+            $wslOutputDir = Resolve-WslPathStrict -Label 'output_dir' -WindowsPath $winOutputDir
             "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
