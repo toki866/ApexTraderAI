@@ -709,18 +709,66 @@ jobs:
             "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-            $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-            $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-            $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+            $prepareLog = Join-Path $winLogDir 'prepare_environment.log'
+            $null = New-Item -ItemType File -Path $prepareLog -Force
+            "PREPARE_LOG=$prepareLog"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            function Write-PrepareLog([string]$m) {
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value $m
+              Write-Bootstrap $m
+            }
+            function Invoke-WslCapture([string[]]$WslArgs, [string]$Label) {
+              $stdoutPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stdout.log" -f $env:APEX_RUN_ID, $Label)
+              $stderrPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stderr.log" -f $env:APEX_RUN_ID, $Label)
+              if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force }
+              if (Test-Path $stderrPath) { Remove-Item $stderrPath -Force }
+              $proc = Start-Process -FilePath 'wsl.exe' -ArgumentList $WslArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+              $stdoutRaw = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
+              $stderrRaw = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
+              return [pscustomobject]@{
+                Command = ('wsl.exe ' + ($WslArgs -join ' '))
+                ExitCode = $proc.ExitCode
+                StdOutRaw = $stdoutRaw
+                StdErrRaw = $stderrRaw
+              }
+            }
+            function Resolve-WslPath([string]$WinPath, [string]$Label) {
+              if ([string]::IsNullOrWhiteSpace($WinPath)) {
+                throw "[$Label] Windows path is null or empty"
+              }
+              $capture = Invoke-WslCapture -WslArgs @('-d', $env:WSL_DISTRO, 'wslpath', '-u', $WinPath) -Label $Label
+              Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
+              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WinPath")
+              Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
+              Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
+              Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
+              if ($capture.ExitCode -ne 0) {
+                throw "[$Label] wslpath failed rc=$($capture.ExitCode)"
+              }
+              if ([string]::IsNullOrWhiteSpace($capture.StdOutRaw)) {
+                throw "[$Label] wslpath returned null/empty stdout"
+              }
+              $resolved = $capture.StdOutRaw.Trim()
+              if ([string]::IsNullOrWhiteSpace($resolved)) {
+                throw "[$Label] wslpath stdout became empty after trim"
+              }
+              return $resolved
+            }
+
+            if (-not (Test-Path $env:REPO_ROOT)) {
+              throw "REPO_ROOT does not exist: $env:REPO_ROOT"
+            }
+            $wslRepoRoot  = Resolve-WslPath -WinPath $env:REPO_ROOT -Label 'repo_root'
+            $wslDataDir   = Resolve-WslPath -WinPath $winDataDir -Label 'data_dir'
+            $wslOutputDir = Resolve-WslPath -WinPath $winOutputDir -Label 'output_dir'
             "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-            Write-Bootstrap "[PREPARE] selected_python=python"
-            Write-Bootstrap "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
-            Write-Bootstrap "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
-            Write-Bootstrap "[PREPARE] wsl_repo_root=$wslRepoRoot"
-            Write-Bootstrap "[PREPARE] wsl_output_dir=$wslOutputDir"
+            Write-PrepareLog "[PREPARE] selected_python=python"
+            Write-PrepareLog "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
+            Write-PrepareLog "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
+            Write-PrepareLog "[PREPARE] wsl_repo_root=$wslRepoRoot"
+            Write-PrepareLog "[PREPARE] wsl_output_dir=$wslOutputDir"
 
             python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
             python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
@@ -735,6 +783,10 @@ jobs:
           } catch {
             Write-Bootstrap "[PREPARE] status=failed"
             Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
+            if ($prepareLog -and (Test-Path $prepareLog)) {
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value "[PREPARE] status=failed"
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value (("[PREPARE] error={0}" -f $_.Exception.Message))
+            }
             Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
             throw
           }
@@ -3221,18 +3273,66 @@ jobs:
             "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-            $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-            $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-            $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+            $prepareLog = Join-Path $winLogDir 'prepare_environment.log'
+            $null = New-Item -ItemType File -Path $prepareLog -Force
+            "PREPARE_LOG=$prepareLog"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            function Write-PrepareLog([string]$m) {
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value $m
+              Write-Bootstrap $m
+            }
+            function Invoke-WslCapture([string[]]$WslArgs, [string]$Label) {
+              $stdoutPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stdout.log" -f $env:APEX_RUN_ID, $Label)
+              $stderrPath = Join-Path $env:RUNNER_TEMP ("prepare_{0}_{1}_stderr.log" -f $env:APEX_RUN_ID, $Label)
+              if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force }
+              if (Test-Path $stderrPath) { Remove-Item $stderrPath -Force }
+              $proc = Start-Process -FilePath 'wsl.exe' -ArgumentList $WslArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+              $stdoutRaw = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
+              $stderrRaw = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
+              return [pscustomobject]@{
+                Command = ('wsl.exe ' + ($WslArgs -join ' '))
+                ExitCode = $proc.ExitCode
+                StdOutRaw = $stdoutRaw
+                StdErrRaw = $stderrRaw
+              }
+            }
+            function Resolve-WslPath([string]$WinPath, [string]$Label) {
+              if ([string]::IsNullOrWhiteSpace($WinPath)) {
+                throw "[$Label] Windows path is null or empty"
+              }
+              $capture = Invoke-WslCapture -WslArgs @('-d', $env:WSL_DISTRO, 'wslpath', '-u', $WinPath) -Label $Label
+              Write-PrepareLog ("[PREPARE] wsl_distro=$env:WSL_DISTRO")
+              Write-PrepareLog ("[PREPARE] wslpath_input($Label)=$WinPath")
+              Write-PrepareLog ("[PREPARE] wsl_command($Label)=$($capture.Command)")
+              Write-PrepareLog ("[PREPARE] wsl_stdout_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdOutRaw)
+              Write-PrepareLog ("[PREPARE] wsl_stderr_raw($Label)=<<<`n{0}`n>>>" -f $capture.StdErrRaw)
+              if ($capture.ExitCode -ne 0) {
+                throw "[$Label] wslpath failed rc=$($capture.ExitCode)"
+              }
+              if ([string]::IsNullOrWhiteSpace($capture.StdOutRaw)) {
+                throw "[$Label] wslpath returned null/empty stdout"
+              }
+              $resolved = $capture.StdOutRaw.Trim()
+              if ([string]::IsNullOrWhiteSpace($resolved)) {
+                throw "[$Label] wslpath stdout became empty after trim"
+              }
+              return $resolved
+            }
+
+            if (-not (Test-Path $env:REPO_ROOT)) {
+              throw "REPO_ROOT does not exist: $env:REPO_ROOT"
+            }
+            $wslRepoRoot  = Resolve-WslPath -WinPath $env:REPO_ROOT -Label 'repo_root'
+            $wslDataDir   = Resolve-WslPath -WinPath $winDataDir -Label 'data_dir'
+            $wslOutputDir = Resolve-WslPath -WinPath $winOutputDir -Label 'output_dir'
             "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-            Write-Bootstrap "[PREPARE] selected_python=python"
-            Write-Bootstrap "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
-            Write-Bootstrap "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
-            Write-Bootstrap "[PREPARE] wsl_repo_root=$wslRepoRoot"
-            Write-Bootstrap "[PREPARE] wsl_output_dir=$wslOutputDir"
+            Write-PrepareLog "[PREPARE] selected_python=python"
+            Write-PrepareLog "[PREPARE] selected_wsl_distro=$env:WSL_DISTRO"
+            Write-PrepareLog "[PREPARE] selected_wsl_python=$env:WSL_PYTHON"
+            Write-PrepareLog "[PREPARE] wsl_repo_root=$wslRepoRoot"
+            Write-PrepareLog "[PREPARE] wsl_output_dir=$wslOutputDir"
 
             python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
             python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
@@ -3247,6 +3347,10 @@ jobs:
           } catch {
             Write-Bootstrap "[PREPARE] status=failed"
             Write-Bootstrap ("[PREPARE] error={0}" -f $_.Exception.Message)
+            if ($prepareLog -and (Test-Path $prepareLog)) {
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value "[PREPARE] status=failed"
+              Add-Content -Path $prepareLog -Encoding UTF8 -Value (("[PREPARE] error={0}" -f $_.Exception.Message))
+            }
             Add-Content $rp ("[NG] prepare_environment {0}" -f $_.Exception.Message)
             throw
           }
