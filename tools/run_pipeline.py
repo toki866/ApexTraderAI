@@ -1549,7 +1549,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     _set_timing_logger(app_config, timing)
     print(
-        f"[headless] output_root_resolved={resolved_output_root} "
+        f"[PIPELINE] resolved_output_root={resolved_output_root} "
         f"cfg_output_root={getattr(app_config, 'output_root', None)} "
         f"cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}"
     )

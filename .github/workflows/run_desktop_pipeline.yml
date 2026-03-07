@@ -669,133 +669,337 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): skipped (root not found)"
           }
 
-      - name: Run desktop BAT
-        id: run_bat
+      - name: Prepare environment
+        id: prepare_env
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          INPUT_MODE: ${{ env.MODE }}
-          INPUT_SYMBOLS: ${{ inputs.symbols }}
-          INPUT_TEST_START: ${{ inputs.test_start_date }}
-          INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
-          INPUT_TEST_MONTHS: ${{ inputs.test_months }}
-          INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
-          INPUT_STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
-          INPUT_SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          RUN_MODE: ${{ env.MODE }}
-          SYMBOLS: ${{ inputs.symbols }}
-          SYMBOL: SOXL
-          STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
-          SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          TEST_START: ${{ inputs.test_start_date }}
-          TRAIN_YEARS: ${{ inputs.train_years }}
-          TEST_MONTHS: ${{ inputs.test_months }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
           WORK_ROOT: C:\work\apex_work\runs
-          APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
-          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
-          PYTHON_EXE: python
-          ENABLE_MAMBA: 1
+          SYMBOLS: ${{ inputs.symbols }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] prepare_environment'
+          Write-Host "=== Prepare environment ==="
+          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
+          # Windows paths for this run
+          $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
+          $winDataDir   = Join-Path $winRunDir 'data'
+          $winOutputDir = Join-Path $winRunDir 'output'
+          $winLogDir    = Join-Path $winRunDir 'logs'
+          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+          "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # WSL paths
+          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
+          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
+          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+          "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[PREPARE] win_run_dir=$winRunDir"
+          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
+          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
+          # pip install
+          & where.exe python 2>&1 | Write-Host
+          python --version 2>&1 | Write-Host
+          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
+          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
+            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          }
+          # prepare_data via WSL
+          $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
+            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          }
+          Add-Content $rp '[OK] prepare_environment'
+
+      - name: Resolve reuse source
+        id: resolve_reuse
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
-          # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
-          # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
-          # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
+          SYMBOLS: ${{ inputs.symbols }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          WORK_ROOT: C:\work\apex_work\runs
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] resolve_reuse_source'
+          # Default: fresh run output dir
+          "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
+            Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
+            exit 0
+          }
+          $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
+          $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
+          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
+          $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
+          $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
+          if ($wslReuse) {
+            Write-Host "[REUSE] Found matching prior run: $wslReuse"
+            $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
+            $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
+            if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+              Write-Host "[REUSE] source_output_root=$wslReuse"
+              Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
+              "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+              Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
+            } else {
+              Write-Warning "[REUSE] wslpath conversion invalid ($winReuse); using fresh"
+              Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
+            }
+          } else {
+            Write-Host "[REUSE] No prior run found; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[OK] resolve_reuse_source reuse=false"
+          }
+
+      - name: StepA
+        id: step_a
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location $env:REPO_ROOT
-          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-
-          Add-Content -Path $reportPath -Value @(
-            '[STEP] run_desktop_bat',
-            ('[INFO] console_log={0}' -f $consoleLog)
-          )
-          $batCandidates = @(
-            (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat')
-          )
-          $bat = $batCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          Write-Host '=== Run desktop BAT preflight ==='
-          Write-Host "PWD=$PWD"
-          Write-Host "REPO_ROOT=$env:REPO_ROOT"
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
-          Get-ChildItem (Join-Path $env:REPO_ROOT 'scripts') | Select-Object Name
-          & where.exe python 2>$null
-          Write-Host ("BAT candidate paths: {0}" -f ($batCandidates -join '; '))
-
-          if (-not $bat) {
-            Add-Content -Path $reportPath -Value @(
-              '[NG] run_desktop_bat',
-              '[NG] BAT not found',
-              ''
-            )
-            Write-Error "BAT not found. candidates=$($batCandidates -join '; ')"
-            exit 1
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
           }
+          Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=A status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepA] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_a'
 
-          $bat = (Get-Item $bat).FullName
-          Write-Host ("Executing BAT full path: {0}" -f $bat)
+      - name: StepB
+        id: step_b
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('B' -notin $stepList) { Write-Host "[STEP_STATUS] step=B status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.B.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepB] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_b'
 
-          $null = New-Item -Path $consoleLog -ItemType File -Force
-          Add-Content -Path $consoleLog -Value ("[BAT_FULL_PATH]={0}" -f $bat)
+      - name: StepC
+        id: step_c
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('C' -notin $stepList) { Write-Host "[STEP_STATUS] step=C status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.C.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=C status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepC] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_c rc=$rc"; Write-Error "StepC failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_c'
 
-          Write-Host '=== Python diagnostics (before BAT) ==='
-          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          & python --version 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          Write-Host '=== PATH (before BAT) ==='
-          Write-Host $env:PATH
-          Add-Content -Path $consoleLog -Value ('[PATH] ' + $env:PATH)
+      - name: StepDPrime
+        id: step_dprime
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('DPRIME' -notin $stepList) { Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.DPRIME.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepDPrime] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_dprime rc=$rc"; Write-Error "StepDPrime failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_dprime'
 
-          & $bat 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          $rc = $LASTEXITCODE
-          Write-Host "[RC]=$rc"
-          Add-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)
-
-          if ($rc -ne 0) {
-            Add-Content -Path $reportPath -Value @(
-              '[NG] run_desktop_bat',
-              ('[NG] exit_code={0}' -f $rc),
-              ''
-            )
-            Write-Warning "Run desktop BAT failed with rc=$rc"
-            $workRoot = 'C:\work\apex_work\runs'
-            $runDir = $null
-            if (Test-Path $workRoot) {
-              $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            }
-
-            if ($runDir) {
-              $runLog = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-              Write-Host ("Latest run_dir={0}" -f $runDir.FullName)
-              Write-Host ("Expected run_log={0}" -f $runLog)
-              if (Test-Path $runLog) {
-                Write-Host '=== tail run_*.log (260 lines) ==='
-                Get-Content -Path $runLog -Tail 260
-              } else {
-                Write-Warning ("run log not found: {0}" -f $runLog)
+      - name: StepE
+        id: step_e
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
+          if ('E' -notin $stepList -or $skipStepE) { Write-Host "[STEP_STATUS] step=E status=skip reason=not_requested_or_skip_flag"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try {
+              $m = Get-Content $mPath -Raw | ConvertFrom-Json
+              $stepStatus = $m.steps.E.status
+              if ($stepStatus -in @('complete','reuse')) {
+                $agentStatuses = @($m.stepe_agents.PSObject.Properties.Value | ForEach-Object { $_.status })
+                if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
+                  $status = 'reuse'
+                } else {
+                  $status = 'partial_run'
+                }
               }
-            } else {
-              Write-Warning ("No run directories found under {0}" -f $workRoot)
-            }
-            exit $rc
+            } catch { }
           }
+          Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=E status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepE] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_e rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_e'
 
-          Add-Content -Path $reportPath -Value @(
-            '[OK] run_desktop_bat',
-            '[OK] exit_code=0',
-            ''
-          )
-
-          if ((Get-Item $reportPath).Length -gt 60000) {
-            $tail = Get-Content -Path $reportPath -Raw
-            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
-            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+      - name: StepF
+        id: step_f
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('F' -notin $stepList) { Write-Host "[STEP_STATUS] step=F status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
           }
+          Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=F status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepF] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_f rc=$rc"; Write-Error "StepF failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_f'
 
-          exit 0
+      - name: Write DONE.txt and finalize
+        id: run_bat
+        if: ${{ steps.prep_repo.outcome == 'success' && !failure() }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
+          WSL_DISTRO: Ubuntu
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] finalize'
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+          if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
+          if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
+          # DONE.txt → correct artifact dir
+          @("run_id=$env:APEX_RUN_ID",
+            "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+            "commit=$env:GITHUB_SHA",
+            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
+          Write-Host "[OK] DONE.txt written to $outRoot"
+          Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+          Write-Host "[OK] output_root=$outRoot"
+          # robocopy to OneDrive
+          if ($env:COPY_TO_ONEDRIVE -eq '1') {
+            $oneDest = $null
+            if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
+            elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+            if ($oneDest) {
+              New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force | Out-Null
+              robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
+              $rrc = $LASTEXITCODE
+              if ($rrc -ge 8) { Write-Warning "robocopy failed rc=$rrc" }
+              else { Write-Host "[OK] robocopy to OneDrive rc=$rrc" }
+            } else { Write-Warning "OneDrive path not found; skip copy" }
+          }
+          Add-Content $rp "[OK] finalize output_root=$outRoot"
 
       - name: Stage console log in workspace
         if: always()
@@ -1099,7 +1303,10 @@ jobs:
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
             $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-            if ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+              Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
+            } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
               $outputRoot = $outputRootFromLog
               Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
@@ -2906,133 +3113,337 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- WORK_ROOT cleanup (mode=${{ env.MODE }}): skipped (root not found)"
           }
 
-      - name: Run desktop BAT
-        id: run_bat
+      - name: Prepare environment
+        id: prepare_env
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          INPUT_MODE: ${{ env.MODE }}
-          INPUT_SYMBOLS: ${{ inputs.symbols }}
-          INPUT_TEST_START: ${{ inputs.test_start_date }}
-          INPUT_TRAIN_YEARS: ${{ inputs.train_years }}
-          INPUT_TEST_MONTHS: ${{ inputs.test_months }}
-          INPUT_COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive }}
-          INPUT_STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
-          INPUT_SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          RUN_MODE: ${{ env.MODE }}
-          SYMBOLS: ${{ inputs.symbols }}
-          SYMBOL: SOXL
-          STEPS: ${{ steps.compute_steps.outputs.computed_steps }}
-          SKIP_STEPE: ${{ steps.compute_steps.outputs.effective_skip_stepe }}
-          TEST_START: ${{ inputs.test_start_date }}
-          TRAIN_YEARS: ${{ inputs.train_years }}
-          TEST_MONTHS: ${{ inputs.test_months }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
           WORK_ROOT: C:\work\apex_work\runs
-          APEX_RUN_ID: ${{ env.APEX_RUN_ID }}
-          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
-          PYTHON_EXE: python
-          ENABLE_MAMBA: 1
+          SYMBOLS: ${{ inputs.symbols }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] prepare_environment'
+          Write-Host "=== Prepare environment ==="
+          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
+          # Windows paths for this run
+          $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
+          $winDataDir   = Join-Path $winRunDir 'data'
+          $winOutputDir = Join-Path $winRunDir 'output'
+          $winLogDir    = Join-Path $winRunDir 'logs'
+          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+          "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # WSL paths
+          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
+          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
+          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
+          "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[PREPARE] win_run_dir=$winRunDir"
+          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
+          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
+          # pip install
+          & where.exe python 2>&1 | Write-Host
+          python --version 2>&1 | Write-Host
+          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
+          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
+            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          }
+          # prepare_data via WSL
+          $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
+            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          }
+          Add-Content $rp '[OK] prepare_environment'
+
+      - name: Resolve reuse source
+        id: resolve_reuse
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
-          # WSL settings for mamba execution (used when ENABLE_MAMBA=1).
-          # Override WSL_DISTRO at the runner level (system env) to target a specific distro.
-          # Override WSL_PYTHON to point to a virtualenv python with mamba_ssm installed.
+          SYMBOLS: ${{ inputs.symbols }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          WORK_ROOT: C:\work\apex_work\runs
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] resolve_reuse_source'
+          # Default: fresh run output dir
+          "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
+            Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
+            exit 0
+          }
+          $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
+          $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
+          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
+          $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
+          $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
+          if ($wslReuse) {
+            Write-Host "[REUSE] Found matching prior run: $wslReuse"
+            $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
+            $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
+            if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+              Write-Host "[REUSE] source_output_root=$wslReuse"
+              Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
+              "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+              "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+              Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
+            } else {
+              Write-Warning "[REUSE] wslpath conversion invalid ($winReuse); using fresh"
+              Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
+            }
+          } else {
+            Write-Host "[REUSE] No prior run found; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[OK] resolve_reuse_source reuse=false"
+          }
+
+      - name: StepA
+        id: step_a
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location $env:REPO_ROOT
-          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-
-          Add-Content -Path $reportPath -Value @(
-            '[STEP] run_desktop_bat',
-            ('[INFO] console_log={0}' -f $consoleLog)
-          )
-          $batCandidates = @(
-            (Join-Path $env:REPO_ROOT 'scripts\run_all_local_then_copy.bat')
-          )
-          $bat = $batCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          Write-Host '=== Run desktop BAT preflight ==='
-          Write-Host "PWD=$PWD"
-          Write-Host "REPO_ROOT=$env:REPO_ROOT"
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
-          Get-ChildItem (Join-Path $env:REPO_ROOT 'scripts') | Select-Object Name
-          & where.exe python 2>$null
-          Write-Host ("BAT candidate paths: {0}" -f ($batCandidates -join '; '))
-
-          if (-not $bat) {
-            Add-Content -Path $reportPath -Value @(
-              '[NG] run_desktop_bat',
-              '[NG] BAT not found',
-              ''
-            )
-            Write-Error "BAT not found. candidates=$($batCandidates -join '; ')"
-            exit 1
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
           }
+          Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=A status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepA] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_a'
 
-          $bat = (Get-Item $bat).FullName
-          Write-Host ("Executing BAT full path: {0}" -f $bat)
+      - name: StepB
+        id: step_b
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('B' -notin $stepList) { Write-Host "[STEP_STATUS] step=B status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.B.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepB] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_b'
 
-          $null = New-Item -Path $consoleLog -ItemType File -Force
-          Add-Content -Path $consoleLog -Value ("[BAT_FULL_PATH]={0}" -f $bat)
+      - name: StepC
+        id: step_c
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('C' -notin $stepList) { Write-Host "[STEP_STATUS] step=C status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.C.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=C status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepC] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_c rc=$rc"; Write-Error "StepC failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_c'
 
-          Write-Host '=== Python diagnostics (before BAT) ==='
-          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          & python --version 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          Write-Host '=== PATH (before BAT) ==='
-          Write-Host $env:PATH
-          Add-Content -Path $consoleLog -Value ('[PATH] ' + $env:PATH)
+      - name: StepDPrime
+        id: step_dprime
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('DPRIME' -notin $stepList) { Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.DPRIME.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          }
+          Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepDPrime] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_dprime rc=$rc"; Write-Error "StepDPrime failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_dprime'
 
-          & $bat 2>&1 | Tee-Object -FilePath $consoleLog -Append
-          $rc = $LASTEXITCODE
-          Write-Host "[RC]=$rc"
-          Add-Content -Path $consoleLog -Value ("[RC]={0}" -f $rc)
-
-          if ($rc -ne 0) {
-            Add-Content -Path $reportPath -Value @(
-              '[NG] run_desktop_bat',
-              ('[NG] exit_code={0}' -f $rc),
-              ''
-            )
-            Write-Warning "Run desktop BAT failed with rc=$rc"
-            $workRoot = 'C:\work\apex_work\runs'
-            $runDir = $null
-            if (Test-Path $workRoot) {
-              $runDir = Get-ChildItem -Path $workRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            }
-
-            if ($runDir) {
-              $runLog = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-              Write-Host ("Latest run_dir={0}" -f $runDir.FullName)
-              Write-Host ("Expected run_log={0}" -f $runLog)
-              if (Test-Path $runLog) {
-                Write-Host '=== tail run_*.log (260 lines) ==='
-                Get-Content -Path $runLog -Tail 260
-              } else {
-                Write-Warning ("run log not found: {0}" -f $runLog)
+      - name: StepE
+        id: step_e
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
+          if ('E' -notin $stepList -or $skipStepE) { Write-Host "[STEP_STATUS] step=E status=skip reason=not_requested_or_skip_flag"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try {
+              $m = Get-Content $mPath -Raw | ConvertFrom-Json
+              $stepStatus = $m.steps.E.status
+              if ($stepStatus -in @('complete','reuse')) {
+                $agentStatuses = @($m.stepe_agents.PSObject.Properties.Value | ForEach-Object { $_.status })
+                if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
+                  $status = 'reuse'
+                } else {
+                  $status = 'partial_run'
+                }
               }
-            } else {
-              Write-Warning ("No run directories found under {0}" -f $workRoot)
-            }
-            exit $rc
+            } catch { }
           }
+          Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=E status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepE] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_e rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_e'
 
-          Add-Content -Path $reportPath -Value @(
-            '[OK] run_desktop_bat',
-            '[OK] exit_code=0',
-            ''
-          )
-
-          if ((Get-Item $reportPath).Length -gt 60000) {
-            $tail = Get-Content -Path $reportPath -Raw
-            $tail = $tail.Substring([Math]::Max(0, $tail.Length - 60000))
-            Set-Content -Path $reportPath -Value $tail -Encoding UTF8
+      - name: StepF
+        id: step_f
+        if: ${{ steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
+          if ('F' -notin $stepList) { Write-Host "[STEP_STATUS] step=F status=skip reason=not_requested"; exit 0 }
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $status = 'run'
+          $mPath = Join-Path $outRoot 'run_manifest.json'
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
           }
+          Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=F status=$status"
+          if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+          $rc = $LASTEXITCODE; Write-Host "[StepF] rc=$rc"
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_f rc=$rc"; Write-Error "StepF failed rc=$rc"; exit $rc }
+          Add-Content $rp '[OK] step_f'
 
-          exit 0
+      - name: Write DONE.txt and finalize
+        id: run_bat
+        if: ${{ steps.prep_repo.outcome == 'success' && !failure() }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
+          WSL_DISTRO: Ubuntu
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] finalize'
+          $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+          if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
+          if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
+          # DONE.txt → correct artifact dir
+          @("run_id=$env:APEX_RUN_ID",
+            "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+            "commit=$env:GITHUB_SHA",
+            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
+          Write-Host "[OK] DONE.txt written to $outRoot"
+          Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+          Write-Host "[OK] output_root=$outRoot"
+          # robocopy to OneDrive
+          if ($env:COPY_TO_ONEDRIVE -eq '1') {
+            $oneDest = $null
+            if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
+            elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+            if ($oneDest) {
+              New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force | Out-Null
+              robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
+              $rrc = $LASTEXITCODE
+              if ($rrc -ge 8) { Write-Warning "robocopy failed rc=$rrc" }
+              else { Write-Host "[OK] robocopy to OneDrive rc=$rrc" }
+            } else { Write-Warning "OneDrive path not found; skip copy" }
+          }
+          Add-Content $rp "[OK] finalize output_root=$outRoot"
 
       - name: Stage console log in workspace
         if: always()
@@ -3336,7 +3747,10 @@ jobs:
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
             $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
-            if ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+              Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
+            } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
               $outputRoot = $outputRootFromLog
               Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
