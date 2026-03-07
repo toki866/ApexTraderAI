@@ -674,8 +674,6 @@ jobs:
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          WSL_DISTRO: Ubuntu
-          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
           WORK_ROOT: C:\work\apex_work\runs
           SYMBOLS: ${{ inputs.symbols }}
         run: |
@@ -691,8 +689,6 @@ jobs:
             -RepoRoot $env:REPO_ROOT `
             -WorkRoot $env:WORK_ROOT `
             -ApexRunId $env:APEX_RUN_ID `
-            -WslDistro $env:WSL_DISTRO `
-            -WslPython $env:WSL_PYTHON `
             -Symbols $env:SYMBOLS `
             -DataStart $env:DATA_START `
             -DataEnd $env:DATA_END `
@@ -3146,8 +3142,6 @@ jobs:
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
-          WSL_DISTRO: Ubuntu
-          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
           WORK_ROOT: C:\work\apex_work\runs
           SYMBOLS: ${{ inputs.symbols }}
         run: |
@@ -3163,8 +3157,6 @@ jobs:
             -RepoRoot $env:REPO_ROOT `
             -WorkRoot $env:WORK_ROOT `
             -ApexRunId $env:APEX_RUN_ID `
-            -WslDistro $env:WSL_DISTRO `
-            -WslPython $env:WSL_PYTHON `
             -Symbols $env:SYMBOLS `
             -DataStart $env:DATA_START `
             -DataEnd $env:DATA_END `
