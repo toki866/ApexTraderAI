@@ -790,9 +790,39 @@ jobs:
             python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
 
-            $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "prepare_data failed rc=$LASTEXITCODE" }
+            $prepScriptWin = Join-Path $tempDir ("prepare_data_{0}.sh" -f $env:APEX_RUN_ID)
+            @(
+              '#!/usr/bin/env bash',
+              'set -euo pipefail',
+              ('cd {0}' -f (ConvertTo-BashSingleQuoted -Value $wslRepoRoot)),
+              'exec "$@"'
+            ) | Set-Content -Path $prepScriptWin -Encoding utf8
+            $prepScriptWsl = Resolve-WslPathStrict -Label 'prepare_script' -WindowsPath $prepScriptWin
+
+            $prepArgs = @(
+              '-d', $env:WSL_DISTRO,
+              '--',
+              'bash',
+              $prepScriptWsl,
+              $env:WSL_PYTHON,
+              'tools/run_with_python.py',
+              'tools/prepare_data.py',
+              '--symbols', $env:SYMBOLS,
+              '--start', $env:DATA_START,
+              '--end', $env:DATA_END,
+              '--force',
+              '--data-dir', $wslDataDir
+            )
+            $prepareCapture = Invoke-WslCapture -WslArgs $prepArgs -Label 'prepare_data'
+            Write-PrepareLog ("[PREPARE] prepare_data_command={0}" -f $prepareCapture.Command)
+            Write-PrepareLog ("[PREPARE] prepare_data_rc={0}" -f $prepareCapture.ExitCode)
+            if (-not [string]::IsNullOrEmpty($prepareCapture.StdOutRaw)) {
+              $prepareCapture.StdOutRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            }
+            if (-not [string]::IsNullOrEmpty($prepareCapture.StdErrRaw)) {
+              $prepareCapture.StdErrRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            }
+            if ($prepareCapture.ExitCode -ne 0) { throw "prepare_data failed rc=$($prepareCapture.ExitCode)" }
 
             Add-Content $rp '[OK] prepare_environment'
             Write-Bootstrap "[PREPARE] status=success"
@@ -3370,9 +3400,39 @@ jobs:
             python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "pip install failed rc=$LASTEXITCODE" }
 
-            $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
-            if ($LASTEXITCODE -ne 0) { throw "prepare_data failed rc=$LASTEXITCODE" }
+            $prepScriptWin = Join-Path $tempDir ("prepare_data_{0}.sh" -f $env:APEX_RUN_ID)
+            @(
+              '#!/usr/bin/env bash',
+              'set -euo pipefail',
+              ('cd {0}' -f (ConvertTo-BashSingleQuoted -Value $wslRepoRoot)),
+              'exec "$@"'
+            ) | Set-Content -Path $prepScriptWin -Encoding utf8
+            $prepScriptWsl = Resolve-WslPathStrict -Label 'prepare_script' -WindowsPath $prepScriptWin
+
+            $prepArgs = @(
+              '-d', $env:WSL_DISTRO,
+              '--',
+              'bash',
+              $prepScriptWsl,
+              $env:WSL_PYTHON,
+              'tools/run_with_python.py',
+              'tools/prepare_data.py',
+              '--symbols', $env:SYMBOLS,
+              '--start', $env:DATA_START,
+              '--end', $env:DATA_END,
+              '--force',
+              '--data-dir', $wslDataDir
+            )
+            $prepareCapture = Invoke-WslCapture -WslArgs $prepArgs -Label 'prepare_data'
+            Write-PrepareLog ("[PREPARE] prepare_data_command={0}" -f $prepareCapture.Command)
+            Write-PrepareLog ("[PREPARE] prepare_data_rc={0}" -f $prepareCapture.ExitCode)
+            if (-not [string]::IsNullOrEmpty($prepareCapture.StdOutRaw)) {
+              $prepareCapture.StdOutRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            }
+            if (-not [string]::IsNullOrEmpty($prepareCapture.StdErrRaw)) {
+              $prepareCapture.StdErrRaw.TrimEnd() | Tee-Object -FilePath $bootstrap -Append | Write-Host
+            }
+            if ($prepareCapture.ExitCode -ne 0) { throw "prepare_data failed rc=$($prepareCapture.ExitCode)" }
 
             Add-Content $rp '[OK] prepare_environment'
             Write-Bootstrap "[PREPARE] status=success"
