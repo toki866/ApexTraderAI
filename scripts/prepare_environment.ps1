@@ -78,6 +78,17 @@ try {
   $winLogDir = Join-Path $winRunDir 'logs'
   New-Item -Path $winDataDir, $winOutputDir, $winLogDir -ItemType Directory -Force | Out-Null
 
+  $consoleLog = Join-Path $RunnerTemp 'run_all_local_then_copy_console.log'
+  $null = New-Item -ItemType File -Path $consoleLog -Force
+  Add-Content -Path $consoleLog -Encoding UTF8 -Value ("[BOOTSTRAP] console_log_initialized run_id={0}" -f $ApexRunId)
+  Add-Content -Path $consoleLog -Encoding UTF8 -Value ("[BOOTSTRAP] prepare_environment_start={0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+  Add-GithubEnv -Name 'RUN_CONSOLE_LOG' -Value $consoleLog
+
+  $runLog = Join-Path $winLogDir ("run_{0}.log" -f $ApexRunId)
+  $null = New-Item -ItemType File -Path $runLog -Force
+  Add-Content -Path $runLog -Encoding UTF8 -Value ("[BOOTSTRAP] run_log_initialized run_id={0}" -f $ApexRunId)
+  Add-GithubEnv -Name 'RUN_LOG_PATH' -Value $runLog
+
   Add-GithubEnv -Name 'WIN_RUN_DIR' -Value $winRunDir
   Add-GithubEnv -Name 'WIN_DATA_DIR' -Value $winDataDir
   Add-GithubEnv -Name 'WIN_OUTPUT_DIR' -Value $winOutputDir
@@ -95,6 +106,8 @@ try {
   Write-PrepareLog ("[PREPARE] repo_root={0}" -f $RepoRoot)
   Write-PrepareLog ("[PREPARE] data_dir={0}" -f $winDataDir)
   Write-PrepareLog ("[PREPARE] output_dir={0}" -f $winOutputDir)
+  Write-PrepareLog ("[PREPARE] console_log={0}" -f $consoleLog)
+  Write-PrepareLog ("[PREPARE] run_log={0}" -f $runLog)
 
   python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
   python -m pip install -r (Join-Path $RepoRoot 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
