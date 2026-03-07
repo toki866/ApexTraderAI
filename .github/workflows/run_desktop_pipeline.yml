@@ -759,6 +759,7 @@ jobs:
           }
 
       - name: Validate pipeline launch context
+        id: validate_launch_context
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
@@ -795,13 +796,16 @@ jobs:
 
       - name: StepA
         id: step_a
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          PREPARE_ENV_OUTCOME: ${{ steps.prepare_env.outcome }}
+          RESOLVE_REUSE_OUTCOME: ${{ steps.resolve_reuse.outcome }}
+          VALIDATE_CONTEXT_OUTCOME: ${{ steps.validate_launch_context.outcome }}
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
@@ -814,13 +818,34 @@ jobs:
           Write-Host $stepStart
           Add-Content -Path $consoleLog -Encoding UTF8 -Value $stepStart
           Add-Content -Path $runLogPath -Encoding UTF8 -Value $stepStart
+          $evaluated = "prepare_env=$env:PREPARE_ENV_OUTCOME; resolve_reuse=$env:RESOLVE_REUSE_OUTCOME; validate_context=$env:VALIDATE_CONTEXT_OUTCOME"
+          $conditionLine = "[STEP_STATUS] step=A condition=$evaluated"
+          Write-Host $conditionLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $conditionLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $conditionLine
+          if ($env:PREPARE_ENV_OUTCOME -ne 'success') {
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=prepare_env_not_success evaluated=$evaluated rc=0"
+            Write-Host $skipLine
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
+            Add-Content $rp "[WARN] step_a skipped prepare_env_outcome=$env:PREPARE_ENV_OUTCOME"
+            exit 0
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('A' -notin $stepList) {
-            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested"
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested evaluated=$evaluated requested_steps=${{ steps.compute_steps.outputs.computed_steps }} rc=0"
             Write-Host $skipLine
             Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
             Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
             exit 0
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT) -and -not [string]::IsNullOrWhiteSpace($env:WIN_OUTPUT_DIR)) {
+            "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT) -and -not [string]::IsNullOrWhiteSpace($env:WSL_OUTPUT_DIR)) {
+            "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR
           }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
@@ -3299,6 +3324,7 @@ jobs:
           }
 
       - name: Validate pipeline launch context
+        id: validate_launch_context
         if: ${{ steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
@@ -3335,13 +3361,16 @@ jobs:
 
       - name: StepA
         id: step_a
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          PREPARE_ENV_OUTCOME: ${{ steps.prepare_env.outcome }}
+          RESOLVE_REUSE_OUTCOME: ${{ steps.resolve_reuse.outcome }}
+          VALIDATE_CONTEXT_OUTCOME: ${{ steps.validate_launch_context.outcome }}
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
@@ -3354,13 +3383,34 @@ jobs:
           Write-Host $stepStart
           Add-Content -Path $consoleLog -Encoding UTF8 -Value $stepStart
           Add-Content -Path $runLogPath -Encoding UTF8 -Value $stepStart
+          $evaluated = "prepare_env=$env:PREPARE_ENV_OUTCOME; resolve_reuse=$env:RESOLVE_REUSE_OUTCOME; validate_context=$env:VALIDATE_CONTEXT_OUTCOME"
+          $conditionLine = "[STEP_STATUS] step=A condition=$evaluated"
+          Write-Host $conditionLine
+          Add-Content -Path $consoleLog -Encoding UTF8 -Value $conditionLine
+          Add-Content -Path $runLogPath -Encoding UTF8 -Value $conditionLine
+          if ($env:PREPARE_ENV_OUTCOME -ne 'success') {
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=prepare_env_not_success evaluated=$evaluated rc=0"
+            Write-Host $skipLine
+            Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
+            Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
+            Add-Content $rp "[WARN] step_a skipped prepare_env_outcome=$env:PREPARE_ENV_OUTCOME"
+            exit 0
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('A' -notin $stepList) {
-            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested"
+            $skipLine = "[STEP_STATUS] step=A status=skip reason=not_requested evaluated=$evaluated requested_steps=${{ steps.compute_steps.outputs.computed_steps }} rc=0"
             Write-Host $skipLine
             Add-Content -Path $consoleLog -Encoding UTF8 -Value $skipLine
             Add-Content -Path $runLogPath -Encoding UTF8 -Value $skipLine
             exit 0
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT) -and -not [string]::IsNullOrWhiteSpace($env:WIN_OUTPUT_DIR)) {
+            "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT) -and -not [string]::IsNullOrWhiteSpace($env:WSL_OUTPUT_DIR)) {
+            "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR
           }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
