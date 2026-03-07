@@ -187,11 +187,13 @@ if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
   for /f "delims=" %%P in ('wsl.exe %WSL_DIST_FLAG% wslpath -u "%WORK_ROOT%"') do set "WSL_WORK_ROOT=%%P"
   if defined WSL_WORK_ROOT (
     set "WSL_REUSE_FOUND="
-    for /f "delims=" %%Q in ('wsl.exe %WSL_DIST_FLAG% -- bash -c "cd '!WSL_REPO_ROOT!' && '!WSL_PYTHON!' tools/run_with_python.py tools/find_reuse_run.py --scan-root '!WSL_WORK_ROOT!' --symbol !SYMBOL! --mode !RUN_MODE! --test-start !TEST_START! --train-years !TRAIN_YEARS! --test-months !TEST_MONTHS! --steps '!STEPS!' --enable-mamba !EFFECTIVE_ENABLE_MAMBA! --enable-mamba-periodic !EFFECTIVE_ENABLE_MAMBA_PERIODIC! 2>/dev/null"') do set "WSL_REUSE_FOUND=%%Q"
+    for /f "delims=" %%Q in ('wsl.exe %WSL_DIST_FLAG% -- bash -c "cd '!WSL_REPO_ROOT!' && '!WSL_PYTHON!' tools/find_reuse_run.py --scan-root '!WSL_WORK_ROOT!' --symbol !SYMBOL! --mode !RUN_MODE! --test-start !TEST_START! --train-years !TRAIN_YEARS! --test-months !TEST_MONTHS! --steps '!STEPS!' --enable-mamba !EFFECTIVE_ENABLE_MAMBA! --enable-mamba-periodic !EFFECTIVE_ENABLE_MAMBA_PERIODIC! 2>/dev/null"') do set "WSL_REUSE_FOUND=%%Q"
     if defined WSL_REUSE_FOUND (
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!
       set "WSL_OUTPUT_DIR=!WSL_REUSE_FOUND!"
+      set "WSL_SOURCE_RUN_DIR="
+      for /f "delims=" %%R in ('wsl.exe %WSL_DIST_FLAG% -- bash -c "dirname '!WSL_REUSE_FOUND!'"') do set "WSL_SOURCE_RUN_DIR=%%R"
       set "_WIN_REUSE="
       for /f "delims=" %%W in ('wsl.exe %WSL_DIST_FLAG% wslpath -w "!WSL_REUSE_FOUND!" 2^>nul') do set "_WIN_REUSE=%%W"
       if defined _WIN_REUSE (
@@ -206,7 +208,8 @@ if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
         echo [REUSE] WARN wslpath -w produced no output; keeping new run dir>> "%LOG_FILE%"
         echo [REUSE] WARN wslpath -w produced no output; keeping new run dir
       )
-      echo [REUSE] source_run_dir=!WSL_REUSE_FOUND!>> "%LOG_FILE%"
+      if not defined WSL_SOURCE_RUN_DIR set "WSL_SOURCE_RUN_DIR=!WSL_REUSE_FOUND!"
+      echo [REUSE] source_run_dir=!WSL_SOURCE_RUN_DIR!>> "%LOG_FILE%"
       echo [REUSE] source_output_root=!WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!>> "%LOG_FILE%"
       echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!
@@ -249,11 +252,16 @@ rem --- Windows Python execution path (ENABLE_MAMBA=0) ---
 rem --- Auto-scan for reuse (Windows Python path) ---
 if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
   set "WIN_REUSE_FOUND="
-  for /f "delims=" %%P in ('"%PYTHON_EXE%" tools\run_with_python.py tools\find_reuse_run.py --scan-root "%WORK_ROOT%" --symbol %SYMBOL% --mode %RUN_MODE% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --steps "%STEPS%" 2^>nul') do set "WIN_REUSE_FOUND=%%P"
+  for /f "delims=" %%P in ('"%PYTHON_EXE%" tools\find_reuse_run.py --scan-root "%WORK_ROOT%" --symbol %SYMBOL% --mode %RUN_MODE% --test-start %TEST_START% --train-years %TRAIN_YEARS% --test-months %TEST_MONTHS% --steps "%STEPS%" 2^>nul') do set "WIN_REUSE_FOUND=%%P"
   if defined WIN_REUSE_FOUND (
     echo [REUSE] Found matching prior run: !WIN_REUSE_FOUND!>> "%LOG_FILE%"
     echo [REUSE] Found matching prior run: !WIN_REUSE_FOUND!
     set "OUTPUT_DIR=!WIN_REUSE_FOUND!"
+    for %%D in ("!WIN_REUSE_FOUND!\..") do set "WIN_SOURCE_RUN_DIR=%%~fD"
+    echo [REUSE] source_run_dir=!WIN_SOURCE_RUN_DIR!>> "%LOG_FILE%"
+    echo [REUSE] source_output_root=!WIN_REUSE_FOUND!>> "%LOG_FILE%"
+    echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!>> "%LOG_FILE%"
+    echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!
   ) else (
     echo [REUSE] No matching prior run found; using fresh output_root>> "%LOG_FILE%"
   )

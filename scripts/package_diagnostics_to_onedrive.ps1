@@ -208,6 +208,18 @@ if (Test-Path $evalDir) {
   }
 }
 
+
+$bootstrapLogCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($env:BOOTSTRAP_LOG)) {
+  $bootstrapLogCandidates += $env:BOOTSTRAP_LOG
+}
+$bootstrapLogCandidates += (Get-ChildItem -Path $workspaceTemp -File -Filter 'bootstrap_prepare_*.log' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+$bootstrapLogCandidates = $bootstrapLogCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+foreach ($candidate in $bootstrapLogCandidates) {
+  if ($null -eq $sourceItems) { $sourceItems = @{} }
+  $sourceItems[$candidate] = $true
+}
+
 $consoleLogCandidates = @((Join-Path $workspaceTemp 'run_all_local_then_copy_console.log'))
 if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
   $consoleLogCandidates += (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
