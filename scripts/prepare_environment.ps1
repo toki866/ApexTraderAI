@@ -98,14 +98,31 @@ try {
   $null = New-Item -ItemType File -Path $prepareLog -Force
   Add-GithubEnv -Name 'PREPARE_LOG' -Value $prepareLog
 
-  Add-GithubEnv -Name 'WSL_REPO_ROOT' -Value $RepoRoot
-  Add-GithubEnv -Name 'WSL_DATA_DIR' -Value $winDataDir
-  Add-GithubEnv -Name 'WSL_OUTPUT_DIR' -Value $winOutputDir
+  # Convert Windows paths to WSL /mnt/ paths for use inside WSL bash commands
+  $wslDistro    = if ($env:WSL_DISTRO) { $env:WSL_DISTRO } else { 'Ubuntu' }
+  $wslRepoRoot  = (wsl.exe -d $wslDistro wslpath -u $RepoRoot 2>$null).Trim()
+  $wslDataDir   = (wsl.exe -d $wslDistro wslpath -u $winDataDir 2>$null).Trim()
+  $wslOutputDir = (wsl.exe -d $wslDistro wslpath -u $winOutputDir 2>$null).Trim()
+  foreach ($entry in @(
+    @('WSL_REPO_ROOT',  $wslRepoRoot,  $RepoRoot),
+    @('WSL_DATA_DIR',   $wslDataDir,   $winDataDir),
+    @('WSL_OUTPUT_DIR', $wslOutputDir, $winOutputDir)
+  )) {
+    if (-not ($entry[1] -match '^/mnt/')) {
+      throw ("wslpath failed for {0}: win='{1}' -> wsl='{2}' (expected /mnt/ path). Check WSL distro='{3}'." -f $entry[0], $entry[2], $entry[1], $wslDistro)
+    }
+  }
+  Add-GithubEnv -Name 'WSL_REPO_ROOT'  -Value $wslRepoRoot
+  Add-GithubEnv -Name 'WSL_DATA_DIR'   -Value $wslDataDir
+  Add-GithubEnv -Name 'WSL_OUTPUT_DIR' -Value $wslOutputDir
 
   Write-PrepareLog ("[PREPARE] win_run_dir={0}" -f $winRunDir)
   Write-PrepareLog ("[PREPARE] repo_root={0}" -f $RepoRoot)
   Write-PrepareLog ("[PREPARE] data_dir={0}" -f $winDataDir)
   Write-PrepareLog ("[PREPARE] output_dir={0}" -f $winOutputDir)
+  Write-PrepareLog ("[PREPARE] wsl_repo_root={0}" -f $wslRepoRoot)
+  Write-PrepareLog ("[PREPARE] wsl_data_dir={0}"  -f $wslDataDir)
+  Write-PrepareLog ("[PREPARE] wsl_output_dir={0}" -f $wslOutputDir)
   Write-PrepareLog ("[PREPARE] console_log={0}" -f $consoleLog)
   Write-PrepareLog ("[PREPARE] run_log={0}" -f $runLog)
 
