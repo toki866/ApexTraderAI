@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -114,3 +114,51 @@ def write_audit_reports(audit_dir: Path, prefix: str, audit_dict: Dict[str, Any]
     json_path.write_text(json.dumps(audit_dict, ensure_ascii=False, indent=2), encoding="utf-8")
     pd.DataFrame([{"key": str(k), "value": v} for k, v in audit_dict.items()]).to_csv(csv_path, index=False)
     return json_path, csv_path
+
+
+# ---------------------------------------------------------------------------
+# Per-step immediate audit helpers (called right after each step completes)
+# ---------------------------------------------------------------------------
+
+def audit_stepe_agent_now(
+    output_root: Path,
+    mode: str,
+    symbol: str,
+    agent: str,
+    audit_root: Path,
+) -> Dict[str, Any]:
+    """Load StepE daily_log for *agent*, run reward-alignment audit, write reports.
+
+    Returns the audit dict (keys: check, status, max_abs, max_date, rel_err, ...).
+    Raises if the daily_log file is missing or unreadable.
+    """
+    log_path = Path(output_root) / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
+    df = pd.read_csv(log_path)
+    audit = audit_stepE_reward_alignment(df, split="test", tol=1e-12)
+    prefix = f"audit_stepE_{agent}_{symbol}"
+    write_audit_reports(Path(audit_root), prefix, audit)
+    return audit
+
+
+def audit_stepf_now(
+    output_root: Path,
+    mode: str,
+    symbol: str,
+    audit_root: Path,
+) -> Dict[str, Dict[str, Any]]:
+    """Run StepF market-alignment audit for router + marl daily logs. Write reports.
+
+    Returns dict keyed by name ("router", "marl"). Only includes names whose log
+    file exists.
+    """
+    results: Dict[str, Dict[str, Any]] = {}
+    for name in ("router", "marl"):
+        p = Path(output_root) / "stepF" / mode / f"stepF_daily_log_{name}_{symbol}.csv"
+        if not p.exists():
+            continue
+        df = pd.read_csv(p)
+        audit = audit_stepF_market_alignment(df, split="test", tol=1e-12)
+        prefix = f"audit_stepF_{name}_{symbol}"
+        write_audit_reports(Path(audit_root), prefix, audit)
+        results[name] = audit
+    return results

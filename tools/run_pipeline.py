@@ -34,6 +34,7 @@ import dataclasses
 import inspect
 import os
 import sys
+import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -47,7 +48,17 @@ from ai_core.utils.paths import get_repo_root
 from ai_core.utils.leak_audit_utils import (
     audit_stepE_reward_alignment,
     audit_stepF_market_alignment,
+    audit_stepe_agent_now,
+    audit_stepf_now,
     write_audit_reports,
+)
+from ai_core.utils.step_contract_utils import (
+    validate_step_a,
+    validate_step_b,
+    validate_step_c,
+    validate_step_dprime,
+    validate_step_e_agent,
+    validate_step_f,
 )
 from ai_core.utils.timing_logger import TimingLogger
 class _DateRangeShim:
@@ -1265,19 +1276,39 @@ def _run_step_generic(step_letter: str, app_config, symbol: str, date_range, pre
 
 
 def _run_leak_audits(output_root: Path, mode: str, symbol: str, fail_on_audit: bool = False) -> None:
+    """Aggregate per-step audit reports into a summary CSV.
+
+    Per-step audits are now run immediately after each step completes
+    (audit_stepe_agent_now / audit_stepf_now).  This function reads the
+    already-written JSON report files and produces the final summary CSV.
+    If a JSON report is missing (e.g. step was cancelled), the function
+    falls back to re-running the audit from the daily_log CSV if available.
+    """
     import pandas as pd
 
     audit_root = output_root / "audit" / mode
     rows: List[Dict[str, Any]] = []
 
-    # StepE audits per agent log
+    # StepE: read existing per-agent audit JSON reports; re-run if absent
     step_e_dir = output_root / "stepE" / mode
     for p in sorted(step_e_dir.glob(f"stepE_daily_log_*_{symbol}.csv")):
         agent = p.name[len("stepE_daily_log_") : -len(f"_{symbol}.csv")]
-        df = pd.read_csv(p)
-        audit = audit_stepE_reward_alignment(df, split="test", tol=1e-12)
         prefix = f"audit_stepE_{agent}_{symbol}"
-        write_audit_reports(audit_root, prefix, audit)
+        json_path = audit_root / f"{prefix}.json"
+        if json_path.exists():
+            try:
+                import json as _json
+                audit = _json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                audit = {"status": "FAIL", "note": "failed to read existing report"}
+        else:
+            # Fallback: re-run audit (step may have been cancelled before audit ran)
+            try:
+                df = pd.read_csv(p)
+                audit = audit_stepE_reward_alignment(df, split="test", tol=1e-12)
+                write_audit_reports(audit_root, prefix, audit)
+            except Exception as e:
+                audit = {"status": "FAIL", "note": str(e)}
         rows.append({
             "step": "E",
             "name": agent,
@@ -1289,15 +1320,26 @@ def _run_leak_audits(output_root: Path, mode: str, symbol: str, fail_on_audit: b
             "note": audit.get("note", ""),
         })
 
-    # StepF audits for router/marl logs
+    # StepF: read existing audit JSON reports; re-run if absent
     for name in ("router", "marl"):
         p = output_root / "stepF" / mode / f"stepF_daily_log_{name}_{symbol}.csv"
         if not p.exists():
             continue
-        df = pd.read_csv(p)
-        audit = audit_stepF_market_alignment(df, split="test", tol=1e-12)
         prefix = f"audit_stepF_{name}_{symbol}"
-        write_audit_reports(audit_root, prefix, audit)
+        json_path = audit_root / f"{prefix}.json"
+        if json_path.exists():
+            try:
+                import json as _json
+                audit = _json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                audit = {"status": "FAIL", "note": "failed to read existing report"}
+        else:
+            try:
+                df = pd.read_csv(p)
+                audit = audit_stepF_market_alignment(df, split="test", tol=1e-12)
+                write_audit_reports(audit_root, prefix, audit)
+            except Exception as e:
+                audit = {"status": "FAIL", "note": str(e)}
         rows.append({
             "step": "F",
             "name": name,
@@ -1700,12 +1742,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
                     print(f"[StepA] start symbols={','.join(stepa_symbols)}")
                     _mark_step("A", "running")
-                    for stepa_symbol in stepa_symbols:
-                        with timing.stage("stepA.run"):
-                            stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
-                        if stepa_symbol == symbol:
-                            results["stepA_result"] = stepa_result
+                    _t0_a = time.perf_counter()
+                    try:
+                        for stepa_symbol in stepa_symbols:
+                            with timing.stage("stepA.run"):
+                                stepa_result = _run_stepA(app_config, stepa_symbol, date_range)
+                            if stepa_symbol == symbol:
+                                results["stepA_result"] = stepa_result
+                    finally:
+                        _elapsed_a = time.perf_counter() - _t0_a
                     _mark_step("A", "complete")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("A", _elapsed_a)
+                        _miss_a = validate_step_a(Path(resolved_output_root), symbol, resolved_mode)
+                        if _miss_a:
+                            print(f"[StepA] WARN contract: missing {_miss_a}", file=sys.stderr)
+                        _run_manifest.mark_step_audit("A", "SKIP")
                     print("[StepA] done")
 
             if "B" in steps:
@@ -1716,17 +1768,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print("[StepB] start")
                     mamba_horizons_list = _parse_int_list(args.mamba_horizons)
                     _mark_step("B", "running")
-                    with timing.stage("stepB.run"):
-                        results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                    _t0_b = time.perf_counter()
+                    try:
+                        with timing.stage("stepB.run"):
+                            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                    finally:
+                        _elapsed_b = time.perf_counter() - _t0_b
                     _mark_step("B", "complete")
                     print(f"[StepB] agents: mamba={enable_mamba}")
+                    # Ensure contract artifact exists
+                    try:
+                        p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
+                        print(f"[StepB] ensured: {p}")
+                    except Exception as e:
+                        print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("B", _elapsed_b)
+                        _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
+                        if _miss_b:
+                            print(f"[StepB] WARN contract: missing {_miss_b}", file=sys.stderr)
+                        _run_manifest.mark_step_audit("B", "SKIP")
                     print("[StepB] done")
-            # Ensure contract artifact exists
-            try:
-                p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
-                print(f"[StepB] ensured: {p}")
-            except Exception as e:
-                print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
 
             if "C" in steps:
                 if _can_reuse_step("C"):
@@ -1735,9 +1797,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     print("[StepC] start")
                     _mark_step("C", "running")
-                    with timing.stage("stepC.run"):
-                        results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+                    _t0_c = time.perf_counter()
+                    try:
+                        with timing.stage("stepC.run"):
+                            results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+                    finally:
+                        _elapsed_c = time.perf_counter() - _t0_c
                     _mark_step("C", "complete")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("C", _elapsed_c)
+                        _miss_c = validate_step_c(Path(resolved_output_root), symbol, resolved_mode)
+                        if _miss_c:
+                            print(f"[StepC] WARN contract: missing {_miss_c}", file=sys.stderr)
+                        _run_manifest.mark_step_audit("C", "SKIP")
                     print("[StepC] done")
 
             if "DPRIME" in steps:
@@ -1747,10 +1819,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     print("[StepDPrime] start")
                     _mark_step("DPRIME", "running")
-                    with timing.stage("stepDPrime.run"):
-                        results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
-                    _validate_stepdprime_contract(Path(resolved_output_root), resolved_mamba_mode, symbol)
+                    _t0_dp = time.perf_counter()
+                    try:
+                        with timing.stage("stepDPrime.run"):
+                            results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+                    finally:
+                        _elapsed_dp = time.perf_counter() - _t0_dp
+                    _miss_dp = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _OFFICIAL_STEPE_AGENTS)
+                    if _miss_dp:
+                        raise RuntimeError("StepDPrime contract missing required state files: " + ", ".join(_miss_dp))
                     _mark_step("DPRIME", "complete")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("DPRIME", _elapsed_dp)
+                        _run_manifest.mark_step_audit("DPRIME", "SKIP")
                     print("[StepDPrime] done")
 
             for step in ("D", "E", "F"):
@@ -1798,18 +1879,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 setattr(app_config, "stepE", _pending_cfgs)
                         print(f"[StepE] status=partial_run pending={','.join(_pending_agents)}")
                         _mark_step("E", "running")
-                        with timing.stage(stage_name):
-                            step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                        _t0_e = time.perf_counter()
+                        try:
+                            with timing.stage(stage_name):
+                                step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                        finally:
+                            _elapsed_e = time.perf_counter() - _t0_e
                         results[f"step{step}_result"] = step_result
                         if isinstance(step_result, dict) and step_result.get("skipped"):
                             reason = step_result.get("reason", "unknown")
                             raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
-                        # Mark newly completed agents
+                        # Mark newly completed agents + immediate per-agent audit
+                        _audit_root_e = Path(resolved_output_root) / "audit" / resolved_mode
                         for _a in _pending_agents:
                             if _check_agent_art(_a, resolved_output_root, symbol, resolved_mode):
                                 _run_manifest.mark_stepe_agent(_a, "complete")
+                                try:
+                                    _ag_audit = audit_stepe_agent_now(
+                                        Path(resolved_output_root), resolved_mode, symbol, _a, _audit_root_e
+                                    )
+                                    _ag_status = _ag_audit.get("status", "FAIL")
+                                except Exception as _ae:
+                                    _ag_status = "FAIL"
+                                    print(f"[StepE] WARN audit agent={_a}: {_ae}", file=sys.stderr)
+                                _run_manifest.mark_stepe_agent_audit(_a, _ag_status)
+                                print(f"[StepE] agent={_a} audit={_ag_status}")
                         # Mark E complete only if all agents done
                         _still_missing = [a for a in _all_agents if not _check_agent_art(a, resolved_output_root, symbol, resolved_mode)]
+                        _run_manifest.mark_step_elapsed("E", _elapsed_e)
+                        _all_agent_audits_e = [_run_manifest.stepe_agent_audit_status(a) for a in _all_agents]
+                        _step_e_audit_status = "PASS" if _all_agent_audits_e and all(s == "PASS" for s in _all_agent_audits_e) else "FAIL"
+                        _run_manifest.mark_step_audit("E", _step_e_audit_status)
                         if not _still_missing:
                             _mark_step("E", "complete")
                         else:
@@ -1829,13 +1929,60 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 # --- Generic run (D, or E/F without reuse) ---
                 print(f"[Step{step}] start")
                 _mark_step(step if step != "D" else "D", "running")
-                with timing.stage(stage_name):
-                    step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                _t0_generic = time.perf_counter()
+                try:
+                    with timing.stage(stage_name):
+                        step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                finally:
+                    _elapsed_generic = time.perf_counter() - _t0_generic
                 results[f"step{step}_result"] = step_result
                 if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
                     reason = step_result.get("reason", "unknown")
                     raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
                 _mark_step(step if step != "D" else "D", "complete")
+                if _run_manifest is not None:
+                    _run_manifest.mark_step_elapsed(step if step != "D" else "D", _elapsed_generic)
+                    if step == "E":
+                        # StepE without per-agent reuse: audit all completed agents
+                        _audit_root_ge = Path(resolved_output_root) / "audit" / resolved_mode
+                        _ge_all_agents: List[str]
+                        _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                        if _ge_raw is not None:
+                            _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else [_ge_raw]
+                            _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
+                        else:
+                            _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
+                        for _ga in _ge_all_agents:
+                            from tools.run_manifest import check_stepe_agent_artifact as _chk_ge
+                            if _chk_ge(_ga, resolved_output_root, symbol, resolved_mode):
+                                try:
+                                    _ga_audit = audit_stepe_agent_now(
+                                        Path(resolved_output_root), resolved_mode, symbol, _ga, _audit_root_ge
+                                    )
+                                    _ga_status = _ga_audit.get("status", "FAIL")
+                                except Exception as _gae:
+                                    _ga_status = "FAIL"
+                                    print(f"[StepE] WARN audit agent={_ga}: {_gae}", file=sys.stderr)
+                                _run_manifest.mark_stepe_agent_audit(_ga, _ga_status)
+                                print(f"[StepE] agent={_ga} audit={_ga_status}")
+                        _ge_audits = [_run_manifest.stepe_agent_audit_status(a) for a in _ge_all_agents]
+                        _ge_step_status = "PASS" if _ge_audits and all(s == "PASS" for s in _ge_audits) else "FAIL"
+                        _run_manifest.mark_step_audit("E", _ge_step_status)
+                    elif step == "F":
+                        _audit_root_f = Path(resolved_output_root) / "audit" / resolved_mode
+                        try:
+                            _sf_audits = audit_stepf_now(Path(resolved_output_root), resolved_mode, symbol, _audit_root_f)
+                            _sf_status = "PASS" if _sf_audits and all(v.get("status") == "PASS" for v in _sf_audits.values()) else "FAIL"
+                        except Exception as _sfe:
+                            _sf_status = "FAIL"
+                            print(f"[StepF] WARN audit: {_sfe}", file=sys.stderr)
+                        _run_manifest.mark_step_audit("F", _sf_status)
+                        _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
+                        if _miss_f:
+                            print(f"[StepF] WARN contract: {_miss_f}", file=sys.stderr)
+                        print(f"[StepF] audit={_sf_status}")
+                    else:
+                        _run_manifest.mark_step_audit(step if step != "D" else "D", "SKIP")
                 print(f"[Step{step}] done")
 
             with timing.stage("audit.leak"):
