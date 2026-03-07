@@ -192,7 +192,21 @@ if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] Found matching prior run: !WSL_REUSE_FOUND!
       set "WSL_OUTPUT_DIR=!WSL_REUSE_FOUND!"
-      for /f "delims=" %%W in ('wsl.exe %WSL_DIST_FLAG% wslpath -w "!WSL_REUSE_FOUND!" 2^>nul') do set "OUTPUT_DIR=%%W"
+      set "_WIN_REUSE="
+      for /f "delims=" %%W in ('wsl.exe %WSL_DIST_FLAG% wslpath -w "!WSL_REUSE_FOUND!" 2^>nul') do set "_WIN_REUSE=%%W"
+      if defined _WIN_REUSE (
+        echo !_WIN_REUSE! | findstr /r "^[A-Za-z]:\\" >nul 2>&1
+        if not errorlevel 1 (
+          set "OUTPUT_DIR=!_WIN_REUSE!"
+        ) else (
+          echo [REUSE] WARN wslpath -w returned non-Windows path ^(!_WIN_REUSE!^); keeping new run dir>> "%LOG_FILE%"
+          echo [REUSE] WARN wslpath -w returned non-Windows path ^(!_WIN_REUSE!^); keeping new run dir
+        )
+      ) else (
+        echo [REUSE] WARN wslpath -w produced no output; keeping new run dir>> "%LOG_FILE%"
+        echo [REUSE] WARN wslpath -w produced no output; keeping new run dir
+      )
+      echo [REUSE] source_run_dir=!WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] source_output_root=!WSL_REUSE_FOUND!>> "%LOG_FILE%"
       echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!>> "%LOG_FILE%"
       echo [REUSE] synchronized OUTPUT_DIR=!OUTPUT_DIR!
@@ -202,6 +216,7 @@ if "%REUSE_OUTPUT%"=="1" if not "%FORCE_REBUILD%"=="1" (
   )
 )
 echo [RUN] effective_wsl_output_dir=!WSL_OUTPUT_DIR!>> "%LOG_FILE%"
+echo [RUN] effective_win_output_dir=!OUTPUT_DIR!>> "%LOG_FILE%"
 
 rem --- prepare_data via WSL ---
 set "LAST_CMD=wsl prepare_data"
@@ -259,7 +274,7 @@ if errorlevel 1 goto :failed
 
 :after_exec
 
-> "%OUTPUT_DIR%\DONE.txt" (
+> "!OUTPUT_DIR!\DONE.txt" (
   echo run_id=%RUN_ID%
   echo finished_at=%DATE% %TIME%
   for /f %%h in ('git rev-parse --short HEAD 2^>nul') do echo commit=%%h
@@ -377,6 +392,7 @@ if exist "%SNAPSHOT_ZIP%" attrib +R "%SNAPSHOT_ZIP%" >nul 2>&1
 
 echo [OK] run_id=%RUN_ID%
 echo [OK] output_root=!OUTPUT_DIR!
+echo [OK] wsl_output_root=!WSL_OUTPUT_DIR!
 echo [OK] local=%RUN_DIR%
 echo [OK] onedrive=%ONE_DEST%
 popd >nul
