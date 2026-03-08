@@ -834,6 +834,7 @@ jobs:
       - name: Resolve reuse source
         id: resolve_reuse
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -854,7 +855,7 @@ jobs:
           $finalWinOutput = $env:WIN_OUTPUT_DIR
           $finalWslOutput = $env:WSL_OUTPUT_DIR
           $reuseFound = $false
-          $reuseDecision = 'fallback=fresh'
+          $reuseDecision = 'reuse=false'
           $reuseReason = 'no_valid_path'
           $reuseException = ''
           $rawReuseStdout = ''
@@ -937,7 +938,7 @@ jobs:
                   $finalWslOutput = $wslReuse
                   $reuseFound = $true
                   $reuseDecision = 'reuse=true'
-                  $reuseReason = 'reuse_path_valid'
+                  $reuseReason = ''
                   Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
                 } else {
                   $reuseReason = 'no_valid_path'
@@ -948,7 +949,7 @@ jobs:
               }
             } catch {
               $reuseException = $_.Exception.Message
-              $reuseDecision = 'fallback=fresh'
+              $reuseDecision = 'reuse=false'
               $reuseReason = 'error_fallback'
               Add-Content $rp "[WARN] resolve_reuse_source exception=$reuseException"
             }
@@ -962,11 +963,14 @@ jobs:
           Add-Content $rp "[REUSE] raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] parsed_reuse_path='$wslReuse'"
           Add-Content $rp "[REUSE] exception='$reuseException'"
+          $reuseState = if ($reuseFound) { 'reuse=true' } elseif ($reuseReason -eq 'error_fallback') { 'reuse=false reason=error_fallback' } else { 'reuse=false reason=no_valid_path' }
           Add-Content $rp "[REUSE] final_decision=$reuseDecision reason=$reuseReason"
+          Add-Content $rp "[REUSE] final_state=$reuseState"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalWinOutput'"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalWslOutput'"
           $reuseFallback = if ($reuseFound) { 'none' } else { 'fresh' }
-          Add-Content $rp "[OK] resolve_reuse_source success reuse=$($reuseFound.ToString().ToLowerInvariant()) fallback=$reuseFallback reason=$reuseReason"
+          Add-Content $rp "[OK] resolve_reuse_source success state=$reuseState fallback=$reuseFallback"
+          exit 0
 
 
 
@@ -1103,7 +1107,7 @@ jobs:
 
       - name: StepB
         id: step_b
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1155,7 +1159,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1207,7 +1211,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1259,7 +1263,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1352,7 +1356,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -3725,6 +3729,7 @@ jobs:
       - name: Resolve reuse source
         id: resolve_reuse
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -3745,7 +3750,7 @@ jobs:
           $finalWinOutput = $env:WIN_OUTPUT_DIR
           $finalWslOutput = $env:WSL_OUTPUT_DIR
           $reuseFound = $false
-          $reuseDecision = 'fallback=fresh'
+          $reuseDecision = 'reuse=false'
           $reuseReason = 'no_valid_path'
           $reuseException = ''
           $rawReuseStdout = ''
@@ -3828,7 +3833,7 @@ jobs:
                   $finalWslOutput = $wslReuse
                   $reuseFound = $true
                   $reuseDecision = 'reuse=true'
-                  $reuseReason = 'reuse_path_valid'
+                  $reuseReason = ''
                   Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
                 } else {
                   $reuseReason = 'no_valid_path'
@@ -3839,7 +3844,7 @@ jobs:
               }
             } catch {
               $reuseException = $_.Exception.Message
-              $reuseDecision = 'fallback=fresh'
+              $reuseDecision = 'reuse=false'
               $reuseReason = 'error_fallback'
               Add-Content $rp "[WARN] resolve_reuse_source exception=$reuseException"
             }
@@ -3853,11 +3858,14 @@ jobs:
           Add-Content $rp "[REUSE] raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] parsed_reuse_path='$wslReuse'"
           Add-Content $rp "[REUSE] exception='$reuseException'"
+          $reuseState = if ($reuseFound) { 'reuse=true' } elseif ($reuseReason -eq 'error_fallback') { 'reuse=false reason=error_fallback' } else { 'reuse=false reason=no_valid_path' }
           Add-Content $rp "[REUSE] final_decision=$reuseDecision reason=$reuseReason"
+          Add-Content $rp "[REUSE] final_state=$reuseState"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalWinOutput'"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalWslOutput'"
           $reuseFallback = if ($reuseFound) { 'none' } else { 'fresh' }
-          Add-Content $rp "[OK] resolve_reuse_source success reuse=$($reuseFound.ToString().ToLowerInvariant()) fallback=$reuseFallback reason=$reuseReason"
+          Add-Content $rp "[OK] resolve_reuse_source success state=$reuseState fallback=$reuseFallback"
+          exit 0
 
 
       - name: StepA
@@ -3993,7 +4001,7 @@ jobs:
 
       - name: StepB
         id: step_b
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4045,7 +4053,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4097,7 +4105,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4149,7 +4157,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4242,7 +4250,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
