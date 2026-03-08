@@ -678,12 +678,26 @@ jobs:
           $wslRepoRoot = Convert-WindowsPathToWsl -WindowsPath $env:REPO_ROOT
           $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
           $wslReuse = ''; $reuseFound = $false
-          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
-            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope output_root --print-path-only --scan-root '$wslWorkRoot' --symbol '$symbolsArg' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --feature-signature '$featureSignature' --algorithm-signature '$algorithmSignature' --parameter-signature '$parameterSignature'"
+          $reuseRunId = ''
+          $outputReuseScope = 'output_root_full'
+          if ($computedSteps -eq 'A') {
+            $outputReuseScope = 'stepa_only_skip_heavy_output_root_reuse'
+          }
+          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1' -and $computedSteps -ne 'A') {
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope output_root --print-json --scan-root '$wslWorkRoot' --symbol '$symbolsArg' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --feature-signature '$featureSignature' --algorithm-signature '$algorithmSignature' --parameter-signature '$parameterSignature'"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_output_root_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
             $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
-            $wslReuse = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            $jsonLine = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($jsonLine) {
+              try {
+                $parsed = $jsonLine | ConvertFrom-Json
+                $wslReuse = ("$($parsed.path)").Trim()
+                $reuseRunId = ("$($parsed.run_id)").Trim()
+              } catch {
+                $wslReuse = $jsonLine
+              }
+            }
             if ($wslReuse) { $reuseFound = $true }
           }
 
@@ -695,9 +709,14 @@ jobs:
           } else {
             $winOutput = Join-Path (Join-Path $env:WORK_ROOT $env:APEX_RUN_ID) 'output'
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
-            New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
-            $created = $true
-            $source = 'fresh_created'
+            if ($computedSteps -eq 'A') {
+              $created = $false
+              $source = 'fresh_pending_stepa_simple'
+            } else {
+              New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
+              $created = $true
+              $source = 'fresh_created'
+            }
           }
 
           $reusePayload = [ordered]@{
@@ -721,6 +740,7 @@ jobs:
           "EFFECTIVE_WSL_OUTPUT=$wslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+          Add-Content $rp "[REUSE] reuse_scope=$outputReuseScope"
           Add-Content $rp "[REUSE] reuse_key_hash=$reuseHash"
           Add-Content $rp "[REUSE] reuse_key_test_start_date=${{ inputs.test_start_date }}"
           Add-Content $rp "[REUSE] reuse_key_train_years=${{ inputs.train_years }}"
@@ -730,6 +750,7 @@ jobs:
           Add-Content $rp "[REUSE] reuse_key_parameter_signature=$parameterSignature"
           Add-Content $rp "[REUSE] reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] matched_output_root=$winOutput"
+          Add-Content $rp "[REUSE] matched_run_id=$reuseRunId"
           Add-Content $rp "[REUSE] output_root_source=$source"
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
@@ -949,11 +970,57 @@ jobs:
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          WORK_ROOT: C:\work\apex_work\runs
+          SYMBOLS: ${{ inputs.symbols }}
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
         run: |
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_stepa'
-          Add-Content $rp '[REUSE] stepa_reuse_decision=delegated_to_output_root_reuse'
-          Add-Content $rp '[REUSE] stepa_reuse_reason=resolved_in_reuse_output_root_step'
+          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $wslRepoRoot = '/mnt/' + $env:REPO_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:REPO_ROOT.Substring(3) -replace '\\','/')
+          $wslWorkRoot = '/mnt/' + $env:WORK_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:WORK_ROOT.Substring(3) -replace '\\','/')
+          $reuseFound = $false
+          $reuseWsl = ''
+          $reuseRunId = ''
+          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$env:SYMBOLS' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
+            $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
+            $jsonLine = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($jsonLine) {
+              try {
+                $parsed = $jsonLine | ConvertFrom-Json
+                $reuseWsl = ("$($parsed.path)").Trim()
+                $reuseRunId = ("$($parsed.run_id)").Trim()
+              } catch {
+                $reuseWsl = $jsonLine
+              }
+            }
+            if ($reuseWsl) { $reuseFound = $true }
+          }
+          $reuseWin = ''
+          if ($reuseFound -and $reuseWsl -match '^/mnt/([a-z])/(.*)$') {
+            $drive = $Matches[1].ToUpperInvariant(); $rest = $Matches[2] -replace '/', '\\'
+            $reuseWin = "${drive}:\\$rest"
+          }
+          "STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "STEPA_REUSE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "STEPA_REUSE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Add-Content $rp '[REUSE] stepa_reuse_scope=stepA_simple'
+          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$env:SYMBOLS|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())"
+          Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
+          Add-Content $rp "[REUSE] stepa_reuse_matched_run_id=$reuseRunId"
+          if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
+            "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Add-Content $rp '[REUSE] output_root_source=stepa_simple_reused_existing'
+          }
           exit 0
 
       - name: Resolve strict reuse source
@@ -1034,11 +1101,14 @@ jobs:
                 $manifestPath = Join-Path $outRoot 'run_manifest.json'
                 $stepAStatus = 'run'
                 $stepAReason = 'execute'
-                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
                   if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT)) {
                     $stepAStatus = 'reuse'
                     $stepAReason = 'simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
+                    Add-Content $rp '[STEP_STATUS] step=A status=reuse'
+                    Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
+                    Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
                   }
                 }
 
@@ -1123,10 +1193,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.B.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step B --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
@@ -1175,10 +1251,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.C.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step C --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=C reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
@@ -1227,10 +1309,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.DPRIME.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step DPRIME --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=DPRIME reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
@@ -1280,27 +1368,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step E --symbol '$sym1' --mode '$env:MODE'"
             try {
-              $m = Get-Content $mPath -Raw | ConvertFrom-Json
-              $stepStatus = $m.steps.E.status
-              if ($stepStatus -in @('complete','reuse')) {
-                $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
-                if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
-                  $dailyCount = @(Get-ChildItem -Path (Join-Path $outRoot ('stepE\' + $env:MODE)) -Filter ("stepE_daily_log_*_" + $sym1 + ".csv") -File -ErrorAction SilentlyContinue).Count
-                  if ($dailyCount -gt 0) {
-                    $status = 'reuse'
-                  } else {
-                    $status = 'partial_run'
-                    Add-Content $rp "[STEP_E] manifest_reuse_but_daily_missing count=$dailyCount"
-                  }
-                } else {
-                  $status = 'partial_run'
-                }
-              }
-            } catch { }
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=E reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
@@ -1378,10 +1455,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { if (Test-Path (Join-Path $outRoot ("stepF\$env:MODE\stepF_equity_marl_$sym1.csv"))) { $status = 'reuse' } else { Add-Content $rp '[STEP_F] manifest_reuse_but_equity_missing'; $status='run' } } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step F --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=F reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
@@ -3578,12 +3661,26 @@ jobs:
           $wslRepoRoot = Convert-WindowsPathToWsl -WindowsPath $env:REPO_ROOT
           $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
           $wslReuse = ''; $reuseFound = $false
-          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
-            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope output_root --print-path-only --scan-root '$wslWorkRoot' --symbol '$symbolsArg' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --feature-signature '$featureSignature' --algorithm-signature '$algorithmSignature' --parameter-signature '$parameterSignature'"
+          $reuseRunId = ''
+          $outputReuseScope = 'output_root_full'
+          if ($computedSteps -eq 'A') {
+            $outputReuseScope = 'stepa_only_skip_heavy_output_root_reuse'
+          }
+          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1' -and $computedSteps -ne 'A') {
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope output_root --print-json --scan-root '$wslWorkRoot' --symbol '$symbolsArg' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --feature-signature '$featureSignature' --algorithm-signature '$algorithmSignature' --parameter-signature '$parameterSignature'"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_output_root_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
             $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
-            $wslReuse = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            $jsonLine = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($jsonLine) {
+              try {
+                $parsed = $jsonLine | ConvertFrom-Json
+                $wslReuse = ("$($parsed.path)").Trim()
+                $reuseRunId = ("$($parsed.run_id)").Trim()
+              } catch {
+                $wslReuse = $jsonLine
+              }
+            }
             if ($wslReuse) { $reuseFound = $true }
           }
 
@@ -3595,9 +3692,14 @@ jobs:
           } else {
             $winOutput = Join-Path (Join-Path $env:WORK_ROOT $env:APEX_RUN_ID) 'output'
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
-            New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
-            $created = $true
-            $source = 'fresh_created'
+            if ($computedSteps -eq 'A') {
+              $created = $false
+              $source = 'fresh_pending_stepa_simple'
+            } else {
+              New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
+              $created = $true
+              $source = 'fresh_created'
+            }
           }
 
           $reusePayload = [ordered]@{
@@ -3621,6 +3723,7 @@ jobs:
           "EFFECTIVE_WSL_OUTPUT=$wslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+          Add-Content $rp "[REUSE] reuse_scope=$outputReuseScope"
           Add-Content $rp "[REUSE] reuse_key_hash=$reuseHash"
           Add-Content $rp "[REUSE] reuse_key_test_start_date=${{ inputs.test_start_date }}"
           Add-Content $rp "[REUSE] reuse_key_train_years=${{ inputs.train_years }}"
@@ -3630,6 +3733,7 @@ jobs:
           Add-Content $rp "[REUSE] reuse_key_parameter_signature=$parameterSignature"
           Add-Content $rp "[REUSE] reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] matched_output_root=$winOutput"
+          Add-Content $rp "[REUSE] matched_run_id=$reuseRunId"
           Add-Content $rp "[REUSE] output_root_source=$source"
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
@@ -3849,11 +3953,57 @@ jobs:
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+          WORK_ROOT: C:\work\apex_work\runs
+          SYMBOLS: ${{ inputs.symbols }}
+          REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
         run: |
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_stepa'
-          Add-Content $rp '[REUSE] stepa_reuse_decision=delegated_to_output_root_reuse'
-          Add-Content $rp '[REUSE] stepa_reuse_reason=resolved_in_reuse_output_root_step'
+          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $wslRepoRoot = '/mnt/' + $env:REPO_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:REPO_ROOT.Substring(3) -replace '\\','/')
+          $wslWorkRoot = '/mnt/' + $env:WORK_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:WORK_ROOT.Substring(3) -replace '\\','/')
+          $reuseFound = $false
+          $reuseWsl = ''
+          $reuseRunId = ''
+          if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$env:SYMBOLS' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
+            $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
+            $jsonLine = (($stdoutRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($jsonLine) {
+              try {
+                $parsed = $jsonLine | ConvertFrom-Json
+                $reuseWsl = ("$($parsed.path)").Trim()
+                $reuseRunId = ("$($parsed.run_id)").Trim()
+              } catch {
+                $reuseWsl = $jsonLine
+              }
+            }
+            if ($reuseWsl) { $reuseFound = $true }
+          }
+          $reuseWin = ''
+          if ($reuseFound -and $reuseWsl -match '^/mnt/([a-z])/(.*)$') {
+            $drive = $Matches[1].ToUpperInvariant(); $rest = $Matches[2] -replace '/', '\\'
+            $reuseWin = "${drive}:\\$rest"
+          }
+          "STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "STEPA_REUSE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "STEPA_REUSE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Add-Content $rp '[REUSE] stepa_reuse_scope=stepA_simple'
+          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$env:SYMBOLS|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())"
+          Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
+          Add-Content $rp "[REUSE] stepa_reuse_matched_run_id=$reuseRunId"
+          if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
+            "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Add-Content $rp '[REUSE] output_root_source=stepa_simple_reused_existing'
+          }
           exit 0
 
       - name: Resolve strict reuse source
@@ -3932,11 +4082,14 @@ jobs:
                 $manifestPath = Join-Path $outRoot 'run_manifest.json'
                 $stepAStatus = 'run'
                 $stepAReason = 'execute'
-                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
                   if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT)) {
                     $stepAStatus = 'reuse'
                     $stepAReason = 'simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
+                    Add-Content $rp '[STEP_STATUS] step=A status=reuse'
+                    Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
+                    Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
                   }
                 }
 
@@ -4021,10 +4174,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.B.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step B --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
@@ -4073,10 +4232,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.C.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step C --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=C reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
@@ -4125,10 +4290,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.DPRIME.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step DPRIME --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=DPRIME reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
@@ -4178,27 +4349,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step E --symbol '$sym1' --mode '$env:MODE'"
             try {
-              $m = Get-Content $mPath -Raw | ConvertFrom-Json
-              $stepStatus = $m.steps.E.status
-              if ($stepStatus -in @('complete','reuse')) {
-                $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
-                if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
-                  $dailyCount = @(Get-ChildItem -Path (Join-Path $outRoot ('stepE\' + $env:MODE)) -Filter ("stepE_daily_log_*_" + $sym1 + ".csv") -File -ErrorAction SilentlyContinue).Count
-                  if ($dailyCount -gt 0) {
-                    $status = 'reuse'
-                  } else {
-                    $status = 'partial_run'
-                    Add-Content $rp "[STEP_E] manifest_reuse_but_daily_missing count=$dailyCount"
-                  }
-                } else {
-                  $status = 'partial_run'
-                }
-              }
-            } catch { }
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=E reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
@@ -4276,10 +4436,16 @@ jobs:
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { if (Test-Path (Join-Path $outRoot ("stepF\$env:MODE\stepF_equity_marl_$sym1.csv"))) { $status = 'reuse' } else { Add-Content $rp '[STEP_F] manifest_reuse_but_equity_missing'; $status='run' } } } catch { }
+          $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
+          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
+            $cmdReuse = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_step_reuse.py --output-root '$wslOut' --step F --symbol '$sym1' --mode '$env:MODE'"
+            try {
+              $reuseJson = wsl.exe -d $env:WSL_DISTRO -- bash -c $cmdReuse
+              $reuseDecision = (($reuseJson | Select-Object -Last 1) | ConvertFrom-Json)
+              $status = "$($reuseDecision.status)"
+            } catch { Add-Content $rp "[STEP_STATUS] step=F reuse_probe_error=$_" }
           }
+          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
