@@ -56,6 +56,8 @@ def validate_step_b(output_root: Path, symbol: str, mode: str) -> List[str]:
         f"stepB_pred_time_all_{symbol}.csv",
         f"stepB_pred_close_mamba_{symbol}.csv",
         f"stepB_pred_path_mamba_{symbol}.csv",
+        f"stepB_pred_close_mamba_periodic_{symbol}.csv",
+        f"stepB_pred_path_mamba_periodic_{symbol}.csv",
     ):
         p = base / name
         if not p.exists():
@@ -92,10 +94,13 @@ def validate_step_b(output_root: Path, symbol: str, mode: str) -> List[str]:
                     if merged.empty:
                         missing.append(f"{pred_time_all}::empty_test_window")
                     else:
-                        nn = pd.to_numeric(merged[pred_col], errors="coerce").notna().sum()
+                        vals = pd.to_numeric(merged[pred_col], errors="coerce")
+                        nn = vals.notna().sum()
                         coverage = float(nn) / float(len(merged)) if len(merged) > 0 else 0.0
                         if coverage <= 0.0:
                             missing.append(f"{pred_time_all}::coverage_ratio_over_test={coverage:.4f}")
+                        if vals.notna().sum() == 0:
+                            missing.append(f"{pred_time_all}::all_nan")
         except Exception as e:
             missing.append(f"{pred_time_all}::read_or_coverage_error={type(e).__name__}:{e}")
 
@@ -136,6 +141,12 @@ def validate_step_dprime(
         p = base / f"stepDprime_state_test_{profile}_{symbol}.csv"
         if not p.exists():
             missing.append(str(p))
+        emb = base / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_test.csv"
+        if not emb.exists():
+            missing.append(str(emb))
+        sm = base / f"stepDprime_split_summary_{profile}_{symbol}.csv"
+        if not sm.exists():
+            missing.append(str(sm))
 
     return missing
 
@@ -176,6 +187,7 @@ def validate_step_f(output_root: Path, symbol: str, mode: str) -> List[str]:
         f"stepF_equity_marl_{symbol}.csv",
         f"stepF_daily_log_marl_{symbol}.csv",
         f"stepF_daily_log_router_{symbol}.csv",
+        f"stepF_summary_router_{symbol}.json",
     ):
         p = base / name
         if not p.exists():

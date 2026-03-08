@@ -225,6 +225,7 @@ class StepBService:
         fut_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path
 
+
     def run(self, config: StepBConfig | None = None, *args, **kwargs) -> StepBResult:
         stepb_config: Optional[StepBConfig] = config if isinstance(config, StepBConfig) else None
         if stepb_config is None:
@@ -263,7 +264,10 @@ class StepBService:
                     prices_df=prices_df,
                     features_df=features_df,
                     cfg=full_cfg,
+                    timing_logger=timing,
+                    timing_stage_prefix="stepB.full",
                 )
+
             with timing.stage("stepB.periodic.run"):
                 periodic_res = run_stepB_mamba(
                     app_config=self.app_config,
@@ -271,6 +275,8 @@ class StepBService:
                     prices_df=prices_df,
                     features_df=periodic_df,
                     cfg=periodic_cfg,
+                    timing_logger=timing,
+                    timing_stage_prefix="stepB.periodic",
                 )
             with timing.stage("stepB.write_pred_time_all"):
                 pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)

@@ -50,6 +50,7 @@ import json
 import random
 import os
 import re
+import time
 
 import numpy as np
 import pandas as pd
@@ -523,6 +524,8 @@ def run_mamba_multi_model_by_horizon(
     prices_df: pd.DataFrame,
     features_df: pd.DataFrame,
     cfg: Any,
+    timing_logger: Optional[Any] = None,
+    timing_stage_prefix: Optional[str] = None,
 ) -> StepBAgentResult:
     _require_torch()
     import torch
@@ -689,6 +692,7 @@ def run_mamba_multi_model_by_horizon(
     train_samples_by_h: Dict[int, int] = {}
 
     for H in horizons:
+        _h_t0 = time.perf_counter()
         steps = list(range(1, H + 1))
 
         # Build training set for this horizon
@@ -762,6 +766,15 @@ def run_mamba_multi_model_by_horizon(
 
         loss_by_h[H] = losses
         train_samples_by_h[H] = int(len(anchors))
+        if timing_logger is not None and timing_stage_prefix:
+            try:
+                timing_logger.emit(
+                    stage=f"{timing_stage_prefix}.h{int(H):02d}.train",
+                    elapsed_ms=(time.perf_counter() - _h_t0) * 1000.0,
+                    meta={"horizon": int(H), "epochs": int(epochs), "train_samples": int(len(anchors))},
+                )
+            except Exception:
+                pass
 
     
     # Convert endpoint predictions (y) -> Close using anchor Close_t
@@ -1151,7 +1164,7 @@ def rollout_periodic_h1_future(
 # ---------------------------------------------------------------------
 # Backward-compatible entrypoint expected by StepBService
 # ---------------------------------------------------------------------
-def run_stepB_mamba(app_config, symbol, prices_df, features_df, cfg):
+def run_stepB_mamba(app_config, symbol, prices_df, features_df, cfg, timing_logger: Optional[Any] = None, timing_stage_prefix: Optional[str] = None):
     """Entry point StepBService expects.
 
     StepBService imports:
@@ -1163,4 +1176,6 @@ def run_stepB_mamba(app_config, symbol, prices_df, features_df, cfg):
         prices_df=prices_df,
         features_df=features_df,
         cfg=cfg,
+        timing_logger=timing_logger,
+        timing_stage_prefix=timing_stage_prefix,
     )
