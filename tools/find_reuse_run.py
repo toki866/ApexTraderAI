@@ -24,9 +24,11 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools.run_manifest import (
     StepASimpleReuseSignature,
+    build_reuse_output_signature,
     build_run_signature,
     find_latest_matching_run,
     find_latest_matching_stepa_simple_run,
+    find_matching_output_root,
 )  # noqa: E402
 
 
@@ -72,9 +74,12 @@ def main() -> int:
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None)
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default="")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default="")
+    ap.add_argument("--feature-signature", dest="feature_signature", default="")
+    ap.add_argument("--algorithm-signature", dest="algorithm_signature", default="")
+    ap.add_argument("--parameter-signature", dest="parameter_signature", default="")
     ap.add_argument(
         "--reuse-scope",
-        choices=("strict", "stepA_simple"),
+        choices=("strict", "stepA_simple", "output_root"),
         default="strict",
         help="Reuse matching scope: strict (default) or stepA_simple.",
     )
@@ -114,6 +119,19 @@ def main() -> int:
             test_months=int(args.test_months),
         )
         result = find_latest_matching_stepa_simple_run(scan_root, simple_sig)
+    elif args.reuse_scope == "output_root":
+        symbols = _parse_symbol_list(args.symbol)
+        reuse_sig = build_reuse_output_signature(
+            mode=args.mode,
+            symbols=symbols,
+            test_start_date=args.test_start,
+            train_years=args.train_years,
+            test_months=args.test_months,
+            feature_signature=args.feature_signature,
+            algorithm_signature=args.algorithm_signature,
+            parameter_signature=args.parameter_signature,
+        )
+        result = find_matching_output_root(scan_root, reuse_sig)
     else:
         sig = build_run_signature(
             symbol=args.symbol,

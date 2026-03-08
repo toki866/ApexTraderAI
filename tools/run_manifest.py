@@ -39,6 +39,7 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 )
 
 _MANIFEST_FILENAME = "run_manifest.json"
+_REUSE_SIGNATURE_FILENAME = "reuse_signature.json"
 _SCHEMA_VERSION = 2
 
 
@@ -98,6 +99,144 @@ class StepASimpleReuseSignature:
     test_start: str
     train_years: int
     test_months: int
+
+
+@dataclass(frozen=True)
+class ReuseOutputSignature:
+    """Stable key used to select an output root for reuse."""
+
+    mode: str
+    symbols: Tuple[str, ...]
+    test_start_date: str
+    train_years: int
+    test_months: int
+    feature_signature: str
+    algorithm_signature: str
+    parameter_signature: str
+
+    def to_dict(self) -> dict:
+        payload = {
+            "mode": str(self.mode),
+            "symbols": list(self.symbols),
+            "test_start_date": str(self.test_start_date),
+            "train_years": int(self.train_years),
+            "test_months": int(self.test_months),
+            "feature_signature": str(self.feature_signature),
+            "algorithm_signature": str(self.algorithm_signature),
+            "parameter_signature": str(self.parameter_signature),
+        }
+        payload["reuse_key_hash"] = stable_reuse_key_hash(payload)
+        return payload
+
+
+def stable_reuse_key_hash(payload: dict) -> str:
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def build_reuse_output_signature(
+    mode: str,
+    symbols: Tuple[str, ...],
+    test_start_date: str,
+    train_years: int,
+    test_months: int,
+    feature_signature: str,
+    algorithm_signature: str,
+    parameter_signature: str,
+) -> ReuseOutputSignature:
+    return ReuseOutputSignature(
+        mode=str(mode),
+        symbols=_normalize_symbols(symbols),
+        test_start_date=str(test_start_date or ""),
+        train_years=int(train_years),
+        test_months=int(test_months),
+        feature_signature=str(feature_signature),
+        algorithm_signature=str(algorithm_signature),
+        parameter_signature=str(parameter_signature),
+    )
+
+
+def _load_reuse_signature(output_root: Path) -> Optional[dict]:
+    sig_path = Path(output_root) / _REUSE_SIGNATURE_FILENAME
+    if not sig_path.exists():
+        return None
+    try:
+        data = json.loads(sig_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _extract_reuse_signature_from_manifest(output_root: Path) -> Optional[dict]:
+    manifest_path = Path(output_root) / _MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    sig = data.get("signature", {}) if isinstance(data, dict) else {}
+    if not isinstance(sig, dict):
+        return None
+    symbol_values = sig.get("symbols")
+    if symbol_values is None:
+        symbol_values = sig.get("symbol")
+    payload = {
+        "mode": str(sig.get("mode", "")),
+        "symbols": list(_normalize_symbols(symbol_values)),
+        "test_start_date": str(sig.get("test_start", "")),
+        "train_years": int(sig.get("train_years", 0)),
+        "test_months": int(sig.get("test_months", 0)),
+        "feature_signature": "",
+        "algorithm_signature": "",
+        "parameter_signature": "",
+    }
+    payload["reuse_key_hash"] = stable_reuse_key_hash(payload)
+    return payload
+
+
+def find_matching_output_root(scan_root: Path, reuse_sig: ReuseOutputSignature) -> Optional[Path]:
+    """Find output root whose reuse_signature.json matches the requested key.
+
+    Primary source: reuse_signature.json.
+    Fallback: run_manifest.json-derived signature when reuse_signature.json is absent.
+    """
+    scan_root = Path(scan_root)
+    if not scan_root.exists():
+        return None
+
+    target = reuse_sig.to_dict()
+    try:
+        candidates = sorted(scan_root.iterdir(), key=lambda p: p.name, reverse=True)
+    except Exception:
+        return None
+
+    for run_dir in candidates:
+        if not run_dir.is_dir():
+            continue
+        output_root = run_dir / "output"
+        if not output_root.exists():
+            continue
+        candidate = _load_reuse_signature(output_root)
+        if candidate is None:
+            candidate = _extract_reuse_signature_from_manifest(output_root)
+        if candidate is None:
+            continue
+
+        if (
+            str(candidate.get("mode", "")) == target["mode"]
+            and tuple(_normalize_symbols(candidate.get("symbols"))) == tuple(target["symbols"])
+            and str(candidate.get("test_start_date", "")) == target["test_start_date"]
+            and int(candidate.get("train_years", -1)) == target["train_years"]
+            and int(candidate.get("test_months", -1)) == target["test_months"]
+            and str(candidate.get("feature_signature", "")) == target["feature_signature"]
+            and str(candidate.get("algorithm_signature", "")) == target["algorithm_signature"]
+            and str(candidate.get("parameter_signature", "")) == target["parameter_signature"]
+        ):
+            return output_root
+    return None
 
 
 def build_run_signature(
