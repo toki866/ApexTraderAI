@@ -157,21 +157,47 @@ class StepBService:
             raise ValueError("StepB Mamba output must include Pred_Close_MAMBA/Pred_Close_MAMBA_h01")
 
         out_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date"})
-        out_df["Date"] = pd.to_datetime(out_df["Date"], errors="coerce").dt.normalize()
+        _dt = pd.to_datetime(out_df["Date"], errors="coerce").dt.normalize()
+        if getattr(_dt.dt, "tz", None) is not None:
+            _dt = _dt.dt.tz_convert("UTC").dt.tz_localize(None)
+        out_df["Date"] = _dt
         out_df = out_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
         out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
 
         # Align to StepA test dates so downstream evaluators see explicit test-window coverage.
+        _aligned_to_test = False
         try:
             test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
             if "Date" in test_df.columns:
-                test_dates = test_df[["Date"]].copy()
-                test_dates["Date"] = pd.to_datetime(test_dates["Date"], errors="coerce").dt.normalize()
-                test_dates = test_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-                out_df = test_dates.merge(out_df, on="Date", how="left")
+                _td = test_df[["Date"]].copy()
+                _td_dt = pd.to_datetime(_td["Date"], errors="coerce").dt.normalize()
+                if getattr(_td_dt.dt, "tz", None) is not None:
+                    _td_dt = _td_dt.dt.tz_convert("UTC").dt.tz_localize(None)
+                _td["Date"] = _td_dt
+                _td = _td.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+                _merged = _td.merge(out_df, on="Date", how="left")
+                if len(_merged) > 0:
+                    out_df = _merged
+                    _aligned_to_test = True
         except Exception:
-            # Keep best-effort behavior; fallback to raw StepB dates if StepA test cannot be loaded.
             pass
+
+        # Fallback: derive test window from app_config.date_range when StepA test CSV unavailable.
+        if not _aligned_to_test:
+            try:
+                dr = getattr(self.app_config, "date_range", None)
+                if dr is not None:
+                    _ts = pd.to_datetime(getattr(dr, "test_start", None), errors="coerce")
+                    _te = pd.to_datetime(getattr(dr, "test_end", None), errors="coerce")
+                    if pd.notna(_ts) and pd.notna(_te):
+                        _ts = _ts.normalize()
+                        _te = _te.normalize()
+                        _mask = (out_df["Date"] >= _ts) & (out_df["Date"] <= _te)
+                        if _mask.sum() > 0:
+                            out_df = out_df.loc[_mask].copy().reset_index(drop=True)
+                            _aligned_to_test = True
+            except Exception:
+                pass
 
         out_df["pred_close_mamba"] = pd.to_numeric(
             out_df["Pred_Close_MAMBA"].astype(str).str.replace(",", "", regex=False),
@@ -181,6 +207,10 @@ class StepBService:
         out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
 
         coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+        print(
+            f"[StepB:pred_time_all] symbol={symbol} mode={run_mode}"
+            f" aligned_to_test={_aligned_to_test} rows={len(out_df)} coverage_ratio={coverage:.4f}"
+        )
         if len(out_df) == 0 or coverage <= 0.0:
             raise ValueError(f"StepB pred_time_all invalid test coverage: rows={len(out_df)} coverage_ratio_over_test={coverage:.4f}")
 

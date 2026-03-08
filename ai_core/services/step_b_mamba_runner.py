@@ -609,7 +609,7 @@ def run_mamba_multi_model_by_horizon(
         raise RuntimeError("No numeric feature columns found.")
 
     df[feature_cols] = df[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().fillna(0.0)
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").ffill().fillna(0.0)
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").ffill().bfill().fillna(1.0)
 
     # Standardization fit on TRAIN only (SIM leakage rule)
     train_mask = (df["Date"] >= train_start) & (df["Date"] <= train_end)
@@ -981,6 +981,22 @@ def run_mamba_multi_model_by_horizon(
             mani_path = stepb_dir / (f"stepB_daily_manifest_{manifest_suffix + '_' if manifest_suffix else ''}{sym}.csv")
             df_mani.to_csv(mani_path, index=False, encoding="utf-8")
             print(f"[StepB:mamba] wrote daily manifest -> {mani_path} rows={len(df_mani)}")
+
+    # ---- Diagnostic: test-period coverage before write ----
+    _diag_col = f"Pred_Close_{col_agent}"
+    if _diag_col in out_win.columns:
+        _out_dt = pd.to_datetime(out_win["Date"], errors="coerce")
+        _tmask = (_out_dt >= test_start) & (_out_dt <= test_end)
+        _t_rows = int(_tmask.sum())
+        _t_nn = int(out_win.loc[_tmask, _diag_col].notna().sum()) if _t_rows > 0 else 0
+        _t_cov = _t_nn / _t_rows if _t_rows > 0 else 0.0
+        print(
+            f"[StepB:mamba:{out_tag}] test_coverage col={_diag_col}"
+            f" test_rows={_t_rows} non_nan={_t_nn} coverage={_t_cov:.4f}"
+        )
+        if _t_rows > 0 and _t_nn == 0:
+            _samp = [float(close[t]) for t in all_anchor_idx if dates[t] >= test_start][:3]
+            print(f"[StepB:mamba:{out_tag}] WARN: test predictions all NaN. sample_anchor_close={_samp}")
 
     # ---- Write outputs ----
     pred_close_path = stepb_dir / f"stepB_pred_close_{out_tag}_{sym}.csv"
