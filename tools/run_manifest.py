@@ -144,6 +144,8 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
             f"stepB_pred_time_all_{symbol}.csv",
             f"stepB_pred_close_mamba_{symbol}.csv",
             f"stepB_pred_path_mamba_{symbol}.csv",
+            f"stepB_pred_close_mamba_periodic_{symbol}.csv",
+            f"stepB_pred_path_mamba_periodic_{symbol}.csv",
         )
         return all((d / name).exists() for name in required)
 
@@ -155,8 +157,13 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
 
     if step_upper == "DPRIME":
         d = base / "stepDprime" / mode
+        emb = d / "embeddings"
         for profile in _OFFICIAL_STEPE_AGENTS:
             if not (d / f"stepDprime_state_test_{profile}_{symbol}.csv").exists():
+                return False
+            if not (d / f"stepDprime_split_summary_{profile}_{symbol}.csv").exists():
+                return False
+            if not (emb / f"stepDprime_{profile}_{symbol}_embeddings_test.csv").exists():
                 return False
         return True
 
@@ -175,7 +182,8 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
         d = base / "stepF" / mode
         return (
             (d / f"stepF_equity_marl_{symbol}.csv").exists()
-            or (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
+            and (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
+            and (d / f"stepF_summary_router_{symbol}.json").exists()
         )
 
     return False

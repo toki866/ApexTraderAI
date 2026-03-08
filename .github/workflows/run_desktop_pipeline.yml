@@ -833,7 +833,7 @@ jobs:
 
       - name: Resolve reuse source
         id: resolve_reuse
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -846,10 +846,16 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_source'
+          Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
           # Default: fresh run output dir
           "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
+            exit 0
+          }
           if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
@@ -957,7 +963,7 @@ jobs:
 
       - name: StepA
         id: step_a
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -967,6 +973,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] step_a_entry'
+          Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=${{ steps.prepare_env.outcome }}"
+          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[WARN] step_a skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            Write-Host "[STEP_STATUS] step=A status=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            exit 0
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
@@ -994,7 +1007,7 @@ jobs:
             Add-Content $rp "[NG] step_a invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -1044,7 +1057,7 @@ jobs:
             Add-Content $rp "[NG] step_b invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -1094,7 +1107,7 @@ jobs:
             Add-Content $rp "[NG] step_c invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -1144,7 +1157,7 @@ jobs:
             Add-Content $rp "[NG] step_dprime invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -1206,7 +1219,7 @@ jobs:
             Add-Content $rp "[NG] step_e invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           Add-Content $rp "[STEP_E] command=$c"
@@ -1285,7 +1298,7 @@ jobs:
             Add-Content $rp "[NG] step_f invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -1317,6 +1330,8 @@ jobs:
             "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
           Write-Host "[OK] DONE.txt written to $outRoot"
           Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+          Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
+          Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
           Write-Host "[OK] output_root=$outRoot"
           # robocopy to OneDrive
           if ($env:COPY_TO_ONEDRIVE -eq '1') {
@@ -2617,6 +2632,13 @@ jobs:
           if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
           if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
           if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ($outputRoot -and (Test-Path $outputRoot)) {
+            $timingEvents = Join-Path $outputRoot (Join-Path 'timing' (Join-Path $env:MODE 'timing_events.jsonl'))
+            $timingsCsv = Join-Path $outputRoot 'timings.csv'
+            if (Test-Path $timingEvents) { Copy-Item -Path $timingEvents -Destination (Join-Path $diagOut 'timing_events.jsonl') -Force }
+            if (Test-Path $timingsCsv) { Copy-Item -Path $timingsCsv -Destination (Join-Path $diagOut 'timings.csv') -Force }
+          }
           Get-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force
           }
@@ -3609,7 +3631,7 @@ jobs:
 
       - name: Resolve reuse source
         id: resolve_reuse
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -3622,10 +3644,16 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_source'
+          Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
           # Default: fresh run output dir
           "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
+            exit 0
+          }
           if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
@@ -3730,7 +3758,7 @@ jobs:
 
       - name: StepA
         id: step_a
-        if: ${{ steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -3740,6 +3768,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] step_a_entry'
+          Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=${{ steps.prepare_env.outcome }}"
+          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[WARN] step_a skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            Write-Host "[STEP_STATUS] step=A status=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
+            exit 0
+          }
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
@@ -3767,7 +3802,7 @@ jobs:
             Add-Content $rp "[NG] step_a invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -3817,7 +3852,7 @@ jobs:
             Add-Content $rp "[NG] step_b invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -3867,7 +3902,7 @@ jobs:
             Add-Content $rp "[NG] step_c invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -3917,7 +3952,7 @@ jobs:
             Add-Content $rp "[NG] step_dprime invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -3979,7 +4014,7 @@ jobs:
             Add-Content $rp "[NG] step_e invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           Add-Content $rp "[STEP_E] command=$c"
@@ -4058,7 +4093,7 @@ jobs:
             Add-Content $rp "[NG] step_f invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
+          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
@@ -4090,6 +4125,8 @@ jobs:
             "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
           Write-Host "[OK] DONE.txt written to $outRoot"
           Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+          Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
+          Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
           Write-Host "[OK] output_root=$outRoot"
           # robocopy to OneDrive
           if ($env:COPY_TO_ONEDRIVE -eq '1') {
@@ -5364,6 +5401,13 @@ jobs:
           if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
           if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
           if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
+          $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ($outputRoot -and (Test-Path $outputRoot)) {
+            $timingEvents = Join-Path $outputRoot (Join-Path 'timing' (Join-Path $env:MODE 'timing_events.jsonl'))
+            $timingsCsv = Join-Path $outputRoot 'timings.csv'
+            if (Test-Path $timingEvents) { Copy-Item -Path $timingEvents -Destination (Join-Path $diagOut 'timing_events.jsonl') -Force }
+            if (Test-Path $timingsCsv) { Copy-Item -Path $timingsCsv -Destination (Join-Path $diagOut 'timings.csv') -Force }
+          }
           Get-ChildItem -Path $stepSummaryGlob -File -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination (Join-Path $diagOut $_.Name) -Force
           }

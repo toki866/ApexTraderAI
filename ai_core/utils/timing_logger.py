@@ -83,7 +83,7 @@ class TimingLogger:
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-    def emit_timing_row(self, *, stage: str, started_at: datetime, ended_at: datetime, elapsed_sec: float) -> None:
+    def emit_timing_row(self, *, stage: str, started_at: datetime, ended_at: datetime, elapsed_sec: float, agent_id: str = "") -> None:
         if not self.enabled:
             return
         step = "StepF"
@@ -98,6 +98,7 @@ class TimingLogger:
             "branch_id": self.branch_id,
             "step": step,
             "section": section,
+            "agent_id": str(agent_id or ""),
             "started_at": started_at.isoformat(),
             "ended_at": ended_at.isoformat(),
             "elapsed_sec": float(elapsed_sec),
@@ -122,4 +123,10 @@ class TimingLogger:
             self.emit(stage=stage, elapsed_ms=elapsed_ms, agent_id=agent_id, meta=meta)
             started_at = ended_at.timestamp() - (elapsed_ms / 1000.0)
             started_dt = datetime.fromtimestamp(started_at, tz=timezone.utc)
-            self.emit_timing_row(stage=stage, started_at=started_dt, ended_at=ended_at, elapsed_sec=elapsed_ms / 1000.0)
+            self.emit_timing_row(
+                stage=stage,
+                started_at=started_dt,
+                ended_at=ended_at,
+                elapsed_sec=elapsed_ms / 1000.0,
+                agent_id=agent_id,
+            )
