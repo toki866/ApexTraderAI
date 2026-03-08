@@ -850,121 +850,124 @@ jobs:
           Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
           Add-Content $rp "[REUSE] requested_steps=$requestedStepsRaw"
           Add-Content $rp "[REUSE_GATE] condition prepare_env_success=$([string]('${{ steps.prepare_env.outcome }}' -eq 'success')) reuse_output=$env:REUSE_OUTPUT force_rebuild=$env:FORCE_REBUILD"
-          # Default: fresh run output dir
-          "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          $finalWinOutput = $env:WIN_OUTPUT_DIR
+          $finalWslOutput = $env:WSL_OUTPUT_DIR
+          $reuseFound = $false
+          $reuseDecision = 'fallback=fresh'
+          $reuseReason = 'no_valid_path'
+          $reuseException = ''
+          $rawReuseStdout = ''
+          $rawReuseStderr = ''
+          $wslReuse = ''
+
           if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
             Add-Content $rp "[REUSE_GATE] decision=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
-            exit 0
-          }
-          if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
+          } elseif ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
             Add-Content $rp "[REUSE_GATE] decision=skip reason=reuse_disabled"
-            Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
-            exit 0
-          }
-          Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
-          function Convert-WindowsPathToWsl {
-            param([Parameter(Mandatory = $true)][string]$WindowsPath)
-            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
-              throw "windows_path_empty"
+          } else {
+            Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
+            try {
+              function Convert-WindowsPathToWsl {
+                param([Parameter(Mandatory = $true)][string]$WindowsPath)
+                if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+                  throw "windows_path_empty"
+                }
+                $trimmed = $WindowsPath.Trim()
+                if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+                  throw "windows_path_invalid_format path='$trimmed'"
+                }
+                $drive = $Matches['drive'].ToLowerInvariant()
+                $rest = $Matches['rest'] -replace '\\', '/'
+                if ($rest.Length -gt 0) {
+                  return "/mnt/$drive/$rest"
+                }
+                return "/mnt/$drive"
+              }
+
+              function Convert-WslPathToWindows {
+                param([Parameter(Mandatory = $true)][string]$WslPath)
+                if ([string]::IsNullOrWhiteSpace($WslPath)) {
+                  throw "wsl_path_empty"
+                }
+                $trimmed = $WslPath.Trim()
+                if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
+                  throw "wsl_path_invalid_format path='$trimmed'"
+                }
+                $drive = $Matches['drive'].ToUpperInvariant()
+                $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
+                if ($rest.Length -gt 0) {
+                  return ('{0}:\{1}' -f $drive, $rest)
+                }
+                return ('{0}:\' -f $drive)
+              }
+
+              $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
+              $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
+              Add-Content $rp "[REUSE] work_root_convert rc=0 win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
+              if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
+                throw "work_root_invalid wsl='$wslWorkRoot'"
+              }
+
+              $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+              $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --print-path-only --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0"
+              $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
+              $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
+              $reuseFindRc = 0
+              try {
+                wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
+                $reuseFindRc = $LASTEXITCODE
+              } catch {
+                $reuseFindRc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+                $reuseException = "finder_exception=$_"
+              }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              Add-Content $rp "[REUSE] finder_rc=$reuseFindRc"
+
+              $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+              $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
+
+              if ($wslReuse) {
+                $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
+                if (($winReuse -match '^[A-Za-z]:\') -and (Test-Path $winReuse)) {
+                  $finalWinOutput = $winReuse
+                  $finalWslOutput = $wslReuse
+                  $reuseFound = $true
+                  $reuseDecision = 'reuse=true'
+                  $reuseReason = 'reuse_path_valid'
+                  Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
+                } else {
+                  $reuseReason = 'no_valid_path'
+                  Add-Content $rp "[WARN] resolve_reuse_source invalid_reuse_path win='$winReuse'"
+                }
+              } else {
+                $reuseReason = 'no_valid_path'
+              }
+            } catch {
+              $reuseException = $_.Exception.Message
+              $reuseDecision = 'fallback=fresh'
+              $reuseReason = 'error_fallback'
+              Add-Content $rp "[WARN] resolve_reuse_source exception=$reuseException"
             }
-            $trimmed = $WindowsPath.Trim()
-            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
-              throw "windows_path_invalid_format path='$trimmed'"
-            }
-            $drive = $Matches['drive'].ToLowerInvariant()
-            $rest = $Matches['rest'] -replace '\\', '/'
-            if ($rest.Length -gt 0) {
-              return "/mnt/$drive/$rest"
-            }
-            return "/mnt/$drive"
           }
 
-          function Convert-WslPathToWindows {
-            param([Parameter(Mandatory = $true)][string]$WslPath)
-            if ([string]::IsNullOrWhiteSpace($WslPath)) {
-              throw "wsl_path_empty"
-            }
-            $trimmed = $WslPath.Trim()
-            if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
-              throw "wsl_path_invalid_format path='$trimmed'"
-            }
-            $drive = $Matches['drive'].ToUpperInvariant()
-            $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
-            if ($rest.Length -gt 0) {
-              return ('{0}:\{1}' -f $drive, $rest)
-            }
-            return ('{0}:\' -f $drive)
-          }
+          "EFFECTIVE_WIN_OUTPUT=$finalWinOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "EFFECTIVE_WSL_OUTPUT=$finalWslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "reuse_found=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-          $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
-          $wslWorkRoot = ''
-          $workRootRc = -1
-          try {
-            $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
-            $workRootRc = 0
-          } catch {
-            $workRootRc = 1
-            $msg = "[NG] resolve_reuse_source work_root_convert_failed win='$env:WORK_ROOT' error=$_"
-            Add-Content $rp $msg; Write-Error $msg; exit 1
-          }
-          Add-Content $rp "[REUSE] work_root_convert rc=$workRootRc win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
-          if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
-            $msg = "[NG] resolve_reuse_source work_root_invalid wsl='$wslWorkRoot'"
-            Add-Content $rp $msg; Write-Error $msg; exit 1
-          }
-          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
-          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --print-path-only --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0"
-          $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
-          $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
-          $reuseFindRc = 0
-          try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-            $reuseFindRc = $LASTEXITCODE
-          } catch {
-            $reuseFindRc = 1
-          }
-          $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-          $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
-          Add-Content $rp "[REUSE] finder_rc=$reuseFindRc"
           Add-Content $rp "[REUSE] raw_stdout='$(($rawReuseStdout -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
-          $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-          $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
           Add-Content $rp "[REUSE] parsed_reuse_path='$wslReuse'"
+          Add-Content $rp "[REUSE] exception='$reuseException'"
+          Add-Content $rp "[REUSE] final_decision=$reuseDecision reason=$reuseReason"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalWinOutput'"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalWslOutput'"
+          $reuseFallback = if ($reuseFound) { 'none' } else { 'fresh' }
+          Add-Content $rp "[OK] resolve_reuse_source success reuse=$($reuseFound.ToString().ToLowerInvariant()) fallback=$reuseFallback reason=$reuseReason"
 
-          if ($wslReuse) {
-            Write-Host "[REUSE] Found matching prior run: $wslReuse"
-            $winReuse = ''
-            $reuseConvRc = -1
-            try {
-              $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
-              $reuseConvRc = 0
-            } catch {
-              $reuseConvRc = 1
-              Add-Content $rp "[WARN] resolve_reuse_source wsl_to_win_failed wsl='$wslReuse' rc=$reuseConvRc error=$_"
-            }
-            Add-Content $rp "[REUSE] wsl_to_win_result wsl='$wslReuse' win='$winReuse' rc=$reuseConvRc"
-            if (($reuseConvRc -eq 0) -and ($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
-              Write-Host "[REUSE] source_output_root=$wslReuse"
-              Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
-              "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-              "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-              "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-              Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
-            } else {
-              Write-Warning "[REUSE] conversion invalid ($winReuse); using fresh"
-              Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
-              Add-Content $rp "[OK] resolve_reuse_source reuse=false fallback=fresh"
-            }
-          } else {
-            Write-Warning "[REUSE] No valid /mnt path parsed from finder output; using fresh output_root"
-            Add-Content $rp "[OK] resolve_reuse_source reuse=false reason=no_valid_path"
-          }
 
 
       - name: StepA
@@ -987,12 +990,24 @@ jobs:
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse.outcome }}'
           $validateContextOutcome = 'not_defined'
+          $outRoot = ''
+          $wslOut = ''
+          $manifestPath = ''
           try {
             Add-Content $rp '[STEP] step_a_entry'
+            if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+            if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
+
+            $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+            $wslOut = $env:EFFECTIVE_WSL_OUTPUT
             Add-Content $rp "[STEP_STATUS] requested_steps=$requestedStepsRaw"
             Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=$prepareOutcome"
             Add-Content $rp "[STEP_STATUS] resolve_reuse_outcome=$resolveReuseOutcome"
             Add-Content $rp "[STEP_STATUS] validate_context_outcome=$validateContextOutcome"
+            Add-Content $rp "[STEP_STATUS] WIN_OUTPUT_DIR=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[STEP_STATUS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+            Add-Content $rp "[STEP_STATUS] outRoot=$outRoot"
+            Add-Content $rp "[STEP_STATUS] wslOut=$wslOut"
 
             if ($prepareOutcome -ne 'success') {
               $stepAStatus = 'skip'
@@ -1003,26 +1018,33 @@ jobs:
                 $stepAStatus = 'skip'
                 $stepAReason = 'not_requested'
               } else {
-                $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-                $wslOut = $env:EFFECTIVE_WSL_OUTPUT
-                $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+                if ([string]::IsNullOrWhiteSpace($outRoot) -or [string]::IsNullOrWhiteSpace($wslOut)) {
+                  throw "invalid_effective_output_paths outRoot='$outRoot' wslOut='$wslOut'"
+                }
+                $manifestPath = Join-Path $outRoot 'run_manifest.json'
                 $stepAStatus = 'run'
-                $mPath = Join-Path $outRoot 'run_manifest.json'
-                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-                  try {
-                    $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status)
-                    if ($s -in @('complete', 'reuse')) { $stepAStatus = 'reuse' }
-                  } catch {
-                    Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                $stepAReason = 'execute'
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and -not [string]::IsNullOrWhiteSpace($manifestPath)) {
+                  if (Test-Path $manifestPath) {
+                    try {
+                      $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+                      $priorStatus = $manifest.steps.A.status
+                      if ($priorStatus -in @('complete', 'reuse')) {
+                        $stepAStatus = 'reuse'
+                        $stepAReason = "manifest_status_$priorStatus"
+                      }
+                    } catch {
+                      Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                    }
                   }
                 }
-                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus"
-                Write-Host "[STEP_STATUS] step=A status=$stepAStatus output_root=$outRoot"
+
+                Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
+                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
                 if ($stepAStatus -eq 'reuse') {
-                  $stepAReason = 'prior_artifacts_found'
                   Write-Host '[StepA] status=reuse (prior artifacts found)'
-                } elseif ($stepAStatus -eq 'run') {
+                } else {
                   Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
                   Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
                   Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
@@ -1036,6 +1058,7 @@ jobs:
                     throw "invalid_wsl_output path='$wslOut'"
                   }
 
+                  $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
                   $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
                   Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
 
@@ -1070,9 +1093,13 @@ jobs:
             Write-Error "StepA entry failed rc=$stepRc error=$_"
           } finally {
             Add-Content $rp "[STEP_STATUS] step_a_entry_result=$stepAStatus rc=$stepRc last_exitcode=$LASTEXITCODE"
+            Add-Content $rp "[STEP_STATUS] step_a_entry_outRoot='$outRoot'"
+            Add-Content $rp "[STEP_STATUS] step_a_entry_wslOut='$wslOut'"
+            Add-Content $rp "[STEP_STATUS] step_a_manifest_path='$manifestPath'"
           }
 
           if ($stepRc -ne 0) { exit $stepRc }
+
 
       - name: StepB
         id: step_b
@@ -1088,6 +1115,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('B' -notin $stepList) { Write-Host "[STEP_STATUS] step=B status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -1138,6 +1167,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('C' -notin $stepList) { Write-Host "[STEP_STATUS] step=C status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -1188,6 +1219,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('DPRIME' -notin $stepList) { Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -1239,6 +1272,8 @@ jobs:
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
           if ('E' -notin $stepList -or $skipStepE) { Write-Host "[STEP_STATUS] step=E status=skip reason=not_requested_or_skip_flag"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -1329,6 +1364,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('F' -notin $stepList) { Write-Host "[STEP_STATUS] step=F status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -3704,119 +3741,124 @@ jobs:
           Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
           Add-Content $rp "[REUSE] requested_steps=$requestedStepsRaw"
           Add-Content $rp "[REUSE_GATE] condition prepare_env_success=$([string]('${{ steps.prepare_env.outcome }}' -eq 'success')) reuse_output=$env:REUSE_OUTPUT force_rebuild=$env:FORCE_REBUILD"
-          # Default: fresh run output dir
-          "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          $finalWinOutput = $env:WIN_OUTPUT_DIR
+          $finalWslOutput = $env:WSL_OUTPUT_DIR
+          $reuseFound = $false
+          $reuseDecision = 'fallback=fresh'
+          $reuseReason = 'no_valid_path'
+          $reuseException = ''
+          $rawReuseStdout = ''
+          $rawReuseStderr = ''
+          $wslReuse = ''
+
           if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
             Add-Content $rp "[REUSE_GATE] decision=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
-            exit 0
-          }
-          if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
+          } elseif ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
             Add-Content $rp "[REUSE_GATE] decision=skip reason=reuse_disabled"
-            Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
-            exit 0
-          }
-          Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
-          function Convert-WindowsPathToWsl {
-            param([Parameter(Mandatory = $true)][string]$WindowsPath)
-            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
-              throw "windows_path_empty"
+          } else {
+            Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
+            try {
+              function Convert-WindowsPathToWsl {
+                param([Parameter(Mandatory = $true)][string]$WindowsPath)
+                if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+                  throw "windows_path_empty"
+                }
+                $trimmed = $WindowsPath.Trim()
+                if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+                  throw "windows_path_invalid_format path='$trimmed'"
+                }
+                $drive = $Matches['drive'].ToLowerInvariant()
+                $rest = $Matches['rest'] -replace '\\', '/'
+                if ($rest.Length -gt 0) {
+                  return "/mnt/$drive/$rest"
+                }
+                return "/mnt/$drive"
+              }
+
+              function Convert-WslPathToWindows {
+                param([Parameter(Mandatory = $true)][string]$WslPath)
+                if ([string]::IsNullOrWhiteSpace($WslPath)) {
+                  throw "wsl_path_empty"
+                }
+                $trimmed = $WslPath.Trim()
+                if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
+                  throw "wsl_path_invalid_format path='$trimmed'"
+                }
+                $drive = $Matches['drive'].ToUpperInvariant()
+                $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
+                if ($rest.Length -gt 0) {
+                  return ('{0}:\{1}' -f $drive, $rest)
+                }
+                return ('{0}:\' -f $drive)
+              }
+
+              $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
+              $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
+              Add-Content $rp "[REUSE] work_root_convert rc=0 win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
+              if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
+                throw "work_root_invalid wsl='$wslWorkRoot'"
+              }
+
+              $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+              $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --print-path-only --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0"
+              $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
+              $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
+              $reuseFindRc = 0
+              try {
+                wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
+                $reuseFindRc = $LASTEXITCODE
+              } catch {
+                $reuseFindRc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+                $reuseException = "finder_exception=$_"
+              }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              Add-Content $rp "[REUSE] finder_rc=$reuseFindRc"
+
+              $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+              $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
+
+              if ($wslReuse) {
+                $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
+                if (($winReuse -match '^[A-Za-z]:\') -and (Test-Path $winReuse)) {
+                  $finalWinOutput = $winReuse
+                  $finalWslOutput = $wslReuse
+                  $reuseFound = $true
+                  $reuseDecision = 'reuse=true'
+                  $reuseReason = 'reuse_path_valid'
+                  Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
+                } else {
+                  $reuseReason = 'no_valid_path'
+                  Add-Content $rp "[WARN] resolve_reuse_source invalid_reuse_path win='$winReuse'"
+                }
+              } else {
+                $reuseReason = 'no_valid_path'
+              }
+            } catch {
+              $reuseException = $_.Exception.Message
+              $reuseDecision = 'fallback=fresh'
+              $reuseReason = 'error_fallback'
+              Add-Content $rp "[WARN] resolve_reuse_source exception=$reuseException"
             }
-            $trimmed = $WindowsPath.Trim()
-            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
-              throw "windows_path_invalid_format path='$trimmed'"
-            }
-            $drive = $Matches['drive'].ToLowerInvariant()
-            $rest = $Matches['rest'] -replace '\\', '/'
-            if ($rest.Length -gt 0) {
-              return "/mnt/$drive/$rest"
-            }
-            return "/mnt/$drive"
           }
 
-          function Convert-WslPathToWindows {
-            param([Parameter(Mandatory = $true)][string]$WslPath)
-            if ([string]::IsNullOrWhiteSpace($WslPath)) {
-              throw "wsl_path_empty"
-            }
-            $trimmed = $WslPath.Trim()
-            if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
-              throw "wsl_path_invalid_format path='$trimmed'"
-            }
-            $drive = $Matches['drive'].ToUpperInvariant()
-            $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
-            if ($rest.Length -gt 0) {
-              return ('{0}:\{1}' -f $drive, $rest)
-            }
-            return ('{0}:\' -f $drive)
-          }
+          "EFFECTIVE_WIN_OUTPUT=$finalWinOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "EFFECTIVE_WSL_OUTPUT=$finalWslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "reuse_found=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-          $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
-          $wslWorkRoot = ''
-          $workRootRc = -1
-          try {
-            $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
-            $workRootRc = 0
-          } catch {
-            $workRootRc = 1
-            $msg = "[NG] resolve_reuse_source work_root_convert_failed win='$env:WORK_ROOT' error=$_"
-            Add-Content $rp $msg; Write-Error $msg; exit 1
-          }
-          Add-Content $rp "[REUSE] work_root_convert rc=$workRootRc win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
-          if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
-            $msg = "[NG] resolve_reuse_source work_root_invalid wsl='$wslWorkRoot'"
-            Add-Content $rp $msg; Write-Error $msg; exit 1
-          }
-          $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
-          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/find_reuse_run.py --print-path-only --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0"
-          $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
-          $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
-          $reuseFindRc = 0
-          try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-            $reuseFindRc = $LASTEXITCODE
-          } catch {
-            $reuseFindRc = 1
-          }
-          $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-          $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
-          Add-Content $rp "[REUSE] finder_rc=$reuseFindRc"
           Add-Content $rp "[REUSE] raw_stdout='$(($rawReuseStdout -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
-          $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-          $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
           Add-Content $rp "[REUSE] parsed_reuse_path='$wslReuse'"
-          if ($wslReuse) {
-            Write-Host "[REUSE] Found matching prior run: $wslReuse"
-            $winReuse = ''
-            $reuseConvRc = -1
-            try {
-              $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
-              $reuseConvRc = 0
-            } catch {
-              $reuseConvRc = 1
-              Add-Content $rp "[WARN] resolve_reuse_source wsl_to_win_failed wsl='$wslReuse' rc=$reuseConvRc error=$_"
-            }
-            Add-Content $rp "[REUSE] wsl_to_win_result wsl='$wslReuse' win='$winReuse' rc=$reuseConvRc"
-            if (($reuseConvRc -eq 0) -and ($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
-              Write-Host "[REUSE] source_output_root=$wslReuse"
-              Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
-              "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-              "EFFECTIVE_WSL_OUTPUT=$wslReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-              "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-              Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
-            } else {
-              Write-Warning "[REUSE] conversion invalid ($winReuse); using fresh"
-              Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
-            }
-          } else {
-            Write-Host "[REUSE] No prior run found; fresh output_root=$env:WIN_OUTPUT_DIR"
-            Add-Content $rp "[OK] resolve_reuse_source reuse=false reason=no_valid_path"
-          }
+          Add-Content $rp "[REUSE] exception='$reuseException'"
+          Add-Content $rp "[REUSE] final_decision=$reuseDecision reason=$reuseReason"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalWinOutput'"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalWslOutput'"
+          $reuseFallback = if ($reuseFound) { 'none' } else { 'fresh' }
+          Add-Content $rp "[OK] resolve_reuse_source success reuse=$($reuseFound.ToString().ToLowerInvariant()) fallback=$reuseFallback reason=$reuseReason"
+
 
       - name: StepA
         id: step_a
@@ -3838,12 +3880,24 @@ jobs:
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse.outcome }}'
           $validateContextOutcome = 'not_defined'
+          $outRoot = ''
+          $wslOut = ''
+          $manifestPath = ''
           try {
             Add-Content $rp '[STEP] step_a_entry'
+            if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+            if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
+
+            $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+            $wslOut = $env:EFFECTIVE_WSL_OUTPUT
             Add-Content $rp "[STEP_STATUS] requested_steps=$requestedStepsRaw"
             Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=$prepareOutcome"
             Add-Content $rp "[STEP_STATUS] resolve_reuse_outcome=$resolveReuseOutcome"
             Add-Content $rp "[STEP_STATUS] validate_context_outcome=$validateContextOutcome"
+            Add-Content $rp "[STEP_STATUS] WIN_OUTPUT_DIR=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[STEP_STATUS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+            Add-Content $rp "[STEP_STATUS] outRoot=$outRoot"
+            Add-Content $rp "[STEP_STATUS] wslOut=$wslOut"
 
             if ($prepareOutcome -ne 'success') {
               $stepAStatus = 'skip'
@@ -3854,26 +3908,33 @@ jobs:
                 $stepAStatus = 'skip'
                 $stepAReason = 'not_requested'
               } else {
-                $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-                $wslOut = $env:EFFECTIVE_WSL_OUTPUT
-                $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+                if ([string]::IsNullOrWhiteSpace($outRoot) -or [string]::IsNullOrWhiteSpace($wslOut)) {
+                  throw "invalid_effective_output_paths outRoot='$outRoot' wslOut='$wslOut'"
+                }
+                $manifestPath = Join-Path $outRoot 'run_manifest.json'
                 $stepAStatus = 'run'
-                $mPath = Join-Path $outRoot 'run_manifest.json'
-                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-                  try {
-                    $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status)
-                    if ($s -in @('complete', 'reuse')) { $stepAStatus = 'reuse' }
-                  } catch {
-                    Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                $stepAReason = 'execute'
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and -not [string]::IsNullOrWhiteSpace($manifestPath)) {
+                  if (Test-Path $manifestPath) {
+                    try {
+                      $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+                      $priorStatus = $manifest.steps.A.status
+                      if ($priorStatus -in @('complete', 'reuse')) {
+                        $stepAStatus = 'reuse'
+                        $stepAReason = "manifest_status_$priorStatus"
+                      }
+                    } catch {
+                      Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                    }
                   }
                 }
-                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus"
-                Write-Host "[STEP_STATUS] step=A status=$stepAStatus output_root=$outRoot"
+
+                Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
+                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
                 if ($stepAStatus -eq 'reuse') {
-                  $stepAReason = 'prior_artifacts_found'
                   Write-Host '[StepA] status=reuse (prior artifacts found)'
-                } elseif ($stepAStatus -eq 'run') {
+                } else {
                   Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
                   Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
                   Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
@@ -3887,6 +3948,7 @@ jobs:
                     throw "invalid_wsl_output path='$wslOut'"
                   }
 
+                  $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
                   $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
                   Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
 
@@ -3921,9 +3983,13 @@ jobs:
             Write-Error "StepA entry failed rc=$stepRc error=$_"
           } finally {
             Add-Content $rp "[STEP_STATUS] step_a_entry_result=$stepAStatus rc=$stepRc last_exitcode=$LASTEXITCODE"
+            Add-Content $rp "[STEP_STATUS] step_a_entry_outRoot='$outRoot'"
+            Add-Content $rp "[STEP_STATUS] step_a_entry_wslOut='$wslOut'"
+            Add-Content $rp "[STEP_STATUS] step_a_manifest_path='$manifestPath'"
           }
 
           if ($stepRc -ne 0) { exit $stepRc }
+
 
       - name: StepB
         id: step_b
@@ -3939,6 +4005,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('B' -notin $stepList) { Write-Host "[STEP_STATUS] step=B status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -3989,6 +4057,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('C' -notin $stepList) { Write-Host "[STEP_STATUS] step=C status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -4039,6 +4109,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('DPRIME' -notin $stepList) { Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -4090,6 +4162,8 @@ jobs:
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
           if ('E' -notin $stepList -or $skipStepE) { Write-Host "[STEP_STATUS] step=E status=skip reason=not_requested_or_skip_flag"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
@@ -4180,6 +4254,8 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('F' -notin $stepList) { Write-Host "[STEP_STATUS] step=F status=skip reason=not_requested"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
+          if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
           $status = 'run'
