@@ -42,6 +42,22 @@ def _parse_int_list(s: str):
     return tuple(out)
 
 
+def _parse_symbol_list(s: str):
+    """Parse comma-separated symbols while preserving order and uniqueness."""
+    out = []
+    seen = set()
+    for raw in (s or "").split(","):
+        sym = raw.strip()
+        if not sym:
+            continue
+        key = sym.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sym)
+    return tuple(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Find a matching prior run in scan_root.")
     ap.add_argument("--scan-root", required=True, help="Root directory to scan (WORK_ROOT).")
@@ -89,7 +105,7 @@ def main() -> int:
     )
 
     if args.reuse_scope == "stepA_simple":
-        symbols = tuple(sorted({s.strip() for s in args.symbol.split(",") if s.strip()}))
+        symbols = _parse_symbol_list(args.symbol)
         simple_sig = StepASimpleReuseSignature(
             mode=str(args.mode),
             symbols=symbols,

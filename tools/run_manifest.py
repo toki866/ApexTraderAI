@@ -135,6 +135,32 @@ def build_run_signature(
     )
 
 
+def _normalize_symbols(values: object) -> Tuple[str, ...]:
+    """Normalize symbols to upper-case tuple preserving order and uniqueness."""
+    if values is None:
+        return ()
+
+    if isinstance(values, str):
+        raw_items = values.split(",")
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = list(values)
+    else:
+        raw_items = [values]
+
+    out: List[str] = []
+    seen = set()
+    for item in raw_items:
+        sym = str(item).strip()
+        if not sym:
+            continue
+        key = sym.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return tuple(out)
+
+
 # ---------------------------------------------------------------------------
 # Artifact presence checks
 # ---------------------------------------------------------------------------
@@ -565,13 +591,22 @@ def find_latest_matching_stepa_simple_run(
         if not isinstance(sig, dict):
             continue
 
-        if str(sig.get("mode", "")) != simple_sig.mode:
+        if str(sig.get("mode", "")).strip().lower() != str(simple_sig.mode).strip().lower():
             continue
-        if str(sig.get("test_start", "")) != simple_sig.test_start:
+        if str(sig.get("test_start", "")).strip() != str(simple_sig.test_start).strip():
             continue
         if int(sig.get("train_years", -1)) != int(simple_sig.train_years):
             continue
         if int(sig.get("test_months", -1)) != int(simple_sig.test_months):
+            continue
+
+        # symbols may be stored as a single signature.symbol or list-like signature.symbols.
+        # If absent/unreadable, artifact-only validation above remains authoritative.
+        requested_symbols = _normalize_symbols(simple_sig.symbols)
+        manifest_symbols = _normalize_symbols(sig.get("symbols"))
+        if not manifest_symbols:
+            manifest_symbols = _normalize_symbols(sig.get("symbol"))
+        if manifest_symbols and manifest_symbols != requested_symbols:
             continue
 
         return output_root
