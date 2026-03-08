@@ -606,7 +606,13 @@ class RunManifest:
     def save(self) -> None:
         path = self._output_root / _MANIFEST_FILENAME
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8")
+        payload = json.dumps(self._data, indent=2, ensure_ascii=False)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
 
     # ------------------------------------------------------------------
     # Completed step count (for ranking during scan)

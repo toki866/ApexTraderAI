@@ -161,14 +161,19 @@ class StepBService:
             parsed = pd.to_datetime(values, errors="coerce", utc=True)
             return parsed.dt.tz_localize(None).dt.normalize()
 
-        out_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date"})
-        out_df["Date"] = _normalize_date_series(out_df["Date"])
-        out_df = out_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-        out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
+        raw_pred_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date", mamba_col: "Pred_Close_MAMBA"})
+        raw_pred_df["Date"] = _normalize_date_series(raw_pred_df["Date"])
+        raw_pred_df = raw_pred_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+
+        first_pred_date = raw_pred_df["Date"].min() if not raw_pred_df.empty else pd.NaT
+        last_pred_date = raw_pred_df["Date"].max() if not raw_pred_df.empty else pd.NaT
 
         # Align to StepA test dates so downstream evaluators see explicit test-window coverage.
         _aligned_to_test = False
         align_reason = ""
+        stage1_error = ""
+        stage2_error = ""
+        test_dates = pd.DataFrame(columns=["Date"])
         # Stage-1 fallback: canonical StepA test split alignment.
         try:
             test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
@@ -176,14 +181,14 @@ class StepBService:
                 test_dates = test_df[["Date"]].copy()
                 test_dates["Date"] = _normalize_date_series(test_dates["Date"])
                 test_dates = test_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-                out_df = test_dates.merge(out_df, on="Date", how="left")
+                out_df = test_dates.merge(raw_pred_df, on="Date", how="left")
                 _aligned_to_test = True
                 align_reason = "stepA_test_split"
         except Exception as e:
-            align_reason = f"stage1_failed:{type(e).__name__}"
+            stage1_error = f"stage1_failed:{type(e).__name__}"
 
         # Stage-2 fallback: align to the StepA combined prices calendar when split test load failed.
-        if not _aligned_to_test:
+        if not _aligned_to_test and run_mode != "sim":
             try:
                 all_prices = self._load_stepa_df(symbol, run_mode, "prices")
                 if "Date" in all_prices.columns:
@@ -191,14 +196,24 @@ class StepBService:
                     all_dates["Date"] = _normalize_date_series(all_dates["Date"])
                     all_dates = all_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
                     # Keep prediction window only to avoid unbounded expansion.
-                    if not out_df.empty:
-                        min_pred = out_df["Date"].min()
+                    if not raw_pred_df.empty:
+                        min_pred = raw_pred_df["Date"].min()
                         all_dates = all_dates.loc[all_dates["Date"] >= min_pred]
-                    out_df = all_dates.merge(out_df, on="Date", how="left")
+                    out_df = all_dates.merge(raw_pred_df, on="Date", how="left")
                     _aligned_to_test = True
                     align_reason = "stepA_combined_prices"
             except Exception as e:
-                align_reason = f"{align_reason};stage2_failed:{type(e).__name__}" if align_reason else f"stage2_failed:{type(e).__name__}"
+                stage2_error = f"stage2_failed:{type(e).__name__}"
+
+        if not _aligned_to_test:
+            out_df = raw_pred_df.copy()
+            if run_mode == "sim":
+                align_reason = stage1_error or "stepA_test_split_unavailable"
+            else:
+                align_reason = ";".join(v for v in (stage1_error, stage2_error) if v) or "raw_stepB_dates"
+
+        if run_mode == "sim" and _aligned_to_test:
+            out_df = test_dates.merge(out_df[["Date", "Pred_Close_MAMBA"]], on="Date", how="left")
 
         print(
             f"[StepB:pred_time_all] symbol={symbol} mode={run_mode} "
@@ -212,7 +227,8 @@ class StepBService:
         out_df["Pred_Close_MAMBA"] = out_df["pred_close_mamba"]
         out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
 
-        coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+        non_null_rows = int(out_df["pred_close_mamba"].notna().sum()) if len(out_df) > 0 else 0
+        coverage = (float(non_null_rows) / float(len(out_df))) if len(out_df) > 0 else 0.0
         if len(out_df) > 0 and coverage <= 0.0:
             # Fallback: rebuild from daily H=1 target-date files when pred_close alignment produced no
             # valid test-window predictions. This preserves strict "coverage must be > 0" behavior while
@@ -234,13 +250,35 @@ class StepBService:
                 rebuilt = rebuilt.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
                 rebuilt["pred_close_mamba"] = pd.to_numeric(rebuilt["Pred_Close_MAMBA"], errors="coerce")
                 rebuilt["Pred_Close_MAMBA"] = rebuilt["pred_close_mamba"]
-                if "Date" in out_df.columns and len(out_df) > 0:
+                if run_mode == "sim" and not test_dates.empty:
+                    rebuilt = test_dates.merge(rebuilt[["Date", "Pred_Close_MAMBA", "pred_close_mamba"]], on="Date", how="left")
+                    align_reason = f"{align_reason};daily_h1_rebuild_test_split" if align_reason else "daily_h1_rebuild_test_split"
+                elif "Date" in out_df.columns and len(out_df) > 0:
                     rebuilt = out_df[["Date"]].merge(rebuilt[["Date", "Pred_Close_MAMBA", "pred_close_mamba"]], on="Date", how="left")
+                    align_reason = f"{align_reason};daily_h1_rebuild" if align_reason else "daily_h1_rebuild"
                 out_df = rebuilt[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
-                coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+                non_null_rows = int(out_df["pred_close_mamba"].notna().sum()) if len(out_df) > 0 else 0
+                coverage = (float(non_null_rows) / float(len(out_df))) if len(out_df) > 0 else 0.0
+
+        diag = {
+            "symbol": symbol,
+            "run_mode": run_mode,
+            "pred_path": str(pred_path),
+            "chosen_date_col": date_col,
+            "first_pred_date": "" if pd.isna(first_pred_date) else str(pd.Timestamp(first_pred_date).date()),
+            "last_pred_date": "" if pd.isna(last_pred_date) else str(pd.Timestamp(last_pred_date).date()),
+            "first_test_date": "" if test_dates.empty else str(test_dates["Date"].min().date()),
+            "last_test_date": "" if test_dates.empty else str(test_dates["Date"].max().date()),
+            "raw_pred_rows": int(len(raw_pred_df)),
+            "merged_test_rows": int(len(out_df)),
+            "non_null_rows_over_test": int(non_null_rows),
+            "coverage_ratio_over_test": float(coverage),
+            "align_reason": align_reason or "raw_stepB_dates",
+        }
+        print(f"[StepB:pred_time_all:diag] {diag}")
 
         if len(out_df) == 0 or coverage <= 0.0:
-            raise ValueError(f"StepB pred_time_all invalid test coverage: rows={len(out_df)} coverage_ratio_over_test={coverage:.4f}")
+            raise ValueError(f"StepB pred_time_all invalid test coverage: {diag}")
 
         out_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path
