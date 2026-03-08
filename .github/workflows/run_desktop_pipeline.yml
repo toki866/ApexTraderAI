@@ -1044,6 +1044,10 @@ jobs:
           $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse_pipeline.outcome }}'
+          $stepaResolveOutcome = '${{ steps.resolve_reuse_stepa.outcome }}'
+          if ($resolveReuseOutcome -ne 'success' -and $stepaResolveOutcome -eq 'success') {
+            $resolveReuseOutcome = 'success_via_stepa_simple'
+          }
           $validateContextOutcome = 'not_defined'
           $outRoot = ''
           $wslOut = ''
@@ -1333,7 +1337,13 @@ jobs:
               if ($stepStatus -in @('complete','reuse')) {
                 $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
                 if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
-                  $status = 'reuse'
+                  $dailyCount = @(Get-ChildItem -Path (Join-Path $outRoot ('stepE\' + $env:MODE)) -Filter ("stepE_daily_log_*_" + $sym1 + ".csv") -File -ErrorAction SilentlyContinue).Count
+                  if ($dailyCount -gt 0) {
+                    $status = 'reuse'
+                  } else {
+                    $status = 'partial_run'
+                    Add-Content $rp "[STEP_E] manifest_reuse_but_daily_missing count=$dailyCount"
+                  }
                 } else {
                   $status = 'partial_run'
                 }
@@ -1379,7 +1389,7 @@ jobs:
               if ($latestRunLog) {
                 Add-Content $rp "[STEP_E] run_log_tail file=$($latestRunLog.FullName)"
                 try {
-                  Get-Content -Path $latestRunLog.FullName -Tail 120 -ErrorAction Stop | ForEach-Object { Add-Content $rp $_ }
+                  Get-Content -Encoding UTF8 -Path $latestRunLog.FullName -Tail 120 -ErrorAction Stop | ForEach-Object { Add-Content $rp $_ }
                 } catch {
                   Add-Content $rp "[STEP_E] run_log_tail_error=$_"
                 }
@@ -1419,7 +1429,7 @@ jobs:
           $status = 'run'
           $mPath = Join-Path $outRoot 'run_manifest.json'
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { if (Test-Path (Join-Path $outRoot ("stepF\$env:MODE\stepF_equity_marl_$sym1.csv"))) { $status = 'reuse' } else { Add-Content $rp '[STEP_F] manifest_reuse_but_equity_missing'; $status='run' } } } catch { }
           }
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
@@ -1539,7 +1549,7 @@ jobs:
           Add-Content $report ("[INFO] console_log={0}" -f $consoleLog)
           if (Test-Path $consoleLog) {
             Add-Content $report "---- console_log_tail (last 350 lines) ----"
-            (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+            (Get-Content -Encoding UTF8 $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
           } else {
             Add-Content $report "[WARN] console log not found"
           }
@@ -1565,7 +1575,7 @@ jobs:
             if ($latestRunLog) {
               Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)
               Add-Content $report "---- run_log_tail (last 350 lines) ----"
-              (Get-Content $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+              (Get-Content -Encoding UTF8 $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
             } else {
               Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"
             }
@@ -3983,6 +3993,10 @@ jobs:
           $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse_pipeline.outcome }}'
+          $stepaResolveOutcome = '${{ steps.resolve_reuse_stepa.outcome }}'
+          if ($resolveReuseOutcome -ne 'success' -and $stepaResolveOutcome -eq 'success') {
+            $resolveReuseOutcome = 'success_via_stepa_simple'
+          }
           $validateContextOutcome = 'not_defined'
           $outRoot = ''
           $wslOut = ''
@@ -4272,7 +4286,13 @@ jobs:
               if ($stepStatus -in @('complete','reuse')) {
                 $agentStatuses = @($m.steps.E.agents.PSObject.Properties.Value | ForEach-Object { $_.status })
                 if ($agentStatuses.Count -gt 0 -and ($agentStatuses | Where-Object { $_ -notin @('complete','reuse') }).Count -eq 0) {
-                  $status = 'reuse'
+                  $dailyCount = @(Get-ChildItem -Path (Join-Path $outRoot ('stepE\' + $env:MODE)) -Filter ("stepE_daily_log_*_" + $sym1 + ".csv") -File -ErrorAction SilentlyContinue).Count
+                  if ($dailyCount -gt 0) {
+                    $status = 'reuse'
+                  } else {
+                    $status = 'partial_run'
+                    Add-Content $rp "[STEP_E] manifest_reuse_but_daily_missing count=$dailyCount"
+                  }
                 } else {
                   $status = 'partial_run'
                 }
@@ -4318,7 +4338,7 @@ jobs:
               if ($latestRunLog) {
                 Add-Content $rp "[STEP_E] run_log_tail file=$($latestRunLog.FullName)"
                 try {
-                  Get-Content -Path $latestRunLog.FullName -Tail 120 -ErrorAction Stop | ForEach-Object { Add-Content $rp $_ }
+                  Get-Content -Encoding UTF8 -Path $latestRunLog.FullName -Tail 120 -ErrorAction Stop | ForEach-Object { Add-Content $rp $_ }
                 } catch {
                   Add-Content $rp "[STEP_E] run_log_tail_error=$_"
                 }
@@ -4358,7 +4378,7 @@ jobs:
           $status = 'run'
           $mPath = Join-Path $outRoot 'run_manifest.json'
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
+            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.F.status); if ($s -in @('complete','reuse')) { if (Test-Path (Join-Path $outRoot ("stepF\$env:MODE\stepF_equity_marl_$sym1.csv"))) { $status = 'reuse' } else { Add-Content $rp '[STEP_F] manifest_reuse_but_equity_missing'; $status='run' } } } catch { }
           }
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
@@ -4478,7 +4498,7 @@ jobs:
           Add-Content $report ("[INFO] console_log={0}" -f $consoleLog)
           if (Test-Path $consoleLog) {
             Add-Content $report "---- console_log_tail (last 350 lines) ----"
-            (Get-Content $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+            (Get-Content -Encoding UTF8 $consoleLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
           } else {
             Add-Content $report "[WARN] console log not found"
           }
@@ -4504,7 +4524,7 @@ jobs:
             if ($latestRunLog) {
               Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)
               Add-Content $report "---- run_log_tail (last 350 lines) ----"
-              (Get-Content $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+              (Get-Content -Encoding UTF8 $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
             } else {
               Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"
             }
