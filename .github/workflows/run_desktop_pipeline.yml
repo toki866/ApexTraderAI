@@ -846,21 +846,27 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_source'
+          $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
           Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
+          Add-Content $rp "[REUSE] requested_steps=$requestedStepsRaw"
+          Add-Content $rp "[REUSE_GATE] condition prepare_env_success=$([string]('${{ steps.prepare_env.outcome }}' -eq 'success')) reuse_output=$env:REUSE_OUTPUT force_rebuild=$env:FORCE_REBUILD"
           # Default: fresh run output dir
           "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[REUSE_GATE] decision=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
             exit 0
           }
           if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[REUSE_GATE] decision=skip reason=reuse_disabled"
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
             exit 0
           }
+          Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
           function Convert-WindowsPathToWsl {
             param([Parameter(Mandatory = $true)][string]$WindowsPath)
             if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
@@ -973,50 +979,100 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] step_a_entry'
-          Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=${{ steps.prepare_env.outcome }}"
-          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
-            Add-Content $rp "[WARN] step_a skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            Write-Host "[STEP_STATUS] step=A status=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            exit 0
+          $stepRc = 0
+          $stepAStatus = 'unknown'
+          $stepAReason = ''
+          $pipelineRc = -1
+          $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $prepareOutcome = '${{ steps.prepare_env.outcome }}'
+          $resolveReuseOutcome = '${{ steps.resolve_reuse.outcome }}'
+          $validateContextOutcome = 'not_defined'
+          try {
+            Add-Content $rp '[STEP] step_a_entry'
+            Add-Content $rp "[STEP_STATUS] requested_steps=$requestedStepsRaw"
+            Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=$prepareOutcome"
+            Add-Content $rp "[STEP_STATUS] resolve_reuse_outcome=$resolveReuseOutcome"
+            Add-Content $rp "[STEP_STATUS] validate_context_outcome=$validateContextOutcome"
+
+            if ($prepareOutcome -ne 'success') {
+              $stepAStatus = 'skip'
+              $stepAReason = "prepare_environment_$prepareOutcome"
+            } else {
+              $stepList = ($requestedStepsRaw -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+              if ('A' -notin $stepList) {
+                $stepAStatus = 'skip'
+                $stepAReason = 'not_requested'
+              } else {
+                $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+                $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+                $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+                $stepAStatus = 'run'
+                $mPath = Join-Path $outRoot 'run_manifest.json'
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+                  try {
+                    $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status)
+                    if ($s -in @('complete', 'reuse')) { $stepAStatus = 'reuse' }
+                  } catch {
+                    Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                  }
+                }
+                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus"
+                Write-Host "[STEP_STATUS] step=A status=$stepAStatus output_root=$outRoot"
+
+                if ($stepAStatus -eq 'reuse') {
+                  $stepAReason = 'prior_artifacts_found'
+                  Write-Host '[StepA] status=reuse (prior artifacts found)'
+                } elseif ($stepAStatus -eq 'run') {
+                  Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
+                  Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
+                  Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+                  Write-Host "[WSL_PATHS] EFFECTIVE_WIN_OUTPUT=$outRoot"
+                  Write-Host "[WSL_PATHS] EFFECTIVE_WSL_OUTPUT=$wslOut"
+
+                  if (-not ($env:WSL_REPO_ROOT -match '^/mnt/')) {
+                    throw "invalid_wsl_repo_root path='$env:WSL_REPO_ROOT'"
+                  }
+                  if (-not ($wslOut -match '^/mnt/')) {
+                    throw "invalid_wsl_output path='$wslOut'"
+                  }
+
+                  $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
+                  Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+
+                  try {
+                    wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+                    $pipelineRc = $LASTEXITCODE
+                  } catch {
+                    $pipelineRc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+                    Add-Content $rp "[NG] step_a pipeline_exception=$_"
+                  } finally {
+                    Add-Content $rp "[STEP_STATUS] step_a_pipeline_rc=$pipelineRc last_exitcode=$LASTEXITCODE"
+                    Write-Host "[StepA] rc=$pipelineRc last_exitcode=$LASTEXITCODE"
+                  }
+
+                  if ($pipelineRc -ne 0) {
+                    throw "step_a_pipeline_failed rc=$pipelineRc"
+                  }
+                  Add-Content $rp '[OK] step_a'
+                }
+              }
+            }
+
+            if ($stepAStatus -eq 'skip') {
+              Add-Content $rp "[WARN] step_a skipped reason=$stepAReason"
+              Write-Host "[STEP_STATUS] step=A status=skip reason=$stepAReason"
+            }
+            Add-Content $rp "[STEP_STATUS] step_a_decision_final=$stepAStatus reason=$stepAReason"
+          } catch {
+            $stepRc = if ($pipelineRc -gt 0) { $pipelineRc } elseif ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+            Add-Content $rp "[NG] step_a_entry exception=$_"
+            Add-Content $rp "[NG] step_a_decision_final=$stepAStatus reason=$stepAReason"
+            Write-Error "StepA entry failed rc=$stepRc error=$_"
+          } finally {
+            Add-Content $rp "[STEP_STATUS] step_a_entry_result=$stepAStatus rc=$stepRc last_exitcode=$LASTEXITCODE"
           }
-          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
-          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
-          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
-          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
-          $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
-          }
-          Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
-          Add-Content $rp "[STEP_STATUS] step=A status=$status"
-          if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
-          # [B] Log WSL paths before execution
-          Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
-          Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
-          Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
-          Write-Host "[WSL_PATHS] EFFECTIVE_WIN_OUTPUT=$outRoot"
-          Write-Host "[WSL_PATHS] EFFECTIVE_WSL_OUTPUT=$wslOut"
-          # [C] Validate WSL paths before bash -c
-          if (-not ($env:WSL_REPO_ROOT -match '^/mnt/')) {
-            Add-Content $rp "[NG] step_a invalid_wsl_repo_root='$env:WSL_REPO_ROOT'"
-            Write-Error "WSL_REPO_ROOT not a /mnt/ path: '$env:WSL_REPO_ROOT'"; exit 1
-          }
-          if (-not ($wslOut -match '^/mnt/')) {
-            Add-Content $rp "[NG] step_a invalid_wsl_output='$wslOut'"
-            Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
-          }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
-          # [D] Log command before execution
-          Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
-          $rc = 1
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_a exception=$_" }
-          finally { Write-Host "[StepA] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
-          Add-Content $rp '[OK] step_a'
+
+          if ($stepRc -ne 0) { exit $stepRc }
 
       - name: StepB
         id: step_b
@@ -3644,21 +3700,27 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_source'
+          $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
           Add-Content $rp "[REUSE] prepare_env_outcome=${{ steps.prepare_env.outcome }}"
+          Add-Content $rp "[REUSE] requested_steps=$requestedStepsRaw"
+          Add-Content $rp "[REUSE_GATE] condition prepare_env_success=$([string]('${{ steps.prepare_env.outcome }}' -eq 'success')) reuse_output=$env:REUSE_OUTPUT force_rebuild=$env:FORCE_REBUILD"
           # Default: fresh run output dir
           "EFFECTIVE_WIN_OUTPUT=$env:WIN_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$env:WSL_OUTPUT_DIR" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "reuse_found=false"                        | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
+            Add-Content $rp "[REUSE_GATE] decision=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp "[WARN] resolve_reuse_source skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
             Add-Content $rp '[OK] resolve_reuse_source reuse=false fallback=fresh'
             exit 0
           }
           if ($env:REUSE_OUTPUT -ne '1' -or $env:FORCE_REBUILD -eq '1') {
             Write-Host "[REUSE] disabled; fresh output_root=$env:WIN_OUTPUT_DIR"
+            Add-Content $rp "[REUSE_GATE] decision=skip reason=reuse_disabled"
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
             exit 0
           }
+          Add-Content $rp '[REUSE_GATE] decision=scan_prior_runs'
           function Convert-WindowsPathToWsl {
             param([Parameter(Mandatory = $true)][string]$WindowsPath)
             if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
@@ -3768,50 +3830,100 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] step_a_entry'
-          Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=${{ steps.prepare_env.outcome }}"
-          if ('${{ steps.prepare_env.outcome }}' -ne 'success') {
-            Add-Content $rp "[WARN] step_a skipped reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            Write-Host "[STEP_STATUS] step=A status=skip reason=prepare_environment_${{ steps.prepare_env.outcome }}"
-            exit 0
+          $stepRc = 0
+          $stepAStatus = 'unknown'
+          $stepAReason = ''
+          $pipelineRc = -1
+          $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $prepareOutcome = '${{ steps.prepare_env.outcome }}'
+          $resolveReuseOutcome = '${{ steps.resolve_reuse.outcome }}'
+          $validateContextOutcome = 'not_defined'
+          try {
+            Add-Content $rp '[STEP] step_a_entry'
+            Add-Content $rp "[STEP_STATUS] requested_steps=$requestedStepsRaw"
+            Add-Content $rp "[STEP_STATUS] prepare_environment_outcome=$prepareOutcome"
+            Add-Content $rp "[STEP_STATUS] resolve_reuse_outcome=$resolveReuseOutcome"
+            Add-Content $rp "[STEP_STATUS] validate_context_outcome=$validateContextOutcome"
+
+            if ($prepareOutcome -ne 'success') {
+              $stepAStatus = 'skip'
+              $stepAReason = "prepare_environment_$prepareOutcome"
+            } else {
+              $stepList = ($requestedStepsRaw -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+              if ('A' -notin $stepList) {
+                $stepAStatus = 'skip'
+                $stepAReason = 'not_requested'
+              } else {
+                $outRoot = $env:EFFECTIVE_WIN_OUTPUT
+                $wslOut = $env:EFFECTIVE_WSL_OUTPUT
+                $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+                $stepAStatus = 'run'
+                $mPath = Join-Path $outRoot 'run_manifest.json'
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
+                  try {
+                    $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status)
+                    if ($s -in @('complete', 'reuse')) { $stepAStatus = 'reuse' }
+                  } catch {
+                    Add-Content $rp "[WARN] step_a manifest_read_failed error=$_"
+                  }
+                }
+                Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus"
+                Write-Host "[STEP_STATUS] step=A status=$stepAStatus output_root=$outRoot"
+
+                if ($stepAStatus -eq 'reuse') {
+                  $stepAReason = 'prior_artifacts_found'
+                  Write-Host '[StepA] status=reuse (prior artifacts found)'
+                } elseif ($stepAStatus -eq 'run') {
+                  Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
+                  Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
+                  Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+                  Write-Host "[WSL_PATHS] EFFECTIVE_WIN_OUTPUT=$outRoot"
+                  Write-Host "[WSL_PATHS] EFFECTIVE_WSL_OUTPUT=$wslOut"
+
+                  if (-not ($env:WSL_REPO_ROOT -match '^/mnt/')) {
+                    throw "invalid_wsl_repo_root path='$env:WSL_REPO_ROOT'"
+                  }
+                  if (-not ($wslOut -match '^/mnt/')) {
+                    throw "invalid_wsl_output path='$wslOut'"
+                  }
+
+                  $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
+                  Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+
+                  try {
+                    wsl.exe -d $env:WSL_DISTRO -- bash -c $c
+                    $pipelineRc = $LASTEXITCODE
+                  } catch {
+                    $pipelineRc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+                    Add-Content $rp "[NG] step_a pipeline_exception=$_"
+                  } finally {
+                    Add-Content $rp "[STEP_STATUS] step_a_pipeline_rc=$pipelineRc last_exitcode=$LASTEXITCODE"
+                    Write-Host "[StepA] rc=$pipelineRc last_exitcode=$LASTEXITCODE"
+                  }
+
+                  if ($pipelineRc -ne 0) {
+                    throw "step_a_pipeline_failed rc=$pipelineRc"
+                  }
+                  Add-Content $rp '[OK] step_a'
+                }
+              }
+            }
+
+            if ($stepAStatus -eq 'skip') {
+              Add-Content $rp "[WARN] step_a skipped reason=$stepAReason"
+              Write-Host "[STEP_STATUS] step=A status=skip reason=$stepAReason"
+            }
+            Add-Content $rp "[STEP_STATUS] step_a_decision_final=$stepAStatus reason=$stepAReason"
+          } catch {
+            $stepRc = if ($pipelineRc -gt 0) { $pipelineRc } elseif ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+            Add-Content $rp "[NG] step_a_entry exception=$_"
+            Add-Content $rp "[NG] step_a_decision_final=$stepAStatus reason=$stepAReason"
+            Write-Error "StepA entry failed rc=$stepRc error=$_"
+          } finally {
+            Add-Content $rp "[STEP_STATUS] step_a_entry_result=$stepAStatus rc=$stepRc last_exitcode=$LASTEXITCODE"
           }
-          $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
-          if ('A' -notin $stepList) { Write-Host "[STEP_STATUS] step=A status=skip reason=not_requested"; exit 0 }
-          $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
-          $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
-          $status = 'run'
-          $mPath = Join-Path $outRoot 'run_manifest.json'
-          if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and (Test-Path $mPath)) {
-            try { $s = ((Get-Content $mPath -Raw | ConvertFrom-Json).steps.A.status); if ($s -in @('complete','reuse')) { $status = 'reuse' } } catch { }
-          }
-          Write-Host "[STEP_STATUS] step=A status=$status output_root=$outRoot"
-          Add-Content $rp "[STEP_STATUS] step=A status=$status"
-          if ($status -eq 'reuse') { Write-Host "[StepA] status=reuse (prior artifacts found)"; exit 0 }
-          # [B] Log WSL paths before execution
-          Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
-          Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
-          Write-Host "[WSL_PATHS] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
-          Write-Host "[WSL_PATHS] EFFECTIVE_WIN_OUTPUT=$outRoot"
-          Write-Host "[WSL_PATHS] EFFECTIVE_WSL_OUTPUT=$wslOut"
-          # [C] Validate WSL paths before bash -c
-          if (-not ($env:WSL_REPO_ROOT -match '^/mnt/')) {
-            Add-Content $rp "[NG] step_a invalid_wsl_repo_root='$env:WSL_REPO_ROOT'"
-            Write-Error "WSL_REPO_ROOT not a /mnt/ path: '$env:WSL_REPO_ROOT'"; exit 1
-          }
-          if (-not ($wslOut -match '^/mnt/')) {
-            Add-Content $rp "[NG] step_a invalid_wsl_output='$wslOut'"
-            Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
-          }
-          $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps A --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
-          # [D] Log command before execution
-          Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
-          $rc = 1
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_a exception=$_" }
-          finally { Write-Host "[StepA] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_a rc=$rc"; Write-Error "StepA failed rc=$rc"; exit $rc }
-          Add-Content $rp '[OK] step_a'
+
+          if ($stepRc -ne 0) { exit $stepRc }
 
       - name: StepB
         id: step_b
