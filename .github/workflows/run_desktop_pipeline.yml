@@ -906,9 +906,26 @@ jobs:
             Add-Content $rp $msg; Write-Error $msg; exit 1
           }
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
-          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
-          $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
-          $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
+          $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --print-path-only --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0"
+          $rawReuseOut = @()
+          try {
+            $rawReuseOut = @(wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>&1)
+          } catch {
+            $rawReuseOut = @("[exception] $_")
+          }
+          $rawReuseText = ($rawReuseOut | ForEach-Object { [string]$_.TrimEnd() }) -join "`n"
+          Add-Content $rp "[REUSE] raw_stdout_begin"
+          if ([string]::IsNullOrWhiteSpace($rawReuseText)) {
+            Add-Content $rp "[REUSE] raw_stdout=<empty>"
+          } else {
+            Add-Content $rp $rawReuseText
+          }
+          Add-Content $rp "[REUSE] raw_stdout_end"
+
+          $candidateLines = @($rawReuseOut | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^/mnt/[a-z]/' })
+          $wslReuse = if ($candidateLines.Count -gt 0) { $candidateLines[-1] } else { '' }
+          Add-Content $rp "[REUSE] parsed_reuse_path='$wslReuse'"
+
           if ($wslReuse) {
             Write-Host "[REUSE] Found matching prior run: $wslReuse"
             $winReuse = ''
@@ -931,11 +948,13 @@ jobs:
             } else {
               Write-Warning "[REUSE] conversion invalid ($winReuse); using fresh"
               Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
+              Add-Content $rp "[OK] resolve_reuse_source reuse=false fallback=fresh"
             }
           } else {
-            Write-Host "[REUSE] No prior run found; fresh output_root=$env:WIN_OUTPUT_DIR"
-            Add-Content $rp "[OK] resolve_reuse_source reuse=false"
+            Write-Warning "[REUSE] No valid /mnt path parsed from finder output; using fresh output_root"
+            Add-Content $rp "[OK] resolve_reuse_source reuse=false reason=no_valid_path"
           }
+
 
       - name: StepA
         id: step_a
@@ -1191,12 +1210,41 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+          Add-Content $rp "[STEP_E] command=$c"
           # [E] Execute with try/finally so rc is always logged
           $rc = 1
+          $stepEException = ''
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_e exception=$_" }
-          finally { Write-Host "[StepE] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_e rc=$rc"; Write-Error "StepE failed rc=$rc"; exit $rc }
+          catch {
+            $stepEException = "$_"
+            Add-Content $rp "[NG] step_e exception=$stepEException"
+          }
+          finally {
+            Write-Host "[StepE] rc=$rc"
+            Add-Content $rp "[STEP_E] rc=$rc"
+            $logDir = Join-Path $outRoot 'logs'
+            if (Test-Path $logDir) {
+              $latestRunLog = Get-ChildItem -Path $logDir -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestRunLog) {
+                Add-Content $rp "[STEP_E] run_log_tail file=$($latestRunLog.FullName)"
+                try {
+                  Get-Content -Path $latestRunLog.FullName -Tail 120 -ErrorAction Stop | ForEach-Object { Add-Content $rp $_ }
+                } catch {
+                  Add-Content $rp "[STEP_E] run_log_tail_error=$_"
+                }
+              } else {
+                Add-Content $rp "[STEP_E] run_log_tail file=<none>"
+              }
+            } else {
+              Add-Content $rp "[STEP_E] run_log_dir_missing path=$logDir"
+            }
+          }
+          if ($rc -ne 0) {
+            Add-Content $rp "[NG] step_e rc=$rc"
+            if ($stepEException) { Add-Content $rp "[NG] step_e exception_text=$stepEException" }
+            Write-Error "StepE failed rc=$rc"
+            exit $rc
+          }
           Add-Content $rp '[OK] step_e'
 
       - name: StepF

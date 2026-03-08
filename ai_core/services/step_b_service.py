@@ -16,7 +16,7 @@ from ai_core.utils.timing_logger import TimingLogger
 class StepBService:
     """Mamba-only StepB service."""
 
-    STEPB_PRED_TIME_ALL_COLUMNS = ("Date", "Pred_Close_MAMBA")
+    STEPB_PRED_TIME_ALL_COLUMNS = ("Date", "Pred_Close_MAMBA", "pred_close_mamba")
 
     def __init__(self, app_config: AppConfig) -> None:
         self.app_config = app_config
@@ -147,7 +147,23 @@ class StepBService:
             raise ValueError("StepB Mamba output must include Pred_Close_MAMBA")
 
         out_df = df[["Date", mamba_col]].copy()
+        out_df["Date"] = pd.to_datetime(out_df["Date"], errors="coerce").dt.normalize()
+        out_df = out_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
         out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
+
+        # Align to StepA test dates so downstream evaluators see explicit test-window coverage.
+        try:
+            test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
+            if "Date" in test_df.columns:
+                test_dates = test_df[["Date"]].copy()
+                test_dates["Date"] = pd.to_datetime(test_dates["Date"], errors="coerce").dt.normalize()
+                test_dates = test_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+                out_df = test_dates.merge(out_df, on="Date", how="left")
+        except Exception:
+            # Keep best-effort behavior; fallback to raw StepB dates if StepA test cannot be loaded.
+            pass
+
+        out_df["pred_close_mamba"] = pd.to_numeric(out_df["Pred_Close_MAMBA"], errors="coerce")
         out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
         out_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path

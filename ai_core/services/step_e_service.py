@@ -282,33 +282,40 @@ class StepEService:
         if policy_kind not in {"diffpg", "ppo"}:
             raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}")
         if policy_kind == "ppo":
-            with timing.stage("stepE.agent.train", agent_id=str(cfg.agent)):
-                self._train_and_eval_ppo(
-                cfg=cfg,
-                symbol=symbol,
-                mode=mode,
-                out_dir=out_dir,
-                model_dir=model_dir,
-                obs_cols=obs_cols,
-                mu=mu,
-                sd=sd,
-                dates_train=dates_train,
-                dates_test=dates_test,
-                r_soxl_train=r_soxl_train,
-                r_soxs_train=r_soxs_train,
-                r_soxl_test=r_soxl_test,
-                r_soxs_test=r_soxs_test,
-                X_train_s=X_train_s,
-                X_test_s=X_test_s,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                rows_train=len(df_train),
-                    rows_test=len(df_test),
-                )
-            timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo"})
-            return
+            try:
+                with timing.stage("stepE.agent.train", agent_id=str(cfg.agent)):
+                    self._train_and_eval_ppo(
+                    cfg=cfg,
+                    symbol=symbol,
+                    mode=mode,
+                    out_dir=out_dir,
+                    model_dir=model_dir,
+                    obs_cols=obs_cols,
+                    mu=mu,
+                    sd=sd,
+                    dates_train=dates_train,
+                    dates_test=dates_test,
+                    r_soxl_train=r_soxl_train,
+                    r_soxs_train=r_soxs_train,
+                    r_soxl_test=r_soxl_test,
+                    r_soxs_test=r_soxs_test,
+                    X_train_s=X_train_s,
+                    X_test_s=X_test_s,
+                    train_start=train_start,
+                    train_end=train_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    rows_train=len(df_train),
+                        rows_test=len(df_test),
+                    )
+                timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo"})
+                return
+            except RuntimeError as e:
+                msg = str(e)
+                if "stable-baselines3" not in msg:
+                    raise
+                print(f"[StepE] WARN agent={cfg.agent} PPO unavailable ({msg}); fallback to diffpg")
+                policy_kind = "diffpg"
 
         # Train policy (diffPG)
         device_name = str(cfg.device).strip().lower()
@@ -905,6 +912,10 @@ class StepEService:
         source/horizon style for backward compatibility.
         """
         base = out_root / "stepD_prime" / mode / "embeddings"
+        if not base.exists():
+            alt_base = out_root / "stepDprime" / mode / "embeddings"
+            if alt_base.exists():
+                base = alt_base
 
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         merged: Optional[pd.DataFrame] = None

@@ -555,6 +555,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
             f"stepB_pred_path_mamba_{symbol}.csv",
             f"stepB_pred_close_wavelet_mamba_{symbol}.csv",
             f"stepB_pred_path_wavelet_mamba_{symbol}.csv",
+            f"stepB_pred_close_mamba_periodic_{symbol}.csv",
         ]
         files: list[str] = []
         for p in patterns:
@@ -600,9 +601,11 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                         true_series = None
                         pred_series = None
                         if stepa_prices is not None and "Date" in stepa_prices.columns and date_col:
-                            merged = stepa_prices[["Date", "Close"]].merge(
-                                df[[date_col, col]].rename(columns={date_col: "Date"}), on="Date", how="left"
-                            )
+                            left = stepa_prices[["Date", "Close"]].copy()
+                            right = df[[date_col, col]].rename(columns={date_col: "Date"}).copy()
+                            left["Date"] = pd.to_datetime(left["Date"], errors="coerce").dt.normalize()
+                            right["Date"] = pd.to_datetime(right["Date"], errors="coerce").dt.normalize()
+                            merged = left.merge(right, on="Date", how="left")
                             coverage_ratio = float(merged[col].notna().mean()) if len(merged) else None
                             true_series = merged["Close"]
                             pred_series = merged[col]

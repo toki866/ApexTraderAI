@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """CLI tool: scan WORK_ROOT for a prior run matching the given signature.
 
-Prints the output_root path of the best matching run (if found), or nothing.
-Exit code is always 0 to avoid BAT for-loop errors.
+Machine-readable mode:
+- stdout contains only the matched output_root path (single line) or empty.
+- diagnostic logs are emitted to stderr only.
 
-Called from run_all_local_then_copy.bat (via WSL) when REUSE_OUTPUT=1.
+Exit code is always 0 to avoid orchestration hard-fail.
 """
 
 from __future__ import annotations
@@ -50,6 +51,11 @@ def main() -> int:
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None)
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default="")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default="")
+    ap.add_argument(
+        "--print-path-only",
+        action="store_true",
+        help="Print only the matched path to stdout (diagnostics go to stderr).",
+    )
     args = ap.parse_args()
 
     steps_parsed = tuple(
@@ -79,9 +85,17 @@ def main() -> int:
     )
 
     scan_root = Path(args.scan_root)
+    print(
+        f"[find_reuse_run] scan_root={scan_root} symbol={args.symbol} mode={args.mode} "
+        f"test_start={args.test_start} train_years={args.train_years} test_months={args.test_months}",
+        file=sys.stderr,
+    )
     result = find_latest_matching_run(scan_root, sig)
     if result is not None:
         print(str(result))
+        print(f"[find_reuse_run] matched={result}", file=sys.stderr)
+    else:
+        print("[find_reuse_run] matched=<none>", file=sys.stderr)
 
     return 0
 
