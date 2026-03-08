@@ -922,8 +922,10 @@ jobs:
           Add-Content $rp "[REUSE] stepa_reuse_decision=$stepaDecision"
           Add-Content $rp "[REUSE] stepa_reuse_reason=$stepaReason"
           Add-Content $rp "[REUSE] stepa_reuse_state=$reuseState"
-          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$env:WIN_OUTPUT_DIR'"
-          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$env:WSL_OUTPUT_DIR'"
+          $finalStepaWinOutput = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:WIN_OUTPUT_DIR } else { $env:EFFECTIVE_WIN_OUTPUT }
+          $finalStepaWslOutput = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:WSL_OUTPUT_DIR } else { $env:EFFECTIVE_WSL_OUTPUT }
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalStepaWinOutput'"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalStepaWslOutput'"
           Add-Content $rp "[REUSE] stepa_raw_stdout='$(($rawReuseStdout -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_exception='$reuseException'"
@@ -1049,8 +1051,10 @@ jobs:
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse_pipeline.outcome }}'
           $stepaResolveOutcome = '${{ steps.resolve_reuse_stepa.outcome }}'
-          if ($resolveReuseOutcome -ne 'success' -and $stepaResolveOutcome -eq 'success') {
+          if ($stepaResolveOutcome -eq 'success') {
             $resolveReuseOutcome = 'success_via_stepa_simple'
+          } elseif ($resolveReuseOutcome -ne 'success') {
+            $resolveReuseOutcome = 'error_fallback'
           }
           $validateContextOutcome = 'not_defined'
           $outRoot = ''
@@ -3875,6 +3879,10 @@ jobs:
           Add-Content $rp "[REUSE] stepa_reuse_decision=$stepaDecision"
           Add-Content $rp "[REUSE] stepa_reuse_reason=$stepaReason"
           Add-Content $rp "[REUSE] stepa_reuse_state=$reuseState"
+          $finalStepaWinOutput = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:WIN_OUTPUT_DIR } else { $env:EFFECTIVE_WIN_OUTPUT }
+          $finalStepaWslOutput = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:WSL_OUTPUT_DIR } else { $env:EFFECTIVE_WSL_OUTPUT }
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$finalStepaWinOutput'"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$finalStepaWslOutput'"
           Add-Content $rp "[REUSE] stepa_raw_stdout='$(($rawReuseStdout -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_exception='$reuseException'"
@@ -3998,8 +4006,10 @@ jobs:
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
           $resolveReuseOutcome = '${{ steps.resolve_reuse_pipeline.outcome }}'
           $stepaResolveOutcome = '${{ steps.resolve_reuse_stepa.outcome }}'
-          if ($resolveReuseOutcome -ne 'success' -and $stepaResolveOutcome -eq 'success') {
+          if ($stepaResolveOutcome -eq 'success') {
             $resolveReuseOutcome = 'success_via_stepa_simple'
+          } elseif ($resolveReuseOutcome -ne 'success') {
+            $resolveReuseOutcome = 'error_fallback'
           }
           $validateContextOutcome = 'not_defined'
           $outRoot = ''
