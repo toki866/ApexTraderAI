@@ -831,7 +831,10 @@ def run_mamba_multi_model_by_horizon(
     out[f"Delta_Close_pred_{col_agent}"] = out[f"Delta_Close_pred_{col_agent}_h{h1:02d}"]
 
     out_dates = pd.to_datetime(out["Date"])
-    mask = (out_dates >= train_start) & (out_dates <= test_end)
+    if str(mode).lower() == "sim":
+        mask = (out_dates >= test_start) & (out_dates <= test_end)
+    else:
+        mask = (out_dates >= train_start) & (out_dates <= test_end)
     out_win = out.loc[mask].copy()
 
     # ---- Daily path outputs per horizon (from StepA daily windows) ----
