@@ -81,6 +81,25 @@ class RunSignature:
         return hashlib.sha256(blob).hexdigest()[:16]
 
 
+@dataclass(frozen=True)
+class StepASimpleReuseSignature:
+    """Simplified StepA reuse signature.
+
+    StepA only checks these keys:
+    - mode
+    - symbols
+    - test_start
+    - train_years
+    - test_months
+    """
+
+    mode: str
+    symbols: Tuple[str, ...]
+    test_start: str
+    train_years: int
+    test_months: int
+
+
 def build_run_signature(
     symbol: str,
     mode: str,
@@ -485,3 +504,75 @@ def find_latest_matching_run(scan_root: Path, sig: RunSignature) -> Optional[Pat
             best = run_dir / "output"
 
     return best if best_count > 0 else None
+
+
+def find_latest_matching_stepa_simple_run(
+    scan_root: Path,
+    simple_sig: StepASimpleReuseSignature,
+) -> Optional[Path]:
+    """Find latest prior run usable for StepA simple reuse.
+
+    Candidate rules:
+    - StepA artifacts must exist for every symbol in simple_sig.symbols.
+    - If run_manifest.json is present *and readable*, require:
+      steps.A.status in {complete, reuse} and signature keys match
+      (mode, test_start, train_years, test_months).
+    - If manifest is missing or broken, artifact-only fallback is allowed.
+    """
+    scan_root = Path(scan_root)
+    if not scan_root.exists():
+        return None
+
+    try:
+        candidates = sorted(scan_root.iterdir(), key=lambda p: p.name, reverse=True)
+    except Exception:
+        return None
+
+    for run_dir in candidates:
+        if not run_dir.is_dir():
+            continue
+        output_root = run_dir / "output"
+        if not output_root.exists():
+            continue
+
+        # StepA artifacts must exist for every requested symbol.
+        if not all(
+            check_step_artifacts("A", output_root, symbol=s, mode=simple_sig.mode)
+            for s in simple_sig.symbols
+        ):
+            continue
+
+        manifest_path = output_root / _MANIFEST_FILENAME
+        if not manifest_path.exists():
+            return output_root
+
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            # Broken manifest fallback is explicitly allowed.
+            return output_root
+
+        step_a_status = (
+            data.get("steps", {}).get("A", {}).get("status")
+            if isinstance(data, dict)
+            else None
+        )
+        if step_a_status not in ("complete", "reuse"):
+            continue
+
+        sig = data.get("signature", {}) if isinstance(data, dict) else {}
+        if not isinstance(sig, dict):
+            continue
+
+        if str(sig.get("mode", "")) != simple_sig.mode:
+            continue
+        if str(sig.get("test_start", "")) != simple_sig.test_start:
+            continue
+        if int(sig.get("train_years", -1)) != int(simple_sig.train_years):
+            continue
+        if int(sig.get("test_months", -1)) != int(simple_sig.test_months):
+            continue
+
+        return output_root
+
+    return None
