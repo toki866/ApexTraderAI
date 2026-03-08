@@ -156,22 +156,54 @@ class StepBService:
         if mamba_col is None:
             raise ValueError("StepB Mamba output must include Pred_Close_MAMBA/Pred_Close_MAMBA_h01")
 
+        def _normalize_date_series(values: pd.Series) -> pd.Series:
+            # timezone-safe normalize: parse in UTC, drop timezone, then normalize to date boundary.
+            parsed = pd.to_datetime(values, errors="coerce", utc=True)
+            return parsed.dt.tz_localize(None).dt.normalize()
+
         out_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date"})
-        out_df["Date"] = pd.to_datetime(out_df["Date"], errors="coerce").dt.normalize()
+        out_df["Date"] = _normalize_date_series(out_df["Date"])
         out_df = out_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
         out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
 
         # Align to StepA test dates so downstream evaluators see explicit test-window coverage.
+        _aligned_to_test = False
+        align_reason = ""
+        # Stage-1 fallback: canonical StepA test split alignment.
         try:
             test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
             if "Date" in test_df.columns:
                 test_dates = test_df[["Date"]].copy()
-                test_dates["Date"] = pd.to_datetime(test_dates["Date"], errors="coerce").dt.normalize()
+                test_dates["Date"] = _normalize_date_series(test_dates["Date"])
                 test_dates = test_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
                 out_df = test_dates.merge(out_df, on="Date", how="left")
-        except Exception:
-            # Keep best-effort behavior; fallback to raw StepB dates if StepA test cannot be loaded.
-            pass
+                _aligned_to_test = True
+                align_reason = "stepA_test_split"
+        except Exception as e:
+            align_reason = f"stage1_failed:{type(e).__name__}"
+
+        # Stage-2 fallback: align to the StepA combined prices calendar when split test load failed.
+        if not _aligned_to_test:
+            try:
+                all_prices = self._load_stepa_df(symbol, run_mode, "prices")
+                if "Date" in all_prices.columns:
+                    all_dates = all_prices[["Date"]].copy()
+                    all_dates["Date"] = _normalize_date_series(all_dates["Date"])
+                    all_dates = all_dates.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+                    # Keep prediction window only to avoid unbounded expansion.
+                    if not out_df.empty:
+                        min_pred = out_df["Date"].min()
+                        all_dates = all_dates.loc[all_dates["Date"] >= min_pred]
+                    out_df = all_dates.merge(out_df, on="Date", how="left")
+                    _aligned_to_test = True
+                    align_reason = "stepA_combined_prices"
+            except Exception as e:
+                align_reason = f"{align_reason};stage2_failed:{type(e).__name__}" if align_reason else f"stage2_failed:{type(e).__name__}"
+
+        print(
+            f"[StepB:pred_time_all] symbol={symbol} mode={run_mode} "
+            f"aligned_to_test={_aligned_to_test} reason={align_reason or 'raw_stepB_dates'} rows={len(out_df)}"
+        )
 
         out_df["pred_close_mamba"] = pd.to_numeric(
             out_df["Pred_Close_MAMBA"].astype(str).str.replace(",", "", regex=False),

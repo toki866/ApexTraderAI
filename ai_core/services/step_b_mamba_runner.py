@@ -609,7 +609,7 @@ def run_mamba_multi_model_by_horizon(
         raise RuntimeError("No numeric feature columns found.")
 
     df[feature_cols] = df[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().fillna(0.0)
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").ffill().fillna(0.0)
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce").ffill().bfill().fillna(1.0)
 
     # Standardization fit on TRAIN only (SIM leakage rule)
     train_mask = (df["Date"] >= train_start) & (df["Date"] <= train_end)
@@ -987,6 +987,14 @@ def run_mamba_multi_model_by_horizon(
     pred_path_path = stepb_dir / f"stepB_pred_path_{out_tag}_{sym}.csv"
     delta_path = stepb_dir / f"stepB_delta_{out_tag}_{sym}.csv"
     meta_path = stepb_dir / f"stepB_{out_tag}_meta_{sym}.json"
+
+    h1_col = f"Pred_Close_{col_agent}_h01"
+    if h1_col in out_win.columns:
+        _cov_ratio = float(out_win[h1_col].notna().mean()) if len(out_win) > 0 else 0.0
+        print(
+            f"[StepB:mamba:{out_tag}] test_coverage_h01 rows={len(out_win)} non_null={int(out_win[h1_col].notna().sum())} "
+            f"coverage={_cov_ratio:.4f} test_start={pd.Timestamp(test_start).date()} test_end={pd.Timestamp(test_end).date()}"
+        )
 
     out_win.to_csv(pred_close_path, index=False, encoding="utf-8-sig")
     df_path.to_csv(pred_path_path, index=False, encoding="utf-8-sig")
