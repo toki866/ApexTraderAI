@@ -1099,16 +1099,19 @@ jobs:
                   throw "invalid_effective_output_paths outRoot='$outRoot' wslOut='$wslOut'"
                 }
                 $manifestPath = Join-Path $outRoot 'run_manifest.json'
+                $stepAOnlyRequested = (($stepList.Count -eq 1) -and ('A' -in $stepList))
                 $stepAStatus = 'run'
                 $stepAReason = 'execute'
-                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
-                  if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT)) {
+                if ($stepAOnlyRequested -and $env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
+                  if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT) -and ($outRoot -eq $env:STEPA_REUSE_WIN_OUTPUT)) {
                     $stepAStatus = 'reuse'
                     $stepAReason = 'simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
                     Add-Content $rp '[STEP_STATUS] step=A status=reuse'
                     Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
+                  } elseif (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and ($outRoot -ne $env:STEPA_REUSE_WIN_OUTPUT)) {
+                    Add-Content $rp "[STEP_STATUS] stepa_simple_reuse_ignored reason=output_root_mismatch effective='$outRoot' stepa_reuse='$env:STEPA_REUSE_WIN_OUTPUT'"
                   }
                 }
 
