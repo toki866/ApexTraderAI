@@ -181,6 +181,32 @@ class StepBService:
         out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
 
         coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+        if len(out_df) > 0 and coverage <= 0.0:
+            # Fallback: rebuild from daily H=1 target-date files when pred_close alignment produced no
+            # valid test-window predictions. This preserves strict "coverage must be > 0" behavior while
+            # avoiding false negatives caused by endpoint CSV date mismatches.
+            daily_dir = self._out_dir(run_mode) / "daily"
+            daily_files = sorted(daily_dir.glob(f"stepB_daily_pred_mamba_h01_{symbol}_*.csv"))
+            rows = []
+            for fp in daily_files:
+                try:
+                    dfd = pd.read_csv(fp)
+                except Exception:
+                    continue
+                if {"Date_target", "Pred_Close"}.issubset(dfd.columns):
+                    sub = dfd[["Date_target", "Pred_Close"]].copy().rename(columns={"Date_target": "Date", "Pred_Close": "Pred_Close_MAMBA"})
+                    rows.append(sub)
+            if rows:
+                rebuilt = pd.concat(rows, axis=0, ignore_index=True)
+                rebuilt["Date"] = pd.to_datetime(rebuilt["Date"], errors="coerce").dt.normalize()
+                rebuilt = rebuilt.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
+                rebuilt["pred_close_mamba"] = pd.to_numeric(rebuilt["Pred_Close_MAMBA"], errors="coerce")
+                rebuilt["Pred_Close_MAMBA"] = rebuilt["pred_close_mamba"]
+                if "Date" in out_df.columns and len(out_df) > 0:
+                    rebuilt = out_df[["Date"]].merge(rebuilt[["Date", "Pred_Close_MAMBA", "pred_close_mamba"]], on="Date", how="left")
+                out_df = rebuilt[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
+                coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+
         if len(out_df) == 0 or coverage <= 0.0:
             raise ValueError(f"StepB pred_time_all invalid test coverage: rows={len(out_df)} coverage_ratio_over_test={coverage:.4f}")
 

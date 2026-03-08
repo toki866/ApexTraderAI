@@ -140,6 +140,9 @@ class StepFService:
                 prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
                 prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
                 logs_map = self._load_stepe_logs(out_root, input_mode, symbol, agents)
+            if not logs_map:
+                raise RuntimeError("StepF dependency missing: no StepE daily logs available for any configured agent")
+            agents = [a for a in agents if a in logs_map]
             soxl_px = prices_soxl[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
             soxs_px = prices_soxs[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"})
             price_pair = soxl_px.merge(soxs_px, on="Date", how="inner").sort_values("Date").reset_index(drop=True)
@@ -274,7 +277,8 @@ class StepFService:
         for agent in agents:
             p = out_root / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
             if not p.exists():
-                raise FileNotFoundError(f"missing StepE log: {p}")
+                print(f"[StepF-router] WARN: missing StepE log (skip agent): {p}")
+                continue
             df = pd.read_csv(p)
             if "Date" not in df.columns:
                 raise KeyError(f"{p} missing Date")

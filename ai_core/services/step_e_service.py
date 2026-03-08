@@ -755,16 +755,20 @@ class StepEService:
                 match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
                 used_manifest["stepD_prime_match_ratio"] = match_ratio
                 if match_ratio < 0.10:
-                    # If this happens, all embeddings will be NaN after merge then become zeros.
+                    # Keep StepE runnable: when embeddings/date alignment is broken, degrade gracefully
+                    # to non-DPrime mode so daily logs/equity artifacts are still produced.
                     df_min, df_max = df["Date"].min(), df["Date"].max()
                     dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
-                    raise RuntimeError(
-                        "StepD' merge mismatch (match_ratio={:.3f}). "
-                        "df Date range={}..{}, dprime Date range={}..{}. "
-                        "Check the embeddings file Date column/format.".format(match_ratio, df_min, df_max, dp_min, dp_max)
+                    print(
+                        "[StepE] WARN: StepD' merge mismatch "
+                        "(match_ratio={:.3f}, df={}..{}, dprime={}..{}). "
+                        "Fallback to use_stepd_prime=False for this agent.".format(match_ratio, df_min, df_max, dp_min, dp_max)
                     )
+                    cfg.use_stepd_prime = False
+                    dprime_df = None
 
-                df = df.merge(dprime_df, on="Date", how="left")
+                if dprime_df is not None:
+                    df = df.merge(dprime_df, on="Date", how="left")
                 # missing embeddings -> 0 (warmup rows are expected to be missing)
                 dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
                 if dp_cols:

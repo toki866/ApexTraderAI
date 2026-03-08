@@ -892,8 +892,8 @@ jobs:
               $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
               $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
               wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw -Encoding UTF8) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw -Encoding UTF8) } else { '' }
               $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
               $stepaWslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
               if ($stepaWslReuse) {
@@ -922,6 +922,8 @@ jobs:
           Add-Content $rp "[REUSE] stepa_reuse_decision=$stepaDecision"
           Add-Content $rp "[REUSE] stepa_reuse_reason=$stepaReason"
           Add-Content $rp "[REUSE] stepa_reuse_state=$reuseState"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT='$env:WIN_OUTPUT_DIR'"
+          Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT='$env:WSL_OUTPUT_DIR'"
           Add-Content $rp "[REUSE] stepa_raw_stdout='$(($rawReuseStdout -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_raw_stderr='$(($rawReuseStderr -replace "`r", "" -replace "`n", "\n").Trim())'"
           Add-Content $rp "[REUSE] stepa_exception='$reuseException'"
@@ -989,8 +991,8 @@ jobs:
               $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_strict_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
               $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_strict_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
               wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw -Encoding UTF8) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw -Encoding UTF8) } else { '' }
               $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
               $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
               if ($wslReuse) {
@@ -1036,6 +1038,8 @@ jobs:
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
         run: |
           $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $stepRc = 0
           $stepAStatus = 'unknown'
@@ -3841,8 +3845,8 @@ jobs:
               $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
               $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
               wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw -Encoding UTF8) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw -Encoding UTF8) } else { '' }
               $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
               $stepaWslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
               if ($stepaWslReuse) {
@@ -3938,8 +3942,8 @@ jobs:
               $reuseStdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_strict_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
               $reuseStderrTmp = Join-Path $env:RUNNER_TEMP ("reuse_strict_stderr_" + [guid]::NewGuid().ToString('N') + ".txt")
               wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $reuseStdoutTmp 2> $reuseStderrTmp
-              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw) } else { '' }
-              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw) } else { '' }
+              $rawReuseStdout = if (Test-Path $reuseStdoutTmp) { (Get-Content $reuseStdoutTmp -Raw -Encoding UTF8) } else { '' }
+              $rawReuseStderr = if (Test-Path $reuseStderrTmp) { (Get-Content $reuseStderrTmp -Raw -Encoding UTF8) } else { '' }
               $stdoutLines = @($rawReuseStdout -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
               $wslReuse = if ($stdoutLines.Count -gt 0) { $stdoutLines[0] } else { '' }
               if ($wslReuse) {
