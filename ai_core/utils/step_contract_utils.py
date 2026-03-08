@@ -144,9 +144,6 @@ def validate_step_dprime(
         emb = base / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_test.csv"
         if not emb.exists():
             missing.append(str(emb))
-        sm = base / f"stepDprime_split_summary_{profile}_{symbol}.csv"
-        if not sm.exists():
-            missing.append(str(sm))
 
     return missing
 

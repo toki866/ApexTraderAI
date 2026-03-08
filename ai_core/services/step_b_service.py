@@ -138,9 +138,11 @@ class StepBService:
 
         df = pd.read_csv(pred_path)
 
-        date_col = "Date" if "Date" in df.columns else None
-        if date_col is None and "Date_target" in df.columns:
-            date_col = "Date_target"
+        # Prefer Date_target when available. The runner can emit both Date (anchor) and
+        # Date_target (prediction target); coverage against StepA test dates must use target dates.
+        date_col = "Date_target" if "Date_target" in df.columns else None
+        if date_col is None and "Date" in df.columns:
+            date_col = "Date"
         if date_col is None:
             raise ValueError("StepB Mamba output must include Date or Date_target")
 

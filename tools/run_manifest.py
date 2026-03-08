@@ -178,9 +178,10 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
         d = base / "stepDprime" / mode
         emb = d / "embeddings"
         for profile in _OFFICIAL_STEPE_AGENTS:
+            # StepDPrime success is defined by state+embedding artifacts.
+            # split_summary may be absent on some historical runs and should not
+            # force a false-negative reuse/failure when core artifacts are complete.
             if not (d / f"stepDprime_state_test_{profile}_{symbol}.csv").exists():
-                return False
-            if not (d / f"stepDprime_split_summary_{profile}_{symbol}.csv").exists():
                 return False
             if not (emb / f"stepDprime_{profile}_{symbol}_embeddings_test.csv").exists():
                 return False
