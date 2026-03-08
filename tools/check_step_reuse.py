@@ -24,7 +24,7 @@ def main() -> int:
     manifest_reuse = False
     manifest_reason = 'manifest_missing_or_incomplete'
     manifest_path = output_root / 'run_manifest.json'
-    parse_error_type = ''
+    parse_error_type = 'none'
     fallback_to_artifact_check = False
     if manifest_path.exists():
       try:
