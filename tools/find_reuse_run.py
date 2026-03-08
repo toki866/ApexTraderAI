@@ -22,7 +22,12 @@ _REPO_ROOT = _HERE.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.run_manifest import build_run_signature, find_latest_matching_run  # noqa: E402
+from tools.run_manifest import (
+    StepASimpleReuseSignature,
+    build_run_signature,
+    find_latest_matching_run,
+    find_latest_matching_stepa_simple_run,
+)  # noqa: E402
 
 
 def _parse_int_list(s: str):
@@ -52,6 +57,12 @@ def main() -> int:
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default="")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default="")
     ap.add_argument(
+        "--reuse-scope",
+        choices=("strict", "stepA_simple"),
+        default="strict",
+        help="Reuse matching scope: strict (default) or stepA_simple.",
+    )
+    ap.add_argument(
         "--print-path-only",
         action="store_true",
         help="Print only the matched path to stdout (diagnostics go to stderr).",
@@ -70,27 +81,38 @@ def main() -> int:
             a.strip() for a in args.stepe_agents.split(",") if a.strip()
         )
 
-    sig = build_run_signature(
-        symbol=args.symbol,
-        mode=args.mode,
-        test_start=args.test_start,
-        train_years=args.train_years,
-        test_months=args.test_months,
-        steps=steps_parsed,
-        enable_mamba=bool(args.enable_mamba),
-        enable_mamba_periodic=bool(args.enable_mamba_periodic),
-        mamba_lookback=args.mamba_lookback,
-        mamba_horizons=_parse_int_list(args.mamba_horizons),
-        stepe_agents=stepe_agents_parsed,
-    )
-
     scan_root = Path(args.scan_root)
     print(
-        f"[find_reuse_run] scan_root={scan_root} symbol={args.symbol} mode={args.mode} "
+        f"[find_reuse_run] scope={args.reuse_scope} scan_root={scan_root} symbol={args.symbol} mode={args.mode} "
         f"test_start={args.test_start} train_years={args.train_years} test_months={args.test_months}",
         file=sys.stderr,
     )
-    result = find_latest_matching_run(scan_root, sig)
+
+    if args.reuse_scope == "stepA_simple":
+        symbols = tuple(sorted({s.strip() for s in args.symbol.split(",") if s.strip()}))
+        simple_sig = StepASimpleReuseSignature(
+            mode=str(args.mode),
+            symbols=symbols,
+            test_start=str(args.test_start or ""),
+            train_years=int(args.train_years),
+            test_months=int(args.test_months),
+        )
+        result = find_latest_matching_stepa_simple_run(scan_root, simple_sig)
+    else:
+        sig = build_run_signature(
+            symbol=args.symbol,
+            mode=args.mode,
+            test_start=args.test_start,
+            train_years=args.train_years,
+            test_months=args.test_months,
+            steps=steps_parsed,
+            enable_mamba=bool(args.enable_mamba),
+            enable_mamba_periodic=bool(args.enable_mamba_periodic),
+            mamba_lookback=args.mamba_lookback,
+            mamba_horizons=_parse_int_list(args.mamba_horizons),
+            stepe_agents=stepe_agents_parsed,
+        )
+        result = find_latest_matching_run(scan_root, sig)
     path_line = str(result) if result is not None else ""
 
     if args.print_path_only:
