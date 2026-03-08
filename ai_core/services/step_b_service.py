@@ -90,12 +90,14 @@ class StepBService:
         out_path = stepb_dir / f"stepB_pred_time_all_{symbol}.csv"
 
         pred_path = None
+        pred_source = ""
         csv_paths = getattr(mamba_result, "csv_paths", None)
         if isinstance(csv_paths, dict):
             for key in ("pred_close", "pred_close_path", "output_path"):
                 value = csv_paths.get(key)
                 if value:
                     pred_path = Path(value)
+                    pred_source = f"csv_paths:{key}"
                     break
 
         iter_csv_preview = []
@@ -109,6 +111,7 @@ class StepBService:
                 p = Path(value)
                 if "pred_close" in p.name.lower():
                     pred_path = p
+                    pred_source = "iter_csv_paths:pred_close_match"
                     break
 
         if pred_path is None:
@@ -116,6 +119,7 @@ class StepBService:
                 v = getattr(mamba_result, k, None)
                 if v:
                     pred_path = Path(v)
+                    pred_source = f"attr:{k}"
                     break
         if pred_path is None:
             artifacts = getattr(mamba_result, "artifacts", {}) or {}
@@ -123,6 +127,7 @@ class StepBService:
                 v = artifacts.get(key)
                 if v:
                     pred_path = Path(v)
+                    pred_source = f"artifacts:{key}"
                     break
         if pred_path is None or not pred_path.exists():
             csv_paths_keys = list(csv_paths.keys()) if isinstance(csv_paths, dict) else []
@@ -172,7 +177,8 @@ class StepBService:
         print(
             f"[StepB:pred_close:source] path={pred_path} rows={len(df)} non_null_count={raw_non_null} "
             f"has_Date_target={('Date_target' in df.columns)} has_Date={('Date' in df.columns)} "
-            f"raw_min_date={raw_min_date or '(none)'} raw_max_date={raw_max_date or '(none)'} chosen_date_col={date_col}"
+            f"raw_min_date={raw_min_date or '(none)'} raw_max_date={raw_max_date or '(none)'} chosen_date_col={date_col} "
+            f"pred_source={pred_source or 'unknown'}"
         )
 
         raw_pred_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date", mamba_col: "Pred_Close_MAMBA"})
@@ -253,6 +259,7 @@ class StepBService:
         coverage = (float(non_null_rows) / float(len(out_df))) if len(out_df) > 0 else 0.0
         fallback_file_count = 0
         fallback_rebuilt_non_null_over_test = 0
+        prediction_source_used = pred_source or "pred_close_csv"
         if len(out_df) > 0 and coverage <= 0.0:
             # Fallback: rebuild from daily H=1 target-date files when pred_close alignment produced no
             # valid test-window predictions. This preserves strict "coverage must be > 0" behavior while
@@ -285,6 +292,7 @@ class StepBService:
                 non_null_rows = int(out_df["pred_close_mamba"].notna().sum()) if len(out_df) > 0 else 0
                 fallback_rebuilt_non_null_over_test = non_null_rows
                 coverage = (float(non_null_rows) / float(len(out_df))) if len(out_df) > 0 else 0.0
+                prediction_source_used = "daily_h1_rebuild_fallback"
             print(
                 f"[StepB:pred_time_all:fallback] source_file_count={fallback_file_count} "
                 f"rebuilt_non_null_rows_over_test={fallback_rebuilt_non_null_over_test}"
@@ -296,6 +304,21 @@ class StepBService:
                 f"StepB pred_time_all sim mode must match StepA test split dates exactly: "
                 f"merged_test_rows={merged_test_rows} test_rows={len(test_dates)}"
             )
+
+        if run_mode == "sim" and not test_dates.empty:
+            first_test_dt = test_dates["Date"].min()
+            test_date_set = set(test_dates["Date"].tolist())
+            out_date_set = set(out_df["Date"].dropna().tolist()) if "Date" in out_df.columns else set()
+            unexpected_dates = sorted(out_date_set - test_date_set)
+            train_side_dates = out_df.loc[out_df["Date"] < first_test_dt, "Date"] if "Date" in out_df.columns else pd.Series(dtype="datetime64[ns]")
+            if unexpected_dates or not train_side_dates.empty:
+                raise ValueError(
+                    "StepB pred_time_all sim mode contains non-test/train-side dates before final write: "
+                    f"unexpected_dates_count={len(unexpected_dates)} "
+                    f"train_side_dates_count={int(train_side_dates.shape[0])} "
+                    f"first_test_date={str(first_test_dt.date()) if not pd.isna(first_test_dt) else ''} "
+                    f"min_out_date={str(out_df['Date'].min().date()) if 'Date' in out_df.columns and not out_df.empty else ''}"
+                )
 
         diag = {
             "symbol": symbol,
@@ -311,6 +334,9 @@ class StepBService:
             "non_null_rows_over_test": int(non_null_rows),
             "coverage_ratio_over_test": float(coverage),
             "align_reason": align_reason or "raw_stepB_dates",
+            "prediction_source_used": prediction_source_used,
+            "fallback_file_count": int(fallback_file_count),
+            "fallback_rebuilt_non_null_over_test": int(fallback_rebuilt_non_null_over_test),
         }
         print(f"[StepB:pred_time_all:diag] {diag}")
 

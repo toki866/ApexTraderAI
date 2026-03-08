@@ -1822,31 +1822,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _t0_b = time.perf_counter()
                     _t0_b_wall = time.time()
                     try:
-                        with timing.stage("stepB.run"):
-                            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
-                    finally:
-                        _elapsed_b = time.perf_counter() - _t0_b
-                    print(f"[StepB] agents: mamba={enable_mamba}")
-                    # Ensure contract artifact exists
-                    try:
-                        p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
-                        print(f"[StepB] ensured: {p}")
-                    except Exception as e:
-                        print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
-                    _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
-                    if _miss_b:
+                        try:
+                            with timing.stage("stepB.run"):
+                                results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                        finally:
+                            _elapsed_b = time.perf_counter() - _t0_b
+                        print(f"[StepB] agents: mamba={enable_mamba}")
+                        # Ensure contract artifact exists
+                        try:
+                            p = _ensure_stepb_pred_time_all(symbol, resolved_output_root, mode=resolved_mamba_mode)
+                            print(f"[StepB] ensured: {p}")
+                        except Exception as e:
+                            print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+                        _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
+                        if _miss_b:
+                            if _run_manifest is not None:
+                                _run_manifest.mark_step_elapsed("B", _elapsed_b)
+                                _run_manifest.mark_step_audit("B", "FAIL")
+                            _mark_step("B", "failed")
+                            _emit_step_status("B", status="fail", started_at=_t0_b_wall, ended_at=time.time(), validated=False, detail="contract_or_coverage")
+                            raise RuntimeError("StepB contract missing/invalid: " + ", ".join(_miss_b))
+                        _mark_step("B", "complete")
                         if _run_manifest is not None:
                             _run_manifest.mark_step_elapsed("B", _elapsed_b)
-                            _run_manifest.mark_step_audit("B", "FAIL")
-                        _mark_step("B", "failed")
-                        _emit_step_status("B", status="fail", started_at=_t0_b_wall, ended_at=time.time(), validated=False, detail="contract_or_coverage")
-                        raise RuntimeError("StepB contract missing/invalid: " + ", ".join(_miss_b))
-                    _mark_step("B", "complete")
-                    if _run_manifest is not None:
-                        _run_manifest.mark_step_elapsed("B", _elapsed_b)
-                        _run_manifest.mark_step_audit("B", "PASS")
-                    _emit_step_status("B", status="run", started_at=_t0_b_wall, ended_at=time.time(), validated=True)
-                    print("[StepB] done")
+                            _run_manifest.mark_step_audit("B", "PASS")
+                        _emit_step_status("B", status="run", started_at=_t0_b_wall, ended_at=time.time(), validated=True)
+                        print("[StepB] done")
+                    except Exception:
+                        # Make downstream skip-reason explicit in run log / ONE_TAP parsers.
+                        for _downstream in ("C", "DPRIME", "E", "F"):
+                            if _downstream in steps:
+                                _emit_step_status(
+                                    _downstream,
+                                    status="skip",
+                                    started_at=time.time(),
+                                    ended_at=time.time(),
+                                    validated=None,
+                                    detail="skip_due_to_stepB_failure",
+                                )
+                        print("[PIPELINE] downstream_blocked_by=StepB reason=skip_due_to_stepB_failure", file=sys.stderr)
+                        raise
 
             if "C" in steps:
                 if _can_reuse_step("C"):
