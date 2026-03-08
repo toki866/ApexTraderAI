@@ -13,6 +13,7 @@ Usage in run_pipeline.py:
 
 from __future__ import annotations
 
+import pandas as pd
 from pathlib import Path
 from typing import List, Sequence
 
@@ -53,12 +54,50 @@ def validate_step_b(output_root: Path, symbol: str, mode: str) -> List[str]:
 
     for name in (
         f"stepB_pred_time_all_{symbol}.csv",
-        f"stepB_pred_close_{symbol}.csv",
-        f"stepB_pred_path_{symbol}.csv",
+        f"stepB_pred_close_mamba_{symbol}.csv",
+        f"stepB_pred_path_mamba_{symbol}.csv",
     ):
         p = base / name
         if not p.exists():
             missing.append(str(p))
+
+    periodic_close = base / f"stepB_pred_close_mamba_periodic_{symbol}.csv"
+    if periodic_close.exists():
+        periodic_path = base / f"stepB_pred_path_mamba_periodic_{symbol}.csv"
+        if not periodic_path.exists():
+            missing.append(str(periodic_path))
+
+    pred_time_all = base / f"stepB_pred_time_all_{symbol}.csv"
+    stepa_test = Path(output_root) / "stepA" / mode / f"stepA_prices_test_{symbol}.csv"
+    if pred_time_all.exists() and stepa_test.exists():
+        try:
+            pred_df = pd.read_csv(pred_time_all)
+            test_df = pd.read_csv(stepa_test)
+            if "Date" not in pred_df.columns:
+                missing.append(f"{pred_time_all}::missing_column(Date)")
+            elif "Date" not in test_df.columns:
+                missing.append(f"{stepa_test}::missing_column(Date)")
+            else:
+                pred_df["Date"] = pd.to_datetime(pred_df["Date"], errors="coerce").dt.normalize()
+                test_df["Date"] = pd.to_datetime(test_df["Date"], errors="coerce").dt.normalize()
+                pred_col = "Pred_Close_MAMBA" if "Pred_Close_MAMBA" in pred_df.columns else "pred_close_mamba"
+                if pred_col not in pred_df.columns:
+                    missing.append(f"{pred_time_all}::missing_prediction_column")
+                else:
+                    merged = test_df[["Date"]].dropna().drop_duplicates().merge(
+                        pred_df[["Date", pred_col]].dropna(subset=["Date"]),
+                        on="Date",
+                        how="left",
+                    )
+                    if merged.empty:
+                        missing.append(f"{pred_time_all}::empty_test_window")
+                    else:
+                        nn = pd.to_numeric(merged[pred_col], errors="coerce").notna().sum()
+                        coverage = float(nn) / float(len(merged)) if len(merged) > 0 else 0.0
+                        if coverage <= 0.0:
+                            missing.append(f"{pred_time_all}::coverage_ratio_over_test={coverage:.4f}")
+        except Exception as e:
+            missing.append(f"{pred_time_all}::read_or_coverage_error={type(e).__name__}:{e}")
 
     return missing
 
@@ -108,9 +147,20 @@ def validate_step_e_agent(
     agent: str,
 ) -> List[str]:
     """Return missing artifact paths for a single StepE agent."""
-    p = Path(output_root) / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
-    if not p.exists():
-        return [str(p)]
+    base = Path(output_root) / "stepE" / mode
+    daily = base / f"stepE_daily_log_{agent}_{symbol}.csv"
+    summary = base / f"stepE_summary_{agent}_{symbol}.json"
+    model_pt = base / "models" / f"stepE_{agent}_{symbol}.pt"
+    model_zip = base / "models" / f"stepE_{agent}_{symbol}_ppo.zip"
+    if not daily.exists():
+        return [str(daily)]
+    missing = []
+    if not summary.exists():
+        missing.append(str(summary))
+    if not model_pt.exists() and not model_zip.exists():
+        missing.append(f"{model_pt} | {model_zip}")
+    if missing:
+        return missing
     return []
 
 

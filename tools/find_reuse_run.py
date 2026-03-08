@@ -91,11 +91,18 @@ def main() -> int:
         file=sys.stderr,
     )
     result = find_latest_matching_run(scan_root, sig)
-    if result is not None:
-        print(str(result))
-        print(f"[find_reuse_run] matched={result}", file=sys.stderr)
+    path_line = str(result) if result is not None else ""
+
+    if args.print_path_only:
+        # Machine-readable contract: stdout MUST be one line path or empty line only.
+        sys.stdout.write(path_line + "\n")
     else:
-        print("[find_reuse_run] matched=<none>", file=sys.stderr)
+        if path_line:
+            print(path_line)
+        print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
+
+    if args.print_path_only:
+        print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
 
     return 0
 

@@ -36,7 +36,7 @@ import os
 import sys
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, List
 
@@ -1550,6 +1550,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 pass
 
+    def _emit_step_status(step_key: str, *, status: str, started_at: float, ended_at: float, validated: Optional[bool], detail: str = "") -> None:
+        start_ts = datetime.fromtimestamp(started_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_ts = datetime.fromtimestamp(ended_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        elapsed = max(0.0, ended_at - started_at)
+        validated_str = "yes" if validated else ("no" if validated is False else "n/a")
+        extra = f" detail={detail}" if detail else ""
+        print(
+            f"[STEP_METRIC] step={step_key} start={start_ts} end={end_ts} elapsed_sec={elapsed:.3f} "
+            f"status={status} artifacts_validated={validated_str}{extra}"
+        )
+
     timing_enabled = bool(int(args.timing))
     run_id = args.run_id or _auto_run_id()
     branch_id = args.branch_id or _auto_branch_id(steps, args.stepe_agents)
@@ -1767,11 +1778,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("A", "reuse")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("A", 0.0)
+                    _emit_step_status("A", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                 else:
                     stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
                     print(f"[StepA] start symbols={','.join(stepa_symbols)}")
                     _mark_step("A", "running")
                     _t0_a = time.perf_counter()
+                    _t0_a_wall = time.time()
                     try:
                         for stepa_symbol in stepa_symbols:
                             with timing.stage("stepA.run"):
@@ -1780,13 +1793,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 results["stepA_result"] = stepa_result
                     finally:
                         _elapsed_a = time.perf_counter() - _t0_a
+                    _miss_a = validate_step_a(Path(resolved_output_root), symbol, resolved_mode)
+                    if _miss_a:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("A", _elapsed_a)
+                            _run_manifest.mark_step_audit("A", "FAIL")
+                        _mark_step("A", "failed")
+                        _emit_step_status("A", status="fail", started_at=_t0_a_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                        raise RuntimeError("StepA contract missing required files: " + ", ".join(_miss_a))
                     _mark_step("A", "complete")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("A", _elapsed_a)
-                        _miss_a = validate_step_a(Path(resolved_output_root), symbol, resolved_mode)
-                        if _miss_a:
-                            print(f"[StepA] WARN contract: missing {_miss_a}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("A", "FAIL" if _miss_a else "PASS")
+                        _run_manifest.mark_step_audit("A", "PASS")
+                    _emit_step_status("A", status="run", started_at=_t0_a_wall, ended_at=time.time(), validated=True)
                     print("[StepA] done")
 
             if "B" in steps:
@@ -1795,17 +1814,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("B", "reuse")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("B", 0.0)
+                    _emit_step_status("B", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                 else:
                     print("[StepB] start")
                     mamba_horizons_list = _parse_int_list(args.mamba_horizons)
                     _mark_step("B", "running")
                     _t0_b = time.perf_counter()
+                    _t0_b_wall = time.time()
                     try:
                         with timing.stage("stepB.run"):
                             results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
                     finally:
                         _elapsed_b = time.perf_counter() - _t0_b
-                    _mark_step("B", "complete")
                     print(f"[StepB] agents: mamba={enable_mamba}")
                     # Ensure contract artifact exists
                     try:
@@ -1813,12 +1833,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         print(f"[StepB] ensured: {p}")
                     except Exception as e:
                         print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+                    _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
+                    if _miss_b:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("B", _elapsed_b)
+                            _run_manifest.mark_step_audit("B", "FAIL")
+                        _mark_step("B", "failed")
+                        _emit_step_status("B", status="fail", started_at=_t0_b_wall, ended_at=time.time(), validated=False, detail="contract_or_coverage")
+                        raise RuntimeError("StepB contract missing/invalid: " + ", ".join(_miss_b))
+                    _mark_step("B", "complete")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("B", _elapsed_b)
-                        _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
-                        if _miss_b:
-                            print(f"[StepB] WARN contract: missing {_miss_b}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("B", "FAIL" if _miss_b else "PASS")
+                        _run_manifest.mark_step_audit("B", "PASS")
+                    _emit_step_status("B", status="run", started_at=_t0_b_wall, ended_at=time.time(), validated=True)
                     print("[StepB] done")
 
             if "C" in steps:
@@ -1827,22 +1854,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("C", "reuse")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("C", 0.0)
+                    _emit_step_status("C", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                 else:
                     print("[StepC] start")
                     _mark_step("C", "running")
                     _t0_c = time.perf_counter()
+                    _t0_c_wall = time.time()
                     try:
                         with timing.stage("stepC.run"):
                             results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
                     finally:
                         _elapsed_c = time.perf_counter() - _t0_c
+                    _miss_c = validate_step_c(Path(resolved_output_root), symbol, resolved_mode)
+                    if _miss_c:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("C", _elapsed_c)
+                            _run_manifest.mark_step_audit("C", "FAIL")
+                        _mark_step("C", "failed")
+                        _emit_step_status("C", status="fail", started_at=_t0_c_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                        raise RuntimeError("StepC contract missing required files: " + ", ".join(_miss_c))
                     _mark_step("C", "complete")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("C", _elapsed_c)
-                        _miss_c = validate_step_c(Path(resolved_output_root), symbol, resolved_mode)
-                        if _miss_c:
-                            print(f"[StepC] WARN contract: missing {_miss_c}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("C", "FAIL" if _miss_c else "PASS")
+                        _run_manifest.mark_step_audit("C", "PASS")
+                    _emit_step_status("C", status="run", started_at=_t0_c_wall, ended_at=time.time(), validated=True)
                     print("[StepC] done")
 
             if "DPRIME" in steps:
@@ -1851,10 +1886,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("DPRIME", "reuse")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("DPRIME", 0.0)
+                    _emit_step_status("DPRIME", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                 else:
                     print("[StepDPrime] start")
                     _mark_step("DPRIME", "running")
                     _t0_dp = time.perf_counter()
+                    _t0_dp_wall = time.time()
                     try:
                         with timing.stage("stepDPrime.run"):
                             results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
@@ -1862,12 +1899,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _elapsed_dp = time.perf_counter() - _t0_dp
                     _miss_dp = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _OFFICIAL_STEPE_AGENTS)
                     if _miss_dp:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("DPRIME", _elapsed_dp)
+                            _run_manifest.mark_step_audit("DPRIME", "FAIL")
+                        _mark_step("DPRIME", "failed")
+                        _emit_step_status("DPRIME", status="fail", started_at=_t0_dp_wall, ended_at=time.time(), validated=False, detail="contract_missing")
                         raise RuntimeError("StepDPrime contract missing required state files: " + ", ".join(_miss_dp))
                     _mark_step("DPRIME", "complete")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("DPRIME", _elapsed_dp)
-                        _miss_dp2 = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _OFFICIAL_STEPE_AGENTS)
-                        _run_manifest.mark_step_audit("DPRIME", "FAIL" if _miss_dp2 else "PASS")
+                        _run_manifest.mark_step_audit("DPRIME", "PASS")
+                    _emit_step_status("DPRIME", status="run", started_at=_t0_dp_wall, ended_at=time.time(), validated=True)
                     print("[StepDPrime] done")
 
             for step in ("D", "E", "F"):
@@ -1906,6 +1948,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                             _mark_step("E", "reuse")
                             _run_manifest.mark_step_elapsed("E", 0.0)
+                            _emit_step_status("E", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                             results["stepE_result"] = {"reused": True, "agents": _done_agents}
                             continue
 
@@ -1920,6 +1963,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         print(f"[StepE] status=partial_run pending={','.join(_pending_agents)}")
                         _mark_step("E", "running")
                         _t0_e = time.perf_counter()
+                        _t0_e_wall = time.time()
                         try:
                             with timing.stage(stage_name):
                                 step_result = _run_step_generic(step, app_config, symbol, date_range, results)
@@ -1949,11 +1993,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _run_manifest.mark_step_elapsed("E", _elapsed_e)
                         _all_agent_audits_e = [_run_manifest.stepe_agent_audit_status(a) for a in _all_agents]
                         _step_e_audit_status = "PASS" if _all_agent_audits_e and all(s == "PASS" for s in _all_agent_audits_e) else "FAIL"
+                        _miss_e = []
+                        for _ea in _all_agents:
+                            _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ea))
+                        if _miss_e:
+                            _step_e_audit_status = "FAIL"
+                            print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
                         _run_manifest.mark_step_audit("E", _step_e_audit_status)
-                        if not _still_missing:
+                        if (not _still_missing) and (_step_e_audit_status == "PASS"):
                             _mark_step("E", "complete")
+                            _emit_step_status("E", status="run", started_at=_t0_e_wall, ended_at=time.time(), validated=True)
                         else:
-                            print(f"[StepE] WARNING: {len(_still_missing)} agents still missing after run: {','.join(_still_missing)}", file=sys.stderr)
+                            _mark_step("E", "failed")
+                            _emit_step_status("E", status="fail", started_at=_t0_e_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
+                            raise RuntimeError("StepE contract/audit failed")
                         print(f"[StepE] done")
                         continue
                     except Exception as _reuse_e:
@@ -1965,6 +2018,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("F", "reuse")
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("F", 0.0)
+                    _emit_step_status("F", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                     results["stepF_result"] = {"reused": True}
                     continue
 
@@ -1972,6 +2026,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[Step{step}] start")
                 _mark_step(step if step != "D" else "D", "running")
                 _t0_generic = time.perf_counter()
+                _t0_generic_wall = time.time()
                 try:
                     with timing.stage(stage_name):
                         step_result = _run_step_generic(step, app_config, symbol, date_range, results)
@@ -2009,7 +2064,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 print(f"[StepE] agent={_ga} audit={_ga_status}")
                         _ge_audits = [_run_manifest.stepe_agent_audit_status(a) for a in _ge_all_agents]
                         _ge_step_status = "PASS" if _ge_audits and all(s == "PASS" for s in _ge_audits) else "FAIL"
+                        _miss_e = []
+                        for _ga in _ge_all_agents:
+                            _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
+                        if _miss_e:
+                            _ge_step_status = "FAIL"
+                            print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
                         _run_manifest.mark_step_audit("E", _ge_step_status)
+                        if _ge_step_status != "PASS":
+                            _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
+                            raise RuntimeError("StepE contract/audit failed")
                     elif step == "F":
                         _audit_root_f = Path(resolved_output_root) / "audit" / resolved_mode
                         try:
@@ -2021,10 +2085,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _run_manifest.mark_step_audit("F", _sf_status)
                         _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
                         if _miss_f:
-                            print(f"[StepF] WARN contract: {_miss_f}", file=sys.stderr)
+                            _sf_status = "FAIL"
+                            print(f"[StepF] contract missing: {_miss_f}", file=sys.stderr)
                         print(f"[StepF] audit={_sf_status}")
+                        if _sf_status != "PASS":
+                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
+                            raise RuntimeError("StepF contract/audit failed")
                     else:
                         _run_manifest.mark_step_audit(step if step != "D" else "D", "SKIP")
+                else:
+                    if step == "E":
+                        _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                        _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else ([_ge_raw] if _ge_raw is not None else [])
+                        _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
+                        if not _ge_all_agents:
+                            _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
+                        _miss_e = []
+                        for _ga in _ge_all_agents:
+                            _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
+                        if _miss_e:
+                            _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                            raise RuntimeError("StepE contract missing required files: " + ", ".join(_miss_e))
+                    if step == "F":
+                        _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
+                        if _miss_f:
+                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                            raise RuntimeError("StepF contract missing required files: " + ", ".join(_miss_f))
+                _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)
                 print(f"[Step{step}] done")
 
             with timing.stage("audit.leak"):

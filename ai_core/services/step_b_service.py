@@ -137,16 +137,24 @@ class StepBService:
             raise FileNotFoundError(f"StepB Mamba output path not found: {debug}")
 
         df = pd.read_csv(pred_path)
-        if "Date" not in df.columns:
-            raise ValueError("StepB Mamba output must include Date")
+
+        date_col = "Date" if "Date" in df.columns else None
+        if date_col is None and "Date_target" in df.columns:
+            date_col = "Date_target"
+        if date_col is None:
+            raise ValueError("StepB Mamba output must include Date or Date_target")
 
         mamba_col = next((c for c in df.columns if c == "Pred_Close_MAMBA"), None)
         if mamba_col is None:
             mamba_col = next((c for c in df.columns if c.lower() == "pred_close_mamba"), None)
         if mamba_col is None:
-            raise ValueError("StepB Mamba output must include Pred_Close_MAMBA")
+            mamba_col = next((c for c in df.columns if c == "Pred_Close_MAMBA_h01"), None)
+        if mamba_col is None:
+            mamba_col = next((c for c in df.columns if c.lower() == "pred_close_mamba_h01"), None)
+        if mamba_col is None:
+            raise ValueError("StepB Mamba output must include Pred_Close_MAMBA/Pred_Close_MAMBA_h01")
 
-        out_df = df[["Date", mamba_col]].copy()
+        out_df = df[[date_col, mamba_col]].copy().rename(columns={date_col: "Date"})
         out_df["Date"] = pd.to_datetime(out_df["Date"], errors="coerce").dt.normalize()
         out_df = out_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
         out_df = out_df.rename(columns={mamba_col: "Pred_Close_MAMBA"})
@@ -163,8 +171,17 @@ class StepBService:
             # Keep best-effort behavior; fallback to raw StepB dates if StepA test cannot be loaded.
             pass
 
-        out_df["pred_close_mamba"] = pd.to_numeric(out_df["Pred_Close_MAMBA"], errors="coerce")
+        out_df["pred_close_mamba"] = pd.to_numeric(
+            out_df["Pred_Close_MAMBA"].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        )
+        out_df["Pred_Close_MAMBA"] = out_df["pred_close_mamba"]
         out_df = out_df[list(self.STEPB_PRED_TIME_ALL_COLUMNS)]
+
+        coverage = float(out_df["pred_close_mamba"].notna().mean()) if len(out_df) > 0 else 0.0
+        if len(out_df) == 0 or coverage <= 0.0:
+            raise ValueError(f"StepB pred_time_all invalid test coverage: rows={len(out_df)} coverage_ratio_over_test={coverage:.4f}")
+
         out_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path
 

@@ -127,14 +127,25 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
 
     if step_upper == "A":
         d = base / "stepA" / mode
-        return (
-            (d / f"stepA_prices_train_{symbol}.csv").exists()
-            and (d / f"stepA_prices_test_{symbol}.csv").exists()
+        required = (
+            f"stepA_prices_train_{symbol}.csv",
+            f"stepA_prices_test_{symbol}.csv",
+            f"stepA_periodic_train_{symbol}.csv",
+            f"stepA_periodic_test_{symbol}.csv",
+            f"stepA_tech_train_{symbol}.csv",
+            f"stepA_tech_test_{symbol}.csv",
+            f"stepA_split_summary_{symbol}.csv",
         )
+        return all((d / name).exists() for name in required)
 
     if step_upper == "B":
         d = base / "stepB" / mode
-        return (d / f"stepB_pred_time_all_{symbol}.csv").exists()
+        required = (
+            f"stepB_pred_time_all_{symbol}.csv",
+            f"stepB_pred_close_mamba_{symbol}.csv",
+            f"stepB_pred_path_mamba_{symbol}.csv",
+        )
+        return all((d / name).exists() for name in required)
 
     if step_upper == "C":
         d = base / "stepC" / mode
@@ -150,9 +161,15 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
         return True
 
     if step_upper == "E":
-        # Per-agent check is done separately; here we just verify the dir exists.
         d = base / "stepE" / mode
-        return d.exists() and any(d.glob(f"stepE_daily_log_*_{symbol}.csv"))
+        model_dir = d / "models"
+        return (
+            d.exists()
+            and any(d.glob(f"stepE_daily_log_*_{symbol}.csv"))
+            and any(d.glob(f"stepE_summary_*_{symbol}.json"))
+            and model_dir.exists()
+            and any(model_dir.glob(f"stepE_*_{symbol}.pt"))
+        )
 
     if step_upper == "F":
         d = base / "stepF" / mode
