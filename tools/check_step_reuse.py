@@ -24,6 +24,8 @@ def main() -> int:
     manifest_reuse = False
     manifest_reason = 'manifest_missing_or_incomplete'
     manifest_path = output_root / 'run_manifest.json'
+    parse_error_type = ''
+    fallback_to_artifact_check = False
     if manifest_path.exists():
       try:
         m = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -45,7 +47,9 @@ def main() -> int:
         else:
           manifest_reason = f'manifest_step_status={status or "missing"}'
       except Exception as ex:
-        manifest_reason = f'manifest_parse_error:{ex.__class__.__name__}'
+        parse_error_type = ex.__class__.__name__
+        fallback_to_artifact_check = True
+        manifest_reason = f'manifest_parse_error:{parse_error_type}'
 
     artifact_reuse = bool(check_step_artifacts(step, output_root, args.symbol, args.mode))
     status = 'reuse' if (manifest_reuse or artifact_reuse) else 'run'
@@ -56,6 +60,9 @@ def main() -> int:
       'artifact_reuse': artifact_reuse,
       'reason': reason,
       'manifest_reason': manifest_reason,
+      'manifest_path': str(manifest_path),
+      'parse_error_type': parse_error_type,
+      'fallback_to_artifact_check': bool(fallback_to_artifact_check),
       'run_id': output_root.parent.name,
     }))
     return 0

@@ -1232,7 +1232,7 @@ jobs:
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
           catch { Add-Content $rp "[NG] step_b exception=$_" }
           finally { Write-Host "[StepB] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"; Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"; Write-Error "StepB failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_b'
 
       - name: StepC
@@ -1295,7 +1295,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1353,7 +1353,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1441,7 +1441,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4213,7 +4213,7 @@ jobs:
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
           catch { Add-Content $rp "[NG] step_b exception=$_" }
           finally { Write-Host "[StepB] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"; Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"; Write-Error "StepB failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_b'
 
       - name: StepC
@@ -4276,7 +4276,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4334,7 +4334,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4422,7 +4422,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
