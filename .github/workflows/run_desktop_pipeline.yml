@@ -755,19 +755,11 @@ jobs:
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT=$wslOutput"
+          Add-Content $rp "[REUSE] manifest_owner=run_pipeline_only"
 
           if ($created) {
             $reuseSigPath = Join-Path $winOutput 'reuse_signature.json'
-            $manifestPath = Join-Path $winOutput 'run_manifest.json'
             $reusePayload | ConvertTo-Json -Depth 5 | Set-Content -Path $reuseSigPath -Encoding UTF8
-            if (-not (Test-Path $manifestPath)) {
-              @{
-                schema_version = 2
-                created_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
-                updated_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
-                steps = @{}
-              } | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding UTF8
-            }
           }
 
       - name: Cleanup old WORK_ROOT runs (keep latest)
@@ -1205,7 +1197,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
@@ -1237,7 +1229,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1263,7 +1255,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=C reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
@@ -1321,7 +1313,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=DPRIME reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
@@ -1380,7 +1372,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=E reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
@@ -1467,7 +1459,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=F reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
@@ -3741,19 +3733,11 @@ jobs:
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WSL_OUTPUT=$wslOutput"
+          Add-Content $rp "[REUSE] manifest_owner=run_pipeline_only"
 
           if ($created) {
             $reuseSigPath = Join-Path $winOutput 'reuse_signature.json'
-            $manifestPath = Join-Path $winOutput 'run_manifest.json'
             $reusePayload | ConvertTo-Json -Depth 5 | Set-Content -Path $reuseSigPath -Encoding UTF8
-            if (-not (Test-Path $manifestPath)) {
-              @{
-                schema_version = 2
-                created_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
-                updated_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
-                steps = @{}
-              } | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding UTF8
-            }
           }
 
       - name: Cleanup old WORK_ROOT runs (keep latest)
@@ -4186,7 +4170,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepB] status=reuse"; exit 0 }
@@ -4218,7 +4202,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4244,7 +4228,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=C reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepC] status=reuse"; exit 0 }
@@ -4302,7 +4286,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=DPRIME reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepDPrime] status=reuse"; exit 0 }
@@ -4361,7 +4345,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=E reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
@@ -4448,7 +4432,7 @@ jobs:
               $status = "$($reuseDecision.status)"
             } catch { Add-Content $rp "[STEP_STATUS] step=F reuse_probe_error=$_" }
           }
-          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason)"
+          Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
           if ($status -eq 'reuse') { Write-Host "[StepF] status=reuse"; exit 0 }
