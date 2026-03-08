@@ -12,6 +12,7 @@ Exit code is always 0 to avoid orchestration hard-fail.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -88,6 +89,11 @@ def main() -> int:
         action="store_true",
         help="Print only the matched path to stdout (diagnostics go to stderr).",
     )
+    ap.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print JSON payload {path, run_id, scope} to stdout.",
+    )
     args = ap.parse_args()
 
     steps_parsed = tuple(
@@ -149,7 +155,14 @@ def main() -> int:
         result = find_latest_matching_run(scan_root, sig)
     path_line = str(result) if result is not None else ""
 
-    if args.print_path_only:
+    if args.print_json:
+        payload = {
+            "scope": args.reuse_scope,
+            "path": path_line,
+            "run_id": (Path(path_line).parent.name if path_line else ""),
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    elif args.print_path_only:
         # Machine-readable contract: stdout MUST be one line path or empty line only.
         sys.stdout.write(path_line + "\n")
     else:
@@ -157,7 +170,7 @@ def main() -> int:
             print(path_line)
         print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
 
-    if args.print_path_only:
+    if args.print_path_only or args.print_json:
         print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
 
     return 0
