@@ -41,6 +41,7 @@ Leakage control (SIM)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from pathlib import Path
 
 from ai_core.utils.paths import resolve_repo_path
@@ -692,80 +693,84 @@ def run_mamba_multi_model_by_horizon(
     train_samples_by_h: Dict[int, int] = {}
 
     for H in horizons:
-        _h_t0 = time.perf_counter()
-        steps = list(range(1, H + 1))
+        horizon_stage = None
+        if timing_logger is not None and timing_stage_prefix:
+            horizon_stage = f"{timing_stage_prefix}.h{int(H):02d}.run"
+        with (timing_logger.stage(horizon_stage) if horizon_stage else nullcontext()):
+            _h_t0 = time.perf_counter()
+            steps = list(range(1, H + 1))
 
-        # Build training set for this horizon
-        anchors: List[int] = []
-        y_list: List[List[float]] = []
-        for t in range(lookback_days - 1, len(df) - H):
-            # require all targets inside TRAIN period
-            if dates[t + H] > train_end:
-                continue
-            c0 = float(close[t])
-            y = [_target_transform(float(close[t + s]), c0, target_mode) for s in steps]
-            if not np.all(np.isfinite(y)):
-                continue
-            anchors.append(t)
-            y_list.append(y)
+            # Build training set for this horizon
+            anchors: List[int] = []
+            y_list: List[List[float]] = []
+            for t in range(lookback_days - 1, len(df) - H):
+                # require all targets inside TRAIN period
+                if dates[t + H] > train_end:
+                    continue
+                c0 = float(close[t])
+                y = [_target_transform(float(close[t + s]), c0, target_mode) for s in steps]
+                if not np.all(np.isfinite(y)):
+                    continue
+                anchors.append(t)
+                y_list.append(y)
 
-        if len(anchors) < 200:
-            raise RuntimeError(f"Too few training samples for H={H}: {len(anchors)}")
+            if len(anchors) < 200:
+                raise RuntimeError(f"Too few training samples for H={H}: {len(anchors)}")
 
 
-        if not wavelet_enabled:
-            X_train = np.stack([X_all[t - lookback_days + 1 : t + 1, :] for t in anchors], axis=0).astype(np.float32)
-        else:
-            X_train = np.empty((len(anchors), lookback_days, final_dim), dtype=np.float32)
-            for i, t in enumerate(anchors):
-                base_seq = X_all[t - lookback_days + 1 : t + 1, :]
-                close_seq = close[t - lookback_days + 1 : t + 1]
-                X_train[i, :, :] = _append_wavelet_to_seq(base_seq, close_seq)
+            if not wavelet_enabled:
+                X_train = np.stack([X_all[t - lookback_days + 1 : t + 1, :] for t in anchors], axis=0).astype(np.float32)
+            else:
+                X_train = np.empty((len(anchors), lookback_days, final_dim), dtype=np.float32)
+                for i, t in enumerate(anchors):
+                    base_seq = X_all[t - lookback_days + 1 : t + 1, :]
+                    close_seq = close[t - lookback_days + 1 : t + 1]
+                    X_train[i, :, :] = _append_wavelet_to_seq(base_seq, close_seq)
 
-        y_train = np.array(y_list, dtype=np.float32)
+            y_train = np.array(y_list, dtype=np.float32)
 
-        model = _build_model(input_dim=X_train.shape[2], hidden_dim=hidden_dim, out_dim=H).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = nn.MSELoss()
+            model = _build_model(input_dim=X_train.shape[2], hidden_dim=hidden_dim, out_dim=H).to(device)
+            opt = torch.optim.Adam(model.parameters(), lr=lr)
+            loss_fn = nn.MSELoss()
 
-        ds = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
-        dl = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+            ds = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
+            dl = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
 
-        losses: List[float] = []
-        model.train()
-        for _ep in range(epochs):
-            total = 0.0
-            n = 0
-            for xb, yb in dl:
-                xb = xb.to(device)
-                yb = yb.to(device)
-                opt.zero_grad(set_to_none=True)
-                pred = model(xb)
-                loss = loss_fn(pred, yb)
-                loss.backward()
-                opt.step()
-                total += float(loss.detach().cpu().item()) * int(xb.size(0))
-                n += int(xb.size(0))
-            losses.append(total / max(1, n))
+            losses: List[float] = []
+            model.train()
+            for _ep in range(epochs):
+                total = 0.0
+                n = 0
+                for xb, yb in dl:
+                    xb = xb.to(device)
+                    yb = yb.to(device)
+                    opt.zero_grad(set_to_none=True)
+                    pred = model(xb)
+                    loss = loss_fn(pred, yb)
+                    loss.backward()
+                    opt.step()
+                    total += float(loss.detach().cpu().item()) * int(xb.size(0))
+                    n += int(xb.size(0))
+                losses.append(total / max(1, n))
 
-        # Save model
-        model_path = stepb_dir / "models" / f"{out_tag}_h{H:02d}.pt"
-        torch.save({"state_dict": model.state_dict(), "H": H, "hidden_dim": hidden_dim, "feature_dim": int(X_train.shape[2])}, model_path)
+            # Save model
+            model_path = stepb_dir / "models" / f"{out_tag}_h{H:02d}.pt"
+            torch.save({"state_dict": model.state_dict(), "H": H, "hidden_dim": hidden_dim, "feature_dim": int(X_train.shape[2])}, model_path)
 
-        # Infer endpoints for all anchors
-        model.eval()
-        preds: List[np.ndarray] = []
-        with torch.no_grad():
-            for i0 in range(0, len(X_inf), 1024):
-                xb = torch.from_numpy(X_inf[i0:i0+1024]).to(device)
-                pb = model(xb).detach().cpu().numpy()  # (B, H)
-                preds.append(pb)
-        P = np.concatenate(preds, axis=0)  # (N_anchor, H)
-        pred_dense_y_by_h[H] = P.astype(float)
-        pred_endpoint_y_by_h[H] = P[:, -1].astype(float)  # endpoint in target space (y) at t+H
+            # Infer endpoints for all anchors
+            model.eval()
+            preds: List[np.ndarray] = []
+            with torch.no_grad():
+                for i0 in range(0, len(X_inf), 1024):
+                    xb = torch.from_numpy(X_inf[i0:i0+1024]).to(device)
+                    pb = model(xb).detach().cpu().numpy()  # (B, H)
+                    preds.append(pb)
+            P = np.concatenate(preds, axis=0)  # (N_anchor, H)
+            pred_dense_y_by_h[H] = P.astype(float)
+            pred_endpoint_y_by_h[H] = P[:, -1].astype(float)  # endpoint in target space (y) at t+H
 
-        loss_by_h[H] = losses
-        train_samples_by_h[H] = int(len(anchors))
+            loss_by_h[H] = losses
+            train_samples_by_h[H] = int(len(anchors))
         if timing_logger is not None and timing_stage_prefix:
             try:
                 timing_logger.emit(
