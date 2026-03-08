@@ -679,61 +679,139 @@ jobs:
           WORK_ROOT: C:\work\apex_work\runs
           SYMBOLS: ${{ inputs.symbols }}
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] prepare_environment'
-          Write-Host "=== Prepare environment ==="
-          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
-          # Windows paths for this run
+          $null = New-Item -Path (Split-Path $rp) -ItemType Directory -Force
+
+          # [A][E] 入力変数を即座に全部 ONE_TAP / Write-Host に出力
+          foreach ($line in @(
+            '[STEP] prepare_environment',
+            '[PREPARE_ENV] begin',
+            "[PREPARE_ENV] REPO_ROOT=$env:REPO_ROOT",
+            "[PREPARE_ENV] APEX_RUN_ID=$env:APEX_RUN_ID",
+            "[PREPARE_ENV] WSL_DISTRO=$env:WSL_DISTRO",
+            "[PREPARE_ENV] WSL_PYTHON=$env:WSL_PYTHON",
+            "[PREPARE_ENV] WORK_ROOT=$env:WORK_ROOT",
+            "[PREPARE_ENV] SYMBOLS=$env:SYMBOLS"
+          )) { Add-Content $rp $line; Write-Host $line }
+
+          # Windows パス計算
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
           $winOutputDir = Join-Path $winRunDir 'output'
           $winLogDir    = Join-Path $winRunDir 'logs'
-          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+          $pathMsg = "[PREPARE_ENV] winRunDir=$winRunDir winDataDir=$winDataDir winOutputDir=$winOutputDir winLogDir=$winLogDir"
+          Add-Content $rp $pathMsg; Write-Host $pathMsg
+
+          # [D][E] ディレクトリ作成（mkdir -p 相当）
+          Add-Content $rp '[PREPARE_ENV] create_dirs begin'; Write-Host '[PREPARE_ENV] create_dirs begin'
+          try {
+            foreach ($d in @($winDataDir, $winOutputDir, $winLogDir)) {
+              $null = [System.IO.Directory]::CreateDirectory($d)
+            }
+            Add-Content $rp '[PREPARE_ENV] create_dirs ok'; Write-Host '[PREPARE_ENV] create_dirs ok'
+          } catch {
+            $msg = "[NG] prepare_environment create_dirs error=$_"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
+
+          # [D] console log / run log を早期初期化（失敗してもファイルが残るように）
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $runLog     = Join-Path $winLogDir ("run_{0}.log" -f $env:APEX_RUN_ID)
+          try {
+            $null = New-Item -ItemType File -Path $consoleLog -Force
+            $null = New-Item -ItemType File -Path $runLog     -Force
+            "RUN_CONSOLE_LOG=$consoleLog" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "RUN_LOG_PATH=$runLog"        | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $logMsg = "[PREPARE_ENV] console_log=$consoleLog run_log=$runLog"
+            Add-Content $rp $logMsg; Write-Host $logMsg
+          } catch {
+            $warnMsg = "[WARN] prepare_environment log_init failed error=$_"
+            Add-Content $rp $warnMsg; Write-Warning $warnMsg
+          }
+
           "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          # WSL paths
-          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
-          # Validate WSL path conversions — must start with /mnt/; fail fast if wslpath returned bad value
-          if (-not ($wslRepoRoot  -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_repo_root='$wslRepoRoot'"
-            Write-Error "wslpath failed for REPO_ROOT: '$env:REPO_ROOT' -> '$wslRepoRoot' (expected /mnt/ path). Check WSL_DISTRO='$env:WSL_DISTRO'."; exit 1
-          }
-          if (-not ($wslDataDir   -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_data_dir='$wslDataDir'"
-            Write-Error "wslpath failed for winDataDir: '$winDataDir' -> '$wslDataDir' (expected /mnt/ path)."; exit 1
-          }
-          if (-not ($wslOutputDir -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_output_dir='$wslOutputDir'"
-            Write-Error "wslpath failed for winOutputDir: '$winOutputDir' -> '$wslOutputDir' (expected /mnt/ path)."; exit 1
+
+          # [B][E] wslpath 変換 — コマンド・stdout・rc を各変換ごとに記録
+          $wslRepoRoot  = ''; $wslDataDir = ''; $wslOutputDir = ''
+          foreach ($conv in @(
+            @{ name='WSL_REPO_ROOT';  win=$env:REPO_ROOT },
+            @{ name='WSL_DATA_DIR';   win=$winDataDir },
+            @{ name='WSL_OUTPUT_DIR'; win=$winOutputDir }
+          )) {
+            $cName = $conv.name; $cWin = $conv.win
+            $beginMsg = "[PREPARE_ENV] wslpath_begin var=$cName cmd='wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin'"
+            Add-Content $rp $beginMsg; Write-Host $beginMsg
+            $wslRaw = ''; $wslRc = -1
+            try {
+              $wslRaw = (wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin 2>&1)
+              $wslRc  = $LASTEXITCODE
+            } catch {
+              $excMsg = "[NG] prepare_environment wslpath_$cName exception=$_"
+              Add-Content $rp $excMsg; Write-Warning $excMsg
+            }
+            $wslVal = if ($wslRaw) { ($wslRaw -join '').Trim() } else { '' }
+            $rcMsg = "[PREPARE_ENV] wslpath_result var=$cName rc=$wslRc result='$wslVal' raw='$wslRaw'"
+            Add-Content $rp $rcMsg; Write-Host $rcMsg
+            if (-not ($wslVal -match '^/mnt/')) {
+              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$wslRc distro='$env:WSL_DISTRO'"
+              Add-Content $rp $ngMsg; Write-Error $ngMsg; exit 1
+            }
+            if ($cName -eq 'WSL_REPO_ROOT')  { $wslRepoRoot  = $wslVal }
+            if ($cName -eq 'WSL_DATA_DIR')   { $wslDataDir   = $wslVal }
+            if ($cName -eq 'WSL_OUTPUT_DIR') { $wslOutputDir = $wslVal }
           }
           "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "[PREPARE] win_run_dir=$winRunDir"
-          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
-          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
-          # pip install
-          & where.exe python 2>&1 | Write-Host
-          python --version 2>&1 | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
-            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $wslSummary = "[PREPARE_ENV] wsl_paths wsl_repo_root=$wslRepoRoot wsl_data_dir=$wslDataDir wsl_output_dir=$wslOutputDir"
+          Add-Content $rp $wslSummary; Write-Host $wslSummary
+
+          # [E] pip install — 各フェーズの rc を個別に記録
+          Add-Content $rp '[PREPARE_ENV] pip_install begin'; Write-Host '[PREPARE_ENV] pip_install begin'
+          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          python --version        2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $pipBaseRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] pip_base rc=$pipBaseRc"; Write-Host "[PREPARE_ENV] pip_base rc=$pipBaseRc"
+          if ($pipBaseRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment pip_base rc=$pipBaseRc"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipBaseRc
           }
-          # prepare_data via WSL
+          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $pipReqRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] pip_req rc=$pipReqRc"; Write-Host "[PREPARE_ENV] pip_req rc=$pipReqRc"
+          if ($pipReqRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment pip_req rc=$pipReqRc"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipReqRc
+          }
+
+          # [C][E] prepare_data — try/finally で rc を必ず記録
           $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
-            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $prepBegin = "[PREPARE_ENV] prepare_data begin prepCmd=$prepCmd"
+          Add-Content $rp $prepBegin; Add-Content $consoleLog $prepBegin; Write-Host $prepBegin
+          $prepDataRc = -1
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Tee-Object -FilePath $runLog -Append | Write-Host
+            $prepDataRc = $LASTEXITCODE
+          } catch {
+            $excMsg = "[NG] prepare_environment prepare_data exception=$_"
+            Add-Content $rp $excMsg; Write-Warning $excMsg
+          } finally {
+            $doneMsg = "[PREPARE_ENV] prepare_data rc=$prepDataRc"
+            Add-Content $rp $doneMsg; Write-Host $doneMsg
           }
+          if ($prepDataRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment prepare_data failed rc=$prepDataRc prepCmd=$prepCmd"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $prepDataRc
+          }
+
+          Add-Content $rp '[PREPARE_ENV] success'
           Add-Content $rp '[OK] prepare_environment'
+          Write-Host '[PREPARE_ENV] success'
 
       - name: Resolve reuse source
         id: resolve_reuse
@@ -3256,61 +3334,139 @@ jobs:
           WORK_ROOT: C:\work\apex_work\runs
           SYMBOLS: ${{ inputs.symbols }}
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] prepare_environment'
-          Write-Host "=== Prepare environment ==="
-          Write-Host "REPO_ROOT=$env:REPO_ROOT  APEX_RUN_ID=$env:APEX_RUN_ID"
-          # Windows paths for this run
+          $null = New-Item -Path (Split-Path $rp) -ItemType Directory -Force
+
+          # [A][E] 入力変数を即座に全部 ONE_TAP / Write-Host に出力
+          foreach ($line in @(
+            '[STEP] prepare_environment',
+            '[PREPARE_ENV] begin',
+            "[PREPARE_ENV] REPO_ROOT=$env:REPO_ROOT",
+            "[PREPARE_ENV] APEX_RUN_ID=$env:APEX_RUN_ID",
+            "[PREPARE_ENV] WSL_DISTRO=$env:WSL_DISTRO",
+            "[PREPARE_ENV] WSL_PYTHON=$env:WSL_PYTHON",
+            "[PREPARE_ENV] WORK_ROOT=$env:WORK_ROOT",
+            "[PREPARE_ENV] SYMBOLS=$env:SYMBOLS"
+          )) { Add-Content $rp $line; Write-Host $line }
+
+          # Windows パス計算
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
           $winOutputDir = Join-Path $winRunDir 'output'
           $winLogDir    = Join-Path $winRunDir 'logs'
-          New-Item -Path $winDataDir,$winOutputDir,$winLogDir -ItemType Directory -Force | Out-Null
+          $pathMsg = "[PREPARE_ENV] winRunDir=$winRunDir winDataDir=$winDataDir winOutputDir=$winOutputDir winLogDir=$winLogDir"
+          Add-Content $rp $pathMsg; Write-Host $pathMsg
+
+          # [D][E] ディレクトリ作成（mkdir -p 相当）
+          Add-Content $rp '[PREPARE_ENV] create_dirs begin'; Write-Host '[PREPARE_ENV] create_dirs begin'
+          try {
+            foreach ($d in @($winDataDir, $winOutputDir, $winLogDir)) {
+              $null = [System.IO.Directory]::CreateDirectory($d)
+            }
+            Add-Content $rp '[PREPARE_ENV] create_dirs ok'; Write-Host '[PREPARE_ENV] create_dirs ok'
+          } catch {
+            $msg = "[NG] prepare_environment create_dirs error=$_"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
+
+          # [D] console log / run log を早期初期化（失敗してもファイルが残るように）
+          $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+          $runLog     = Join-Path $winLogDir ("run_{0}.log" -f $env:APEX_RUN_ID)
+          try {
+            $null = New-Item -ItemType File -Path $consoleLog -Force
+            $null = New-Item -ItemType File -Path $runLog     -Force
+            "RUN_CONSOLE_LOG=$consoleLog" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "RUN_LOG_PATH=$runLog"        | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $logMsg = "[PREPARE_ENV] console_log=$consoleLog run_log=$runLog"
+            Add-Content $rp $logMsg; Write-Host $logMsg
+          } catch {
+            $warnMsg = "[WARN] prepare_environment log_init failed error=$_"
+            Add-Content $rp $warnMsg; Write-Warning $warnMsg
+          }
+
           "WIN_RUN_DIR=$winRunDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_DATA_DIR=$winDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          # WSL paths
-          $wslRepoRoot  = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:REPO_ROOT).Trim()
-          $wslDataDir   = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winDataDir).Trim()
-          $wslOutputDir = (wsl.exe -d $env:WSL_DISTRO wslpath -u $winOutputDir).Trim()
-          # Validate WSL path conversions — must start with /mnt/; fail fast if wslpath returned bad value
-          if (-not ($wslRepoRoot  -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_repo_root='$wslRepoRoot'"
-            Write-Error "wslpath failed for REPO_ROOT: '$env:REPO_ROOT' -> '$wslRepoRoot' (expected /mnt/ path). Check WSL_DISTRO='$env:WSL_DISTRO'."; exit 1
-          }
-          if (-not ($wslDataDir   -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_data_dir='$wslDataDir'"
-            Write-Error "wslpath failed for winDataDir: '$winDataDir' -> '$wslDataDir' (expected /mnt/ path)."; exit 1
-          }
-          if (-not ($wslOutputDir -match '^/mnt/')) {
-            Add-Content $rp "[NG] prepare_environment wsl_path_invalid wsl_output_dir='$wslOutputDir'"
-            Write-Error "wslpath failed for winOutputDir: '$winOutputDir' -> '$wslOutputDir' (expected /mnt/ path)."; exit 1
+
+          # [B][E] wslpath 変換 — コマンド・stdout・rc を各変換ごとに記録
+          $wslRepoRoot  = ''; $wslDataDir = ''; $wslOutputDir = ''
+          foreach ($conv in @(
+            @{ name='WSL_REPO_ROOT';  win=$env:REPO_ROOT },
+            @{ name='WSL_DATA_DIR';   win=$winDataDir },
+            @{ name='WSL_OUTPUT_DIR'; win=$winOutputDir }
+          )) {
+            $cName = $conv.name; $cWin = $conv.win
+            $beginMsg = "[PREPARE_ENV] wslpath_begin var=$cName cmd='wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin'"
+            Add-Content $rp $beginMsg; Write-Host $beginMsg
+            $wslRaw = ''; $wslRc = -1
+            try {
+              $wslRaw = (wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin 2>&1)
+              $wslRc  = $LASTEXITCODE
+            } catch {
+              $excMsg = "[NG] prepare_environment wslpath_$cName exception=$_"
+              Add-Content $rp $excMsg; Write-Warning $excMsg
+            }
+            $wslVal = if ($wslRaw) { ($wslRaw -join '').Trim() } else { '' }
+            $rcMsg = "[PREPARE_ENV] wslpath_result var=$cName rc=$wslRc result='$wslVal' raw='$wslRaw'"
+            Add-Content $rp $rcMsg; Write-Host $rcMsg
+            if (-not ($wslVal -match '^/mnt/')) {
+              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$wslRc distro='$env:WSL_DISTRO'"
+              Add-Content $rp $ngMsg; Write-Error $ngMsg; exit 1
+            }
+            if ($cName -eq 'WSL_REPO_ROOT')  { $wslRepoRoot  = $wslVal }
+            if ($cName -eq 'WSL_DATA_DIR')   { $wslDataDir   = $wslVal }
+            if ($cName -eq 'WSL_OUTPUT_DIR') { $wslOutputDir = $wslVal }
           }
           "WSL_REPO_ROOT=$wslRepoRoot"   | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WSL_DATA_DIR=$wslDataDir"     | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WSL_OUTPUT_DIR=$wslOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "[PREPARE] win_run_dir=$winRunDir"
-          Write-Host "[PREPARE] win_output_dir=$winOutputDir"
-          Write-Host "[PREPARE] wsl_repo_root=$wslRepoRoot wsl_output_dir=$wslOutputDir"
-          # pip install
-          & where.exe python 2>&1 | Write-Host
-          python --version 2>&1 | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Write-Host
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment pip_install rc=$LASTEXITCODE"
-            Write-Error "pip install failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $wslSummary = "[PREPARE_ENV] wsl_paths wsl_repo_root=$wslRepoRoot wsl_data_dir=$wslDataDir wsl_output_dir=$wslOutputDir"
+          Add-Content $rp $wslSummary; Write-Host $wslSummary
+
+          # [E] pip install — 各フェーズの rc を個別に記録
+          Add-Content $rp '[PREPARE_ENV] pip_install begin'; Write-Host '[PREPARE_ENV] pip_install begin'
+          & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          python --version        2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $pipBaseRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] pip_base rc=$pipBaseRc"; Write-Host "[PREPARE_ENV] pip_base rc=$pipBaseRc"
+          if ($pipBaseRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment pip_base rc=$pipBaseRc"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipBaseRc
           }
-          # prepare_data via WSL
+          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $pipReqRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] pip_req rc=$pipReqRc"; Write-Host "[PREPARE_ENV] pip_req rc=$pipReqRc"
+          if ($pipReqRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment pip_req rc=$pipReqRc"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipReqRc
+          }
+
+          # [C][E] prepare_data — try/finally で rc を必ず記録
           $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd
-          if ($LASTEXITCODE -ne 0) {
-            Add-Content $rp "[NG] prepare_environment prepare_data rc=$LASTEXITCODE"
-            Write-Error "prepare_data failed rc=$LASTEXITCODE"; exit $LASTEXITCODE
+          $prepBegin = "[PREPARE_ENV] prepare_data begin prepCmd=$prepCmd"
+          Add-Content $rp $prepBegin; Add-Content $consoleLog $prepBegin; Write-Host $prepBegin
+          $prepDataRc = -1
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $prepCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Tee-Object -FilePath $runLog -Append | Write-Host
+            $prepDataRc = $LASTEXITCODE
+          } catch {
+            $excMsg = "[NG] prepare_environment prepare_data exception=$_"
+            Add-Content $rp $excMsg; Write-Warning $excMsg
+          } finally {
+            $doneMsg = "[PREPARE_ENV] prepare_data rc=$prepDataRc"
+            Add-Content $rp $doneMsg; Write-Host $doneMsg
           }
+          if ($prepDataRc -ne 0) {
+            $ngMsg = "[NG] prepare_environment prepare_data failed rc=$prepDataRc prepCmd=$prepCmd"
+            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $prepDataRc
+          }
+
+          Add-Content $rp '[PREPARE_ENV] success'
           Add-Content $rp '[OK] prepare_environment'
+          Write-Host '[PREPARE_ENV] success'
 
       - name: Resolve reuse source
         id: resolve_reuse
