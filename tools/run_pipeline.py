@@ -1897,7 +1897,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
                     finally:
                         _elapsed_dp = time.perf_counter() - _t0_dp
-                    _miss_dp = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _OFFICIAL_STEPE_AGENTS)
+                    _dp_profiles = _OFFICIAL_STEPE_AGENTS
+                    _dp_result = results.get("stepDPRIME_result")
+                    if isinstance(_dp_result, dict):
+                        _profiles_map = _dp_result.get("profiles")
+                        if isinstance(_profiles_map, dict) and _profiles_map:
+                            _dp_profiles = tuple(str(k) for k in _profiles_map.keys())
+                    _miss_dp = validate_step_dprime(Path(resolved_output_root), resolved_mamba_mode, symbol, _dp_profiles)
                     if _miss_dp:
                         if _run_manifest is not None:
                             _run_manifest.mark_step_elapsed("DPRIME", _elapsed_dp)

@@ -2,6 +2,7 @@
 """Run a Python script with sys.executable using argv execution (shell=False)."""
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -24,7 +25,9 @@ def main() -> int:
 
     cmd = [sys.executable, script, *sys.argv[2:]]
     print(f"[CMD] {_format_cmd(cmd)}")
-    completed = subprocess.run(cmd, shell=False, check=False)
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    completed = subprocess.run(cmd, shell=False, check=False, env=child_env)
     print(f"[RC] {completed.returncode}")
     return int(completed.returncode)
 
