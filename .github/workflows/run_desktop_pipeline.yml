@@ -735,7 +735,24 @@ jobs:
           "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          # [B][E] wslpath 変換 — コマンド・stdout・rc を各変換ごとに記録
+          # [B][E] Windows->WSL 変換（PowerShell完結）— 値・rc を各変換ごとに記録
+          function Convert-WindowsPathToWsl {
+            param([Parameter(Mandatory = $true)][string]$WindowsPath)
+            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+              throw "windows_path_empty"
+            }
+            $trimmed = $WindowsPath.Trim()
+            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+              throw "windows_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToLowerInvariant()
+            $rest = $Matches['rest'] -replace '\\', '/'
+            if ($rest.Length -gt 0) {
+              return "/mnt/$drive/$rest"
+            }
+            return "/mnt/$drive"
+          }
+
           $wslRepoRoot  = ''; $wslDataDir = ''; $wslOutputDir = ''
           foreach ($conv in @(
             @{ name='WSL_REPO_ROOT';  win=$env:REPO_ROOT },
@@ -743,21 +760,22 @@ jobs:
             @{ name='WSL_OUTPUT_DIR'; win=$winOutputDir }
           )) {
             $cName = $conv.name; $cWin = $conv.win
-            $beginMsg = "[PREPARE_ENV] wslpath_begin var=$cName cmd='wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin'"
+            $beginMsg = "[PREPARE_ENV] path_convert_begin var=$cName win='$cWin'"
             Add-Content $rp $beginMsg; Write-Host $beginMsg
-            $wslRaw = ''; $wslRc = -1
+            $wslVal = ''
+            $convRc = -1
             try {
-              $wslRaw = (wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin 2>&1)
-              $wslRc  = $LASTEXITCODE
+              $wslVal = Convert-WindowsPathToWsl -WindowsPath $cWin
+              $convRc = 0
             } catch {
-              $excMsg = "[NG] prepare_environment wslpath_$cName exception=$_"
+              $convRc = 1
+              $excMsg = "[NG] prepare_environment convert_windows_to_wsl_$cName exception=$_"
               Add-Content $rp $excMsg; Write-Warning $excMsg
             }
-            $wslVal = if ($wslRaw) { ($wslRaw -join '').Trim() } else { '' }
-            $rcMsg = "[PREPARE_ENV] wslpath_result var=$cName rc=$wslRc result='$wslVal' raw='$wslRaw'"
+            $rcMsg = "[PREPARE_ENV] path_convert_result var=$cName rc=$convRc result='$wslVal'"
             Add-Content $rp $rcMsg; Write-Host $rcMsg
-            if (-not ($wslVal -match '^/mnt/')) {
-              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$wslRc distro='$env:WSL_DISTRO'"
+            if (-not ($wslVal -match '^/mnt/[a-z]/')) {
+              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$convRc distro='$env:WSL_DISTRO'"
               Add-Content $rp $ngMsg; Write-Error $ngMsg; exit 1
             }
             if ($cName -eq 'WSL_REPO_ROOT')  { $wslRepoRoot  = $wslVal }
@@ -837,17 +855,73 @@ jobs:
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
             exit 0
           }
+          function Convert-WindowsPathToWsl {
+            param([Parameter(Mandatory = $true)][string]$WindowsPath)
+            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+              throw "windows_path_empty"
+            }
+            $trimmed = $WindowsPath.Trim()
+            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+              throw "windows_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToLowerInvariant()
+            $rest = $Matches['rest'] -replace '\\', '/'
+            if ($rest.Length -gt 0) {
+              return "/mnt/$drive/$rest"
+            }
+            return "/mnt/$drive"
+          }
+
+          function Convert-WslPathToWindows {
+            param([Parameter(Mandatory = $true)][string]$WslPath)
+            if ([string]::IsNullOrWhiteSpace($WslPath)) {
+              throw "wsl_path_empty"
+            }
+            $trimmed = $WslPath.Trim()
+            if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
+              throw "wsl_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToUpperInvariant()
+            $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
+            if ($rest.Length -gt 0) {
+              return ('{0}:\{1}' -f $drive, $rest)
+            }
+            return ('{0}:\' -f $drive)
+          }
+
           $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
-          $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
+          $wslWorkRoot = ''
+          $workRootRc = -1
+          try {
+            $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
+            $workRootRc = 0
+          } catch {
+            $workRootRc = 1
+            $msg = "[NG] resolve_reuse_source work_root_convert_failed win='$env:WORK_ROOT' error=$_"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
+          Add-Content $rp "[REUSE] work_root_convert rc=$workRootRc win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
+          if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
+            $msg = "[NG] resolve_reuse_source work_root_invalid wsl='$wslWorkRoot'"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
           $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
           $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
           $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
           if ($wslReuse) {
             Write-Host "[REUSE] Found matching prior run: $wslReuse"
-            $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
-            $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
-            if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+            $winReuse = ''
+            $reuseConvRc = -1
+            try {
+              $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
+              $reuseConvRc = 0
+            } catch {
+              $reuseConvRc = 1
+              Add-Content $rp "[WARN] resolve_reuse_source wsl_to_win_failed wsl='$wslReuse' rc=$reuseConvRc error=$_"
+            }
+            Add-Content $rp "[REUSE] wsl_to_win_result wsl='$wslReuse' win='$winReuse' rc=$reuseConvRc"
+            if (($reuseConvRc -eq 0) -and ($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
               Write-Host "[REUSE] source_output_root=$wslReuse"
               Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
               "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -855,7 +929,7 @@ jobs:
               "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
               Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
             } else {
-              Write-Warning "[REUSE] wslpath conversion invalid ($winReuse); using fresh"
+              Write-Warning "[REUSE] conversion invalid ($winReuse); using fresh"
               Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
             }
           } else {
@@ -3390,7 +3464,24 @@ jobs:
           "WIN_OUTPUT_DIR=$winOutputDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "WIN_LOG_DIR=$winLogDir"       | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          # [B][E] wslpath 変換 — コマンド・stdout・rc を各変換ごとに記録
+          # [B][E] Windows->WSL 変換（PowerShell完結）— 値・rc を各変換ごとに記録
+          function Convert-WindowsPathToWsl {
+            param([Parameter(Mandatory = $true)][string]$WindowsPath)
+            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+              throw "windows_path_empty"
+            }
+            $trimmed = $WindowsPath.Trim()
+            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+              throw "windows_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToLowerInvariant()
+            $rest = $Matches['rest'] -replace '\\', '/'
+            if ($rest.Length -gt 0) {
+              return "/mnt/$drive/$rest"
+            }
+            return "/mnt/$drive"
+          }
+
           $wslRepoRoot  = ''; $wslDataDir = ''; $wslOutputDir = ''
           foreach ($conv in @(
             @{ name='WSL_REPO_ROOT';  win=$env:REPO_ROOT },
@@ -3398,21 +3489,22 @@ jobs:
             @{ name='WSL_OUTPUT_DIR'; win=$winOutputDir }
           )) {
             $cName = $conv.name; $cWin = $conv.win
-            $beginMsg = "[PREPARE_ENV] wslpath_begin var=$cName cmd='wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin'"
+            $beginMsg = "[PREPARE_ENV] path_convert_begin var=$cName win='$cWin'"
             Add-Content $rp $beginMsg; Write-Host $beginMsg
-            $wslRaw = ''; $wslRc = -1
+            $wslVal = ''
+            $convRc = -1
             try {
-              $wslRaw = (wsl.exe -d $env:WSL_DISTRO wslpath -u $cWin 2>&1)
-              $wslRc  = $LASTEXITCODE
+              $wslVal = Convert-WindowsPathToWsl -WindowsPath $cWin
+              $convRc = 0
             } catch {
-              $excMsg = "[NG] prepare_environment wslpath_$cName exception=$_"
+              $convRc = 1
+              $excMsg = "[NG] prepare_environment convert_windows_to_wsl_$cName exception=$_"
               Add-Content $rp $excMsg; Write-Warning $excMsg
             }
-            $wslVal = if ($wslRaw) { ($wslRaw -join '').Trim() } else { '' }
-            $rcMsg = "[PREPARE_ENV] wslpath_result var=$cName rc=$wslRc result='$wslVal' raw='$wslRaw'"
+            $rcMsg = "[PREPARE_ENV] path_convert_result var=$cName rc=$convRc result='$wslVal'"
             Add-Content $rp $rcMsg; Write-Host $rcMsg
-            if (-not ($wslVal -match '^/mnt/')) {
-              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$wslRc distro='$env:WSL_DISTRO'"
+            if (-not ($wslVal -match '^/mnt/[a-z]/')) {
+              $ngMsg = "[NG] prepare_environment wslpath_invalid var=$cName win='$cWin' wsl='$wslVal' rc=$convRc distro='$env:WSL_DISTRO'"
               Add-Content $rp $ngMsg; Write-Error $ngMsg; exit 1
             }
             if ($cName -eq 'WSL_REPO_ROOT')  { $wslRepoRoot  = $wslVal }
@@ -3492,17 +3584,73 @@ jobs:
             Add-Content $rp "[OK] resolve_reuse_source reuse=disabled"
             exit 0
           }
+          function Convert-WindowsPathToWsl {
+            param([Parameter(Mandatory = $true)][string]$WindowsPath)
+            if ([string]::IsNullOrWhiteSpace($WindowsPath)) {
+              throw "windows_path_empty"
+            }
+            $trimmed = $WindowsPath.Trim()
+            if ($trimmed -notmatch '^(?<drive>[A-Za-z]):\\(?<rest>.*)$') {
+              throw "windows_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToLowerInvariant()
+            $rest = $Matches['rest'] -replace '\\', '/'
+            if ($rest.Length -gt 0) {
+              return "/mnt/$drive/$rest"
+            }
+            return "/mnt/$drive"
+          }
+
+          function Convert-WslPathToWindows {
+            param([Parameter(Mandatory = $true)][string]$WslPath)
+            if ([string]::IsNullOrWhiteSpace($WslPath)) {
+              throw "wsl_path_empty"
+            }
+            $trimmed = $WslPath.Trim()
+            if ($trimmed -notmatch '^/mnt/(?<drive>[a-z])(?:/(?<rest>.*))?$') {
+              throw "wsl_path_invalid_format path='$trimmed'"
+            }
+            $drive = $Matches['drive'].ToUpperInvariant()
+            $rest = if ($Matches['rest']) { $Matches['rest'] -replace '/', '\\' } else { '' }
+            if ($rest.Length -gt 0) {
+              return ('{0}:\{1}' -f $drive, $rest)
+            }
+            return ('{0}:\' -f $drive)
+          }
+
           $sym1 = ($env:SYMBOLS -split ',')[0].Trim()
-          $wslWorkRoot = (wsl.exe -d $env:WSL_DISTRO wslpath -u $env:WORK_ROOT 2>$null).Trim()
+          $wslWorkRoot = ''
+          $workRootRc = -1
+          try {
+            $wslWorkRoot = Convert-WindowsPathToWsl -WindowsPath $env:WORK_ROOT
+            $workRootRc = 0
+          } catch {
+            $workRootRc = 1
+            $msg = "[NG] resolve_reuse_source work_root_convert_failed win='$env:WORK_ROOT' error=$_"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
+          Add-Content $rp "[REUSE] work_root_convert rc=$workRootRc win='$env:WORK_ROOT' wsl='$wslWorkRoot'"
+          if (-not ($wslWorkRoot -match '^/mnt/[a-z]/')) {
+            $msg = "[NG] resolve_reuse_source work_root_invalid wsl='$wslWorkRoot'"
+            Add-Content $rp $msg; Write-Error $msg; exit 1
+          }
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
           $findCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/find_reuse_run.py --scan-root '$wslWorkRoot' --symbol $sym1 --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --steps '$computedSteps' --enable-mamba 1 --enable-mamba-periodic 0 2>/dev/null"
           $wslReuse = (wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 2>$null)
           $wslReuse = if ($wslReuse) { $wslReuse.Trim() } else { '' }
           if ($wslReuse) {
             Write-Host "[REUSE] Found matching prior run: $wslReuse"
-            $winReuse = (wsl.exe -d $env:WSL_DISTRO wslpath -w "$wslReuse" 2>$null)
-            $winReuse = if ($winReuse) { $winReuse.Trim() } else { '' }
-            if (($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
+            $winReuse = ''
+            $reuseConvRc = -1
+            try {
+              $winReuse = Convert-WslPathToWindows -WslPath $wslReuse
+              $reuseConvRc = 0
+            } catch {
+              $reuseConvRc = 1
+              Add-Content $rp "[WARN] resolve_reuse_source wsl_to_win_failed wsl='$wslReuse' rc=$reuseConvRc error=$_"
+            }
+            Add-Content $rp "[REUSE] wsl_to_win_result wsl='$wslReuse' win='$winReuse' rc=$reuseConvRc"
+            if (($reuseConvRc -eq 0) -and ($winReuse -match '^[A-Za-z]:\\') -and (Test-Path $winReuse)) {
               Write-Host "[REUSE] source_output_root=$wslReuse"
               Write-Host "[REUSE] synchronized EFFECTIVE_WIN_OUTPUT=$winReuse"
               "EFFECTIVE_WIN_OUTPUT=$winReuse" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -3510,7 +3658,7 @@ jobs:
               "reuse_found=true"               | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
               Add-Content $rp "[OK] resolve_reuse_source reuse=true source=$wslReuse"
             } else {
-              Write-Warning "[REUSE] wslpath conversion invalid ($winReuse); using fresh"
+              Write-Warning "[REUSE] conversion invalid ($winReuse); using fresh"
               Add-Content $rp "[WARN] resolve_reuse_source wslpath_failed=$winReuse"
             }
           } else {
