@@ -1781,6 +1781,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if env_horizon_list:
         print(f"[headless] env_horizons={','.join(str(x) for x in env_horizon_list)}")
 
+    _base_reuse_key = (
+        f"mode={resolved_mode}|primary_symbol={symbol}|test_start={args.test_start or ''}|"
+        f"train_years={int(args.train_years)}|test_months={int(args.test_months)}|"
+        f"enable_mamba={int(enable_mamba)}|enable_mamba_periodic={int(bool(args.enable_mamba_periodic))}|"
+        f"mamba_lookback={args.mamba_lookback if args.mamba_lookback is not None else ''}|"
+        f"mamba_horizons={args.mamba_horizons or ''}"
+    )
+    _stepe_agents_key = args.stepe_agents or ','.join(_extract_stepe_agents_from_config(app_config))
+    print(f"[REUSE] stepA_reuse_key=mode={resolved_mode}|symbols={','.join(stepa_execution_symbols)}|test_start={args.test_start or ''}|train_years={int(args.train_years)}|test_months={int(args.test_months)}")
+    print(f"[REUSE] stepB_reuse_key={_base_reuse_key}")
+    print(f"[REUSE] stepC_reuse_key={_base_reuse_key}")
+    print(f"[REUSE] stepDPrime_reuse_key={_base_reuse_key}|profile_set={_stepe_agents_key}")
+    print(f"[REUSE] stepE_reuse_key={_base_reuse_key}|stepe_agents={_stepe_agents_key}")
+    print(f"[REUSE] stepF_reuse_key={_base_reuse_key}|stepe_agents={_stepe_agents_key}|router_signature=minimal")
+
     try:
         with timing.stage("branch.total"):
             if "A" in steps:
