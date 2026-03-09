@@ -1105,19 +1105,83 @@ jobs:
                   throw "invalid_effective_output_paths outRoot='$outRoot' wslOut='$wslOut'"
                 }
                 $manifestPath = Join-Path $outRoot 'run_manifest.json'
-                $stepAOnlyRequested = (($stepList.Count -eq 1) -and ('A' -in $stepList))
                 $stepAStatus = 'run'
                 $stepAReason = 'execute'
-                if ($stepAOnlyRequested -and $env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
-                  if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT) -and ($outRoot -eq $env:STEPA_REUSE_WIN_OUTPUT)) {
+                $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+                $stepASubdir = Join-Path 'stepA' $env:MODE
+                if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
+                  if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT)) {
+                    $materializeFrom = Join-Path $env:STEPA_REUSE_WIN_OUTPUT $stepASubdir
+                    $materializeTo = Join-Path $outRoot $stepASubdir
+                    if (-not (Test-Path $materializeFrom)) {
+                      throw "stepa_reuse_source_missing path='$materializeFrom'"
+                    }
+
+                    $requiredStepAFiles = @(
+                      "stepA_prices_train_${primarySymbol}.csv",
+                      "stepA_prices_test_${primarySymbol}.csv",
+                      "stepA_periodic_train_${primarySymbol}.csv",
+                      "stepA_periodic_test_${primarySymbol}.csv",
+                      "stepA_tech_train_${primarySymbol}.csv",
+                      "stepA_tech_test_${primarySymbol}.csv",
+                      "stepA_split_summary_${primarySymbol}.csv"
+                    )
+
+                    New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
+                    foreach ($requiredFile in $requiredStepAFiles) {
+                      $src = Join-Path $materializeFrom $requiredFile
+                      if (-not (Test-Path $src)) {
+                        throw "stepa_reuse_required_artifact_missing file='$src'"
+                      }
+                      Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
+                    }
+
+                    foreach ($requiredFile in $requiredStepAFiles) {
+                      $dst = Join-Path $materializeTo $requiredFile
+                      if (-not (Test-Path $dst)) {
+                        throw "stepa_materialize_failed file='$dst'"
+                      }
+                    }
+
                     $stepAStatus = 'reuse'
                     $stepAReason = 'simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
+                    Add-Content $rp "[STEP_STATUS] stepA_materialized_from=$materializeFrom"
+                    Add-Content $rp "[STEP_STATUS] stepA_materialized_to=$materializeTo"
                     Add-Content $rp '[STEP_STATUS] step=A status=reuse'
                     Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
-                  } elseif (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and ($outRoot -ne $env:STEPA_REUSE_WIN_OUTPUT)) {
-                    Add-Content $rp "[STEP_STATUS] stepa_simple_reuse_ignored reason=output_root_mismatch effective='$outRoot' stepa_reuse='$env:STEPA_REUSE_WIN_OUTPUT'"
+
+                    $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+                    $manifestObj = $null
+                    if (Test-Path $manifestPath) {
+                      try {
+                        $manifestObj = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+                      } catch {
+                        $manifestObj = $null
+                      }
+                    }
+                    if ($null -eq $manifestObj) {
+                      $manifestObj = [ordered]@{
+                        schema_version = 2
+                        created_at = $nowIso
+                        updated_at = $nowIso
+                        source_output_root = $env:STEPA_REUSE_WIN_OUTPUT
+                        run_id = $env:APEX_RUN_ID
+                        steps = [ordered]@{
+                          A = [ordered]@{ status = 'reuse'; completed_at = $nowIso; elapsed_sec = 0.0; audit_status = 'PASS' }
+                        }
+                      }
+                    } else {
+                      if ($null -eq $manifestObj.steps) {
+                        $manifestObj | Add-Member -NotePropertyName steps -NotePropertyValue ([ordered]@{}) -Force
+                      }
+                      $manifestObj.steps.A = [ordered]@{ status = 'reuse'; completed_at = $nowIso; elapsed_sec = 0.0; audit_status = 'PASS' }
+                      $manifestObj.updated_at = $nowIso
+                      $manifestObj.source_output_root = $env:STEPA_REUSE_WIN_OUTPUT
+                      $manifestObj.run_id = $env:APEX_RUN_ID
+                    }
+                    $manifestObj | ConvertTo-Json -Depth 32 | Set-Content -Path $manifestPath -Encoding UTF8
                   }
                 }
 
@@ -1125,7 +1189,7 @@ jobs:
                 Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
                 if ($stepAStatus -eq 'reuse') {
-                  Write-Host '[StepA] status=reuse (prior artifacts found)'
+                  Write-Host '[StepA] status=reuse (prior artifacts materialized into current output_root)'
                 } else {
                   Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
                   Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4097,14 +4161,81 @@ jobs:
                 $manifestPath = Join-Path $outRoot 'run_manifest.json'
                 $stepAStatus = 'run'
                 $stepAReason = 'execute'
+                $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+                $stepASubdir = Join-Path 'stepA' $env:MODE
                 if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1') -and $env:STEPA_REUSE_MATCH_FOUND -eq 'true') {
                   if (-not [string]::IsNullOrWhiteSpace($env:STEPA_REUSE_WIN_OUTPUT) -and (Test-Path $env:STEPA_REUSE_WIN_OUTPUT)) {
+                    $materializeFrom = Join-Path $env:STEPA_REUSE_WIN_OUTPUT $stepASubdir
+                    $materializeTo = Join-Path $outRoot $stepASubdir
+                    if (-not (Test-Path $materializeFrom)) {
+                      throw "stepa_reuse_source_missing path='$materializeFrom'"
+                    }
+
+                    $requiredStepAFiles = @(
+                      "stepA_prices_train_${primarySymbol}.csv",
+                      "stepA_prices_test_${primarySymbol}.csv",
+                      "stepA_periodic_train_${primarySymbol}.csv",
+                      "stepA_periodic_test_${primarySymbol}.csv",
+                      "stepA_tech_train_${primarySymbol}.csv",
+                      "stepA_tech_test_${primarySymbol}.csv",
+                      "stepA_split_summary_${primarySymbol}.csv"
+                    )
+
+                    New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
+                    foreach ($requiredFile in $requiredStepAFiles) {
+                      $src = Join-Path $materializeFrom $requiredFile
+                      if (-not (Test-Path $src)) {
+                        throw "stepa_reuse_required_artifact_missing file='$src'"
+                      }
+                      Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
+                    }
+
+                    foreach ($requiredFile in $requiredStepAFiles) {
+                      $dst = Join-Path $materializeTo $requiredFile
+                      if (-not (Test-Path $dst)) {
+                        throw "stepa_materialize_failed file='$dst'"
+                      }
+                    }
+
                     $stepAStatus = 'reuse'
                     $stepAReason = 'simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
+                    Add-Content $rp "[STEP_STATUS] stepA_materialized_from=$materializeFrom"
+                    Add-Content $rp "[STEP_STATUS] stepA_materialized_to=$materializeTo"
                     Add-Content $rp '[STEP_STATUS] step=A status=reuse'
                     Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
                     Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
+
+                    $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+                    $manifestObj = $null
+                    if (Test-Path $manifestPath) {
+                      try {
+                        $manifestObj = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+                      } catch {
+                        $manifestObj = $null
+                      }
+                    }
+                    if ($null -eq $manifestObj) {
+                      $manifestObj = [ordered]@{
+                        schema_version = 2
+                        created_at = $nowIso
+                        updated_at = $nowIso
+                        source_output_root = $env:STEPA_REUSE_WIN_OUTPUT
+                        run_id = $env:APEX_RUN_ID
+                        steps = [ordered]@{
+                          A = [ordered]@{ status = 'reuse'; completed_at = $nowIso; elapsed_sec = 0.0; audit_status = 'PASS' }
+                        }
+                      }
+                    } else {
+                      if ($null -eq $manifestObj.steps) {
+                        $manifestObj | Add-Member -NotePropertyName steps -NotePropertyValue ([ordered]@{}) -Force
+                      }
+                      $manifestObj.steps.A = [ordered]@{ status = 'reuse'; completed_at = $nowIso; elapsed_sec = 0.0; audit_status = 'PASS' }
+                      $manifestObj.updated_at = $nowIso
+                      $manifestObj.source_output_root = $env:STEPA_REUSE_WIN_OUTPUT
+                      $manifestObj.run_id = $env:APEX_RUN_ID
+                    }
+                    $manifestObj | ConvertTo-Json -Depth 32 | Set-Content -Path $manifestPath -Encoding UTF8
                   }
                 }
 
@@ -4112,7 +4243,7 @@ jobs:
                 Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
                 if ($stepAStatus -eq 'reuse') {
-                  Write-Host '[StepA] status=reuse (prior artifacts found)'
+                  Write-Host '[StepA] status=reuse (prior artifacts materialized into current output_root)'
                 } else {
                   Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
                   Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
