@@ -160,6 +160,8 @@ def main() -> int:
             "scope": args.reuse_scope,
             "path": path_line,
             "run_id": (Path(path_line).parent.name if path_line else ""),
+            "matched": bool(path_line),
+            "selected_policy": "latest_matching_run",
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     elif args.print_path_only:
@@ -171,7 +173,10 @@ def main() -> int:
         print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
 
     if args.print_path_only or args.print_json:
-        print(f"[find_reuse_run] matched={path_line or '<none>'}", file=sys.stderr)
+        print(
+            f"[find_reuse_run] matched={path_line or '<none>'} selected_policy=latest_matching_run",
+            file=sys.stderr,
+        )
 
     return 0
 
