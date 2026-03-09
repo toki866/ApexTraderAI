@@ -337,6 +337,13 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
         d = base / "stepC" / mode
         if not d.exists():
             return False
+        # Prefer explicit main-series artifacts when present, but keep historical fallback.
+        preferred = (
+            d / f"stepC_features_{symbol}.csv",
+            d / f"stepC_state_{symbol}.csv",
+        )
+        if any(p.exists() for p in preferred):
+            return True
         return any(d.glob(f"*{symbol}*.csv"))
 
     if step_upper == "DPRIME":
@@ -360,7 +367,10 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
             and any(d.glob(f"stepE_daily_log_*_{symbol}.csv"))
             and any(d.glob(f"stepE_summary_*_{symbol}.json"))
             and model_dir.exists()
-            and any(model_dir.glob(f"stepE_*_{symbol}.pt"))
+            and (
+                any(model_dir.glob(f"stepE_*_{symbol}.pt"))
+                or any(model_dir.glob(f"stepE_*_{symbol}_ppo.zip"))
+            )
         )
 
     if step_upper == "F":
@@ -368,6 +378,7 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
         return (
             (d / f"stepF_equity_marl_{symbol}.csv").exists()
             and (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
+            and (d / f"stepF_daily_log_router_{symbol}.csv").exists()
             and (d / f"stepF_summary_router_{symbol}.json").exists()
         )
 
