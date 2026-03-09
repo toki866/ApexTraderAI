@@ -653,6 +653,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $primarySymbol = (($env:SYMBOLS -split ',')[0]).Trim().ToUpperInvariant()
+          $dataPrepareSymbols = ($env:SYMBOLS -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+          $stepaExecutionSymbols = @($primarySymbol)
+          $stepaReuseSymbols = @($primarySymbol)
           $featureSignature = "steps=$computedSteps|skip_stepe=${{ steps.compute_steps.outputs.effective_skip_stepe }}"
           $algorithmSignature = 'enable_mamba=1|enable_mamba_periodic=0|stepE=ppo,diffpg,marl_router'
           $parameterSignature = "train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}|mode=$env:MODE"
@@ -973,13 +977,17 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_stepa'
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $primarySymbol = (($env:SYMBOLS -split ',')[0]).Trim().ToUpperInvariant()
+          $dataPrepareSymbols = ($env:SYMBOLS -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+          $stepaExecutionSymbols = @($primarySymbol)
+          $stepaReuseSymbols = @($primarySymbol)
           $wslRepoRoot = '/mnt/' + $env:REPO_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:REPO_ROOT.Substring(3) -replace '\\','/')
           $wslWorkRoot = '/mnt/' + $env:WORK_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:WORK_ROOT.Substring(3) -replace '\\','/')
           $reuseFound = $false
           $reuseWsl = ''
           $reuseRunId = ''
           if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
-            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$env:SYMBOLS' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
             $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
@@ -1003,11 +1011,17 @@ jobs:
           "STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "STEPA_REUSE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "STEPA_REUSE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Add-Content $rp "[REUSE] primary_symbol=$primarySymbol"
+          Add-Content $rp "[REUSE] data_prepare_symbols=$($dataPrepareSymbols -join ',')"
+          Add-Content $rp "[REUSE] stepa_execution_symbols=$($stepaExecutionSymbols -join ',')"
+          Add-Content $rp "[REUSE] stepa_reuse_symbols=$($stepaReuseSymbols -join ',')"
           Add-Content $rp '[REUSE] stepa_reuse_scope=stepA_simple'
-          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$env:SYMBOLS|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$($stepaReuseSymbols -join ',')|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] stepa_reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
           Add-Content $rp "[REUSE] stepa_reuse_matched_run_id=$reuseRunId"
+          Add-Content $rp '[REUSE] stepa_reuse_selected_policy=latest_matching_run'
           if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
             "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -3631,6 +3645,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $primarySymbol = (($env:SYMBOLS -split ',')[0]).Trim().ToUpperInvariant()
+          $dataPrepareSymbols = ($env:SYMBOLS -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+          $stepaExecutionSymbols = @($primarySymbol)
+          $stepaReuseSymbols = @($primarySymbol)
           $featureSignature = "steps=$computedSteps|skip_stepe=${{ steps.compute_steps.outputs.effective_skip_stepe }}"
           $algorithmSignature = 'enable_mamba=1|enable_mamba_periodic=0|stepE=ppo,diffpg,marl_router'
           $parameterSignature = "train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}|mode=$env:MODE"
@@ -3951,13 +3969,17 @@ jobs:
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] resolve_reuse_stepa'
           $computedSteps = '${{ steps.compute_steps.outputs.computed_steps }}'
+          $primarySymbol = (($env:SYMBOLS -split ',')[0]).Trim().ToUpperInvariant()
+          $dataPrepareSymbols = ($env:SYMBOLS -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+          $stepaExecutionSymbols = @($primarySymbol)
+          $stepaReuseSymbols = @($primarySymbol)
           $wslRepoRoot = '/mnt/' + $env:REPO_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:REPO_ROOT.Substring(3) -replace '\\','/')
           $wslWorkRoot = '/mnt/' + $env:WORK_ROOT.Substring(0,1).ToLowerInvariant() + '/' + ($env:WORK_ROOT.Substring(3) -replace '\\','/')
           $reuseFound = $false
           $reuseWsl = ''
           $reuseRunId = ''
           if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
-            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$env:SYMBOLS' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --scan-root '$wslWorkRoot' --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
             $stdoutRaw = if (Test-Path $stdoutTmp) { (Get-Content $stdoutTmp -Raw -Encoding UTF8) } else { '' }
@@ -3981,11 +4003,17 @@ jobs:
           "STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "STEPA_REUSE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "STEPA_REUSE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Add-Content $rp "[REUSE] primary_symbol=$primarySymbol"
+          Add-Content $rp "[REUSE] data_prepare_symbols=$($dataPrepareSymbols -join ',')"
+          Add-Content $rp "[REUSE] stepa_execution_symbols=$($stepaExecutionSymbols -join ',')"
+          Add-Content $rp "[REUSE] stepa_reuse_symbols=$($stepaReuseSymbols -join ',')"
           Add-Content $rp '[REUSE] stepa_reuse_scope=stepA_simple'
-          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$env:SYMBOLS|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] stepa_reuse_key=mode=$env:MODE|symbols=$($stepaReuseSymbols -join ',')|test_start=${{ inputs.test_start_date }}|train_years=${{ inputs.train_years }}|test_months=${{ inputs.test_months }}"
+          Add-Content $rp "[REUSE] stepa_reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] STEPA_REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
           Add-Content $rp "[REUSE] stepa_reuse_matched_run_id=$reuseRunId"
+          Add-Content $rp '[REUSE] stepa_reuse_selected_policy=latest_matching_run'
           if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
             "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8

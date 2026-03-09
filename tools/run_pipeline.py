@@ -459,6 +459,12 @@ def _symbols_for_data_prep(primary_symbol: str) -> List[str]:
     return sorted(required)
 
 
+def _symbols_for_stepa_execution(primary_symbol: str) -> List[str]:
+    # StepA heavy artifact generation is always limited to the primary symbol.
+    symbol = (primary_symbol or "SOXL").upper()
+    return [symbol]
+
+
 def _prepare_missing_data_if_needed(
     *,
     repo_root: Path,
@@ -1754,7 +1760,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
     print(f"[headless] repo_root={repo_root}")
+    data_prepare_symbols = _symbols_for_data_prep(symbol)
+    stepa_execution_symbols = _symbols_for_stepa_execution(symbol)
     print(f"[headless] symbol={symbol}")
+    print(f"[headless] primary_symbol={symbol}")
+    print(f"[headless] data_prepare_symbols={','.join(data_prepare_symbols)}")
+    print(f"[headless] stepa_execution_symbols={','.join(stepa_execution_symbols)}")
     if future_end:
         print(f"[headless] future_end={future_end}")
     print(f"[headless] steps={','.join(steps)}")
@@ -1780,7 +1791,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _run_manifest.mark_step_elapsed("A", 0.0)
                     _emit_step_status("A", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
                 else:
-                    stepa_symbols = _symbols_for_data_prep(symbol) if "F" in steps else [symbol]
+                    stepa_symbols = _symbols_for_stepa_execution(symbol)
                     print(f"[StepA] start symbols={','.join(stepa_symbols)}")
                     _mark_step("A", "running")
                     _t0_a = time.perf_counter()
