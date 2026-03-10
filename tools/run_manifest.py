@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
+
 # ---------------------------------------------------------------------------
 # Official StepE agent list (mirrors _OFFICIAL_STEPE_AGENTS in run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -41,6 +43,109 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 _MANIFEST_FILENAME = "run_manifest.json"
 _REUSE_SIGNATURE_FILENAME = "reuse_signature.json"
 _SCHEMA_VERSION = 2
+
+
+def build_canonical_output_root(base_output_root: Path, mode: str, symbol: str, test_start: str) -> Path:
+    """Return canonical artifact root: output/<mode>/<symbol>/<test_start>/.
+
+    base_output_root is the logical output base (typically repo/output).
+    """
+    ts = str(test_start or "").strip() or "unknown_test_start"
+    return Path(base_output_root) / str(mode).strip().lower() / str(symbol).strip().upper() / ts
+
+
+def required_outputs_for_step(step: str, symbol: str, mode: str) -> Tuple[str, ...]:
+    s = step.upper()
+    sym = str(symbol)
+    if s == "A":
+        return (
+            f"stepA/{mode}/stepA_prices_train_{sym}.csv",
+            f"stepA/{mode}/stepA_prices_test_{sym}.csv",
+            f"stepA/{mode}/stepA_periodic_train_{sym}.csv",
+            f"stepA/{mode}/stepA_periodic_test_{sym}.csv",
+            f"stepA/{mode}/stepA_tech_train_{sym}.csv",
+            f"stepA/{mode}/stepA_tech_test_{sym}.csv",
+            "split_summary.json",
+        )
+    if s == "B":
+        return (f"stepB/{mode}/stepB_pred_time_all_{sym}.csv", "split_summary.json")
+    if s == "C":
+        return (f"stepC/{mode}/stepC_features_{sym}.csv", "split_summary.json")
+    if s == "DPRIME":
+        return (f"stepDprime/{mode}/stepDprime_state_test_dprime_all_features_h01_{sym}.csv", "split_summary.json")
+    if s == "E":
+        return (f"stepE/{mode}/stepE_daily_log_dprime_all_features_h01_{sym}.csv", "split_summary.json")
+    if s == "F":
+        return (
+            f"stepF/{mode}/stepF_daily_log_router_{sym}.csv",
+            f"stepF/{mode}/stepF_daily_log_marl_{sym}.csv",
+            "split_summary.json",
+        )
+    return tuple()
+
+
+def load_split_summary(output_root: Path) -> Optional[dict]:
+    p = Path(output_root) / "split_summary.json"
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def split_summary_matches(summary: dict, *, symbol: str, mode: str, test_start: str, train_years: int, test_months: int) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    if str(summary.get("symbol", "")).upper() != str(symbol).upper():
+        return False
+    if str(summary.get("mode", "")).lower() != str(mode).lower():
+        return False
+    if str(summary.get("test_start", "")) != str(test_start or ""):
+        return False
+    # Existing repo uses train_years/test_months on CLI; compare these when present.
+    if "train_years" in summary and int(summary.get("train_years", -1)) != int(train_years):
+        return False
+    if "test_months" in summary and int(summary.get("test_months", -1)) != int(test_months):
+        return False
+    return True
+
+
+def _csv_valid(path: Path, required_cols: Tuple[str, ...]) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return False
+    if df.empty:
+        return False
+    cols = set(df.columns)
+    return all(c in cols for c in required_cols)
+
+
+def validate_step_outputs(step: str, output_root: Path, symbol: str, mode: str) -> Tuple[bool, str]:
+    required = required_outputs_for_step(step, symbol, mode)
+    for rel in required:
+        p = Path(output_root) / rel
+        if not p.exists():
+            return False, "missing_required_outputs"
+        if p.is_file() and p.stat().st_size <= 0:
+            return False, "invalid_output_data"
+    csv_rules = {
+        "A": [(f"stepA/{mode}/stepA_prices_train_{symbol}.csv", ("Date", "Open", "High", "Low", "Close", "Volume"))],
+        "B": [(f"stepB/{mode}/stepB_pred_time_all_{symbol}.csv", ("Date",))],
+        "C": [(f"stepC/{mode}/stepC_features_{symbol}.csv", ("Date",))],
+        "DPRIME": [(f"stepDprime/{mode}/stepDprime_state_test_dprime_all_features_h01_{symbol}.csv", ("Date",))],
+        "E": [(f"stepE/{mode}/stepE_daily_log_dprime_all_features_h01_{symbol}.csv", ("Date",))],
+        "F": [(f"stepF/{mode}/stepF_daily_log_router_{symbol}.csv", ("Date",))],
+    }
+    for rel, cols in csv_rules.get(step.upper(), []):
+        p = Path(output_root) / rel
+        if not _csv_valid(p, cols):
+            return False, "invalid_output_data"
+    return True, "reuse"
 
 
 # ---------------------------------------------------------------------------

@@ -1482,8 +1482,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     app_config = _get_app_config(repo_root)
 
     cfg_output_root = Path(getattr(app_config, "output_root", "output"))
-    resolved_output_root = Path(args.output_root) if args.output_root else cfg_output_root
     resolved_mode = (args.mode or "sim").strip().lower()
+    canonical_test_start = str(args.test_start or "unknown_test_start")
+    resolved_output_root = repo_root / "output" / resolved_mode / str(symbol).upper() / canonical_test_start
     resolved_mamba_mode = (args.mode or args.mamba_mode or "sim").strip().lower()
     resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
 
@@ -1644,6 +1645,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_root=data_root,
         env_horizon_days=env_horizon_base,
     )
+
+    try:
+        import json as _json
+        split_payload = {
+            "symbol": str(symbol).upper(),
+            "mode": str(resolved_mode),
+            "test_start": str(getattr(date_range, "test_start", canonical_test_start))[:10],
+            "train_start": str(getattr(date_range, "train_start", ""))[:10],
+            "train_end": str(getattr(date_range, "train_end", ""))[:10],
+            "test_end": str(getattr(date_range, "test_end", ""))[:10],
+            "train_years": int(args.train_years),
+            "test_months": int(args.test_months),
+        }
+        split_path = Path(resolved_output_root) / "split_summary.json"
+        split_path.write_text(_json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[reuse] split_summary_written={split_path}")
+    except Exception as _split_e:
+        print(f"[reuse] WARNING split summary write failed: {type(_split_e).__name__}: {_split_e}", file=sys.stderr)
 
     results: Dict[str, Any] = {}
 
