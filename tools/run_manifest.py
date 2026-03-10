@@ -610,79 +610,98 @@ class RunManifest:
         if not isinstance(data, dict):
             data = {}
 
-        def _warn(field: str) -> None:
-            print(f"[manifest_init] field={field} was None", file=sys.stderr)
+        def _warn_default(field: str, default_repr: str) -> None:
+            print(f"[manifest_init] field={field} was None; defaulted to {default_repr}", file=sys.stderr)
+
+        def _warn_invalid(field: str, actual: object, default_repr: str) -> None:
+            print(
+                f"[manifest_init] field={field} had invalid type={type(actual).__name__}; defaulted to {default_repr}",
+                file=sys.stderr,
+            )
 
         def _as_dict(obj: Optional[dict], field: str) -> dict:
             if obj is None:
-                _warn(field)
+                _warn_default(field, "{}")
                 return {}
             if isinstance(obj, dict):
                 return obj
+            _warn_invalid(field, obj, "{}")
             return {}
 
         def _as_list(obj: Optional[list], field: str) -> list:
             if obj is None:
-                _warn(field)
+                _warn_default(field, "[]")
                 return []
             if isinstance(obj, list):
                 return obj
+            _warn_invalid(field, obj, "[]")
             return []
 
+        data["artifacts"] = _as_list(data.get("artifacts"), "artifacts")
+        data["entries"] = _as_list(data.get("entries"), "entries")
+        data["history"] = _as_list(data.get("history"), "history")
+        data["required_outputs"] = _as_list(data.get("required_outputs"), "required_outputs")
         data["signature"] = _as_dict(data.get("signature"), "signature")
         data["requested_steps"] = _as_list(data.get("requested_steps"), "requested_steps")
         data["steps"] = _as_dict(data.get("steps"), "steps")
 
         if data["signature"].get("steps") is None:
-            _warn("signature.steps")
+            _warn_default("signature.steps", "[]")
             data["signature"]["steps"] = []
         elif not isinstance(data["signature"].get("steps"), list):
+            _warn_invalid("signature.steps", data["signature"].get("steps"), "[]")
             data["signature"]["steps"] = []
 
         if data["signature"].get("stepe_agents") is None:
-            _warn("signature.stepe_agents")
+            _warn_default("signature.stepe_agents", "[]")
             data["signature"]["stepe_agents"] = []
         elif not isinstance(data["signature"].get("stepe_agents"), list):
+            _warn_invalid("signature.stepe_agents", data["signature"].get("stepe_agents"), "[]")
             data["signature"]["stepe_agents"] = []
 
         default_steps = cls._fresh_data(sig, bool(data.get("reuse_enabled")), bool(data.get("force_rebuild")))["steps"]
         for step, fallback in default_steps.items():
             s = data["steps"].get(step)
             if s is None:
-                _warn(f"steps.{step}")
+                _warn_default(f"steps.{step}", "{}")
                 s = {}
             if not isinstance(s, dict):
+                _warn_invalid(f"steps.{step}", s, "{}")
                 s = {}
             for k, v in fallback.items():
                 if s.get(k) is None and v is not None:
-                    _warn(f"steps.{step}.{k}")
+                    _warn_default(f"steps.{step}.{k}", repr(v))
                     s[k] = v
 
             # Legacy/custom keys used by some manifests.
             if s.get("required_outputs") is None:
-                _warn(f"steps.{step}.required_outputs")
+                _warn_default(f"steps.{step}.required_outputs", "[]")
                 s["required_outputs"] = []
             elif not isinstance(s.get("required_outputs"), list):
+                _warn_invalid(f"steps.{step}.required_outputs", s.get("required_outputs"), "[]")
                 s["required_outputs"] = []
 
             if s.get("prior_outputs") is None:
-                _warn(f"steps.{step}.prior_outputs")
+                _warn_default(f"steps.{step}.prior_outputs", "[]")
                 s["prior_outputs"] = []
             elif not isinstance(s.get("prior_outputs"), list):
+                _warn_invalid(f"steps.{step}.prior_outputs", s.get("prior_outputs"), "[]")
                 s["prior_outputs"] = []
 
             if s.get("artifacts") is None:
-                _warn(f"steps.{step}.artifacts")
+                _warn_default(f"steps.{step}.artifacts", "{}")
                 s["artifacts"] = {}
             elif not isinstance(s.get("artifacts"), dict):
+                _warn_invalid(f"steps.{step}.artifacts", s.get("artifacts"), "{}")
                 s["artifacts"] = {}
 
             if step == "E":
                 agents = s.get("agents")
                 if agents is None:
-                    _warn("steps.E.agents")
+                    _warn_default("steps.E.agents", "{}")
                     agents = {}
                 if not isinstance(agents, dict):
+                    _warn_invalid("steps.E.agents", agents, "{}")
                     agents = {}
                 s["agents"] = agents
             data["steps"][step] = s

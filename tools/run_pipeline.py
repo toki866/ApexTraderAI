@@ -1513,7 +1513,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 check_step_artifacts,
                 check_stepe_agent_artifact,
             )
-            _mamba_horizons_for_sig = tuple(_parse_int_list(args.mamba_horizons or ""))
+            _mamba_horizons_for_sig = tuple(_parse_int_list(args.mamba_horizons or "") or [])
             _stepe_agents_for_sig: Optional[Tuple[str, ...]] = None
             if args.stepe_agents:
                 _stepe_agents_for_sig = tuple(a.strip() for a in args.stepe_agents.split(",") if a.strip())
