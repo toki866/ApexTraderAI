@@ -348,7 +348,12 @@ class StepBService:
         if len(out_df) == 0 or coverage <= 0.0:
             _raise_stepb_fail("coverage_zero_after_test_alignment", f"coverage<=0.0 after test alignment: {diag}")
 
-        out_df.to_csv(out_path, index=False, encoding="utf-8")
+        try:
+            out_df.to_csv(out_path, index=False, encoding="utf-8")
+        except Exception as write_exc:
+            _raise_stepb_fail("missing_pred_time_all", f"write_failed:{type(write_exc).__name__}:{write_exc} path={out_path}")
+        if (not out_path.exists()) or out_path.stat().st_size <= 0:
+            _raise_stepb_fail("missing_pred_time_all", f"write_succeeded_but_file_missing_or_empty path={out_path}")
         return out_path
 
     def _write_live_nextday(self, symbol: str, run_mode: str) -> Optional[Path]:
@@ -412,17 +417,20 @@ class StepBService:
 
             symbol = cfg_all.symbol
             run_mode = self._resolve_run_mode(cfg_all)
+            print("[StepB:checkpoint] load_stepa_inputs begin")
             with timing.stage("stepB.load_stepA_inputs"):
                 prices_df = self._load_stepa_df(symbol, run_mode, "prices")
                 prices_test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
                 tech_df = self._load_stepa_df(symbol, run_mode, "tech")
                 periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
                 features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
+            print("[StepB:checkpoint] load_stepa_inputs ok")
 
             forced_cfg = self._force_spec(cfg_all.mamba)
             full_cfg = replace(forced_cfg, variant="full", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
             periodic_cfg = replace(forced_cfg, variant="periodic", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
 
+            print("[StepB:checkpoint] full.run begin")
             with timing.stage("stepB.full.run"):
                 full_res = run_stepB_mamba(
                     app_config=self.app_config,
@@ -433,7 +441,9 @@ class StepBService:
                     timing_logger=timing,
                     timing_stage_prefix="stepB.full",
                 )
+            print("[StepB:checkpoint] full.run ok")
 
+            print("[StepB:checkpoint] periodic.run begin")
             with timing.stage("stepB.periodic.run"):
                 periodic_res = run_stepB_mamba(
                     app_config=self.app_config,
@@ -444,8 +454,21 @@ class StepBService:
                     timing_logger=timing,
                     timing_stage_prefix="stepB.periodic",
                 )
-            with timing.stage("stepB.write_pred_time_all"):
-                pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
+            print("[StepB:checkpoint] periodic.run ok")
+            print("[StepB:checkpoint] write_pred_time_all begin")
+            try:
+                with timing.stage("stepB.write_pred_time_all"):
+                    pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
+                print("[StepB:checkpoint] write_pred_time_all ok")
+            except Exception as write_exc:
+                print(f"[StepB:checkpoint] write_pred_time_all fail reason={type(write_exc).__name__}:{write_exc}")
+                raise
+
+            print("[StepB:checkpoint] ensured stepB_pred_time_all begin")
+            if (not Path(pred_time_all_path).exists()) or Path(pred_time_all_path).stat().st_size <= 0:
+                print("[StepB:checkpoint] ensured stepB_pred_time_all fail reason=missing_pred_time_all")
+                raise FileNotFoundError(f"STEPB_FAIL_REASON=missing_pred_time_all path={pred_time_all_path}")
+            print("[StepB:checkpoint] ensured stepB_pred_time_all ok")
 
             info = {}
             nextday = None
