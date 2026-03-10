@@ -1065,6 +1065,7 @@ jobs:
           $stepRc = 0
           $stepAStatus = 'unknown'
           $stepAReason = ''
+          $shouldExecuteStepA = $false
           $pipelineRc = -1
           $requestedStepsRaw = '${{ steps.compute_steps.outputs.computed_steps }}'
           $prepareOutcome = '${{ steps.prepare_env.outcome }}'
@@ -1197,8 +1198,9 @@ jobs:
                 Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
                 Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
-                if ($stepAStatus -eq 'skip') {
-                  Write-Host '[StepA] status=reuse (prior artifacts materialized into current output_root)'
+                $shouldExecuteStepA = ($stepAStatus -eq 'run')
+                if (-not $shouldExecuteStepA) {
+                  Write-Host "[StepA] status=$stepAStatus reason=$stepAReason (prior artifacts materialized into current output_root)"
                 } else {
                   Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
                   Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1236,9 +1238,9 @@ jobs:
               }
             }
 
-            if ($stepAStatus -eq 'skip') {
+            if (-not $shouldExecuteStepA) {
               Add-Content $rp "[WARN] step_a skipped reason=$stepAReason"
-              Write-Host "[STEP_STATUS] step=A status=skip reason=$stepAReason"
+              Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason"
             }
             Add-Content $rp "[STEP_STATUS] step_a_decision_final=$stepAStatus reason=$stepAReason"
           } catch {
