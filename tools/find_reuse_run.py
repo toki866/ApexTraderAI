@@ -27,6 +27,7 @@ from tools.run_manifest import (
     StepASimpleReuseSignature,
     build_reuse_output_signature,
     build_run_signature,
+    diagnose_stepa_simple_reuse,
     find_latest_matching_run,
     find_latest_matching_stepa_simple_run,
     find_matching_output_root,
@@ -94,6 +95,11 @@ def main() -> int:
         action="store_true",
         help="Print JSON payload {path, run_id, scope} to stdout.",
     )
+    ap.add_argument(
+        "--diagnose-stepa-simple",
+        action="store_true",
+        help="Print StepA simple reuse diagnostics JSON to stdout.",
+    )
     args = ap.parse_args()
 
     steps_parsed = tuple(
@@ -123,6 +129,14 @@ def main() -> int:
             train_years=int(args.train_years),
             test_months=int(args.test_months),
         )
+        if args.diagnose_stepa_simple:
+            diag = diagnose_stepa_simple_reuse(simple_sig)
+            sys.stdout.write(json.dumps(diag, ensure_ascii=True) + "\n")
+            print(
+                f"[find_reuse_run] stepa_simple_diag matched={diag.get('matched')} reason={diag.get('reason')} root={diag.get('canonical_output_root')}",
+                file=sys.stderr,
+            )
+            return 0
         result = find_latest_matching_stepa_simple_run(Path(), simple_sig)
     elif args.reuse_scope == "output_root":
         symbols = _parse_symbol_list(args.symbol)
