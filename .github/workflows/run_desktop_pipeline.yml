@@ -1384,24 +1384,29 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
+          # [E] Execute in WSL with direct stdout/stderr redirection to preserve full traceback
           $PSNativeCommandUseErrorActionPreference = $false
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          $stepBLogPathWsl = ($stepBLogPath -replace '\\', '/')
+          if ($stepBLogPathWsl -match '^([A-Za-z]):/(.*)$') {
+            $stepBLogPathWsl = "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])"
+          } else {
+            throw "failed_to_convert_step_b_exec_log_path_to_wsl: $stepBLogPath"
+          }
           New-Item -ItemType Directory -Path (Split-Path -Parent $stepBLogPath) -Force | Out-Null
           try {
-            if (-not (Test-Path $stepBLogPath)) {
-              New-Item -ItemType File -Path $stepBLogPath -Force | Out-Null
-            }
+            Set-Content -Path $stepBLogPath -Value '' -Encoding UTF8
           } catch {
             $stepBException = "step_b_exec_log_create_failed: $($_ | Out-String).Trim()"
             Add-Content $rp "[NG] step_b exec_log_create_failed path=$stepBLogPath error=$stepBException"
           }
           Add-Content $rp "[STEP_STATUS] step_b_expected_pred_before=$expectedPredWin"
           Add-Content $rp "[STEPB_PRE] expected_pred_file=$expectedPredWsl"
+          Add-Content $rp "[STEPB_PRE] step_b_exec_log_wsl=$stepBLogPathWsl"
           try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c" 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c > '$stepBLogPathWsl' 2>&1"
             $rc = $LASTEXITCODE
           }
           catch {
@@ -1413,6 +1418,10 @@ jobs:
             Write-Host "[StepB] rc=$rc"
             Add-Content $rp "[STEP_STATUS] step_b_last_exitcode=$LASTEXITCODE"
             Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
+            if (Test-Path $stepBLogPath) {
+              Write-Host "[StepB] step_b_exec.log tail (last 40 lines)"
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 40 -ErrorAction SilentlyContinue) | ForEach-Object { Write-Host $_ }
+            }
           }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -lc <pipefail-enabled>"
@@ -1423,23 +1432,27 @@ jobs:
             }
             if (Test-Path $stepBLogPath) {
               Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
-              Add-Content $rp '---- step_b_exec_log_traceback_full ----'
               $logLines = Get-Content -Encoding UTF8 -Path $stepBLogPath -ErrorAction SilentlyContinue
               $tbStart = -1
               for ($i = 0; $i -lt $logLines.Count; $i++) {
-                if ($logLines[$i] -match 'Traceback \(most recent call last\):') { $tbStart = $i }
+                if ($logLines[$i] -match 'Traceback \(most recent call last\):') {
+                  $tbStart = $i
+                  break
+                }
               }
               if ($tbStart -ge 0) {
-                $tbEnd = $logLines.Count - 1
-                for ($j = $tbStart + 1; $j -lt $logLines.Count; $j++) {
-                  if ([string]::IsNullOrWhiteSpace($logLines[$j]) -and $j -gt $tbStart + 1) { $tbEnd = $j - 1; break }
-                }
-                $logLines[$tbStart..$tbEnd] | Add-Content $rp
+                Add-Content $rp '---- step_b_exec_log_traceback_to_eof ----'
+                $logLines[$tbStart..($logLines.Count - 1)] | Add-Content $rp
               } else {
-                Add-Content $rp '[NG] traceback_block_not_found_in_step_b_exec_log'
+                Add-Content $rp '[WARN] traceback_header_not_found_in_step_b_exec_log'
+                if ($logLines.Count -le 300) {
+                  Add-Content $rp '---- step_b_exec_log_full ----'
+                  $logLines | Add-Content $rp
+                } else {
+                  Add-Content $rp '---- step_b_exec_log_tail_last_300 ----'
+                  ($logLines | Select-Object -Last 300) | Add-Content $rp
+                }
               }
-              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
-              ($logLines | Select-Object -Last 200) | Add-Content $rp
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
               Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
@@ -1450,7 +1463,9 @@ jobs:
             exit $rc
           }
           $predExists = Test-Path $expectedPredWin
-          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if ($predExists) { 'pass' } else { 'fail' })"
+          $predExistsStatus = if ($predExists) { 'pass' } else { 'fail' }
+          Write-Host "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$predExistsStatus"
+          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$predExistsStatus"
           if (-not $predExists) {
             Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all"
             Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
@@ -4730,24 +4745,29 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
+          # [E] Execute in WSL with direct stdout/stderr redirection to preserve full traceback
           $PSNativeCommandUseErrorActionPreference = $false
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          $stepBLogPathWsl = ($stepBLogPath -replace '\\', '/')
+          if ($stepBLogPathWsl -match '^([A-Za-z]):/(.*)$') {
+            $stepBLogPathWsl = "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])"
+          } else {
+            throw "failed_to_convert_step_b_exec_log_path_to_wsl: $stepBLogPath"
+          }
           New-Item -ItemType Directory -Path (Split-Path -Parent $stepBLogPath) -Force | Out-Null
           try {
-            if (-not (Test-Path $stepBLogPath)) {
-              New-Item -ItemType File -Path $stepBLogPath -Force | Out-Null
-            }
+            Set-Content -Path $stepBLogPath -Value '' -Encoding UTF8
           } catch {
             $stepBException = "step_b_exec_log_create_failed: $($_ | Out-String).Trim()"
             Add-Content $rp "[NG] step_b exec_log_create_failed path=$stepBLogPath error=$stepBException"
           }
           Add-Content $rp "[STEP_STATUS] step_b_expected_pred_before=$expectedPredWin"
           Add-Content $rp "[STEPB_PRE] expected_pred_file=$expectedPredWsl"
+          Add-Content $rp "[STEPB_PRE] step_b_exec_log_wsl=$stepBLogPathWsl"
           try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c" 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c > '$stepBLogPathWsl' 2>&1"
             $rc = $LASTEXITCODE
           }
           catch {
@@ -4759,6 +4779,10 @@ jobs:
             Write-Host "[StepB] rc=$rc"
             Add-Content $rp "[STEP_STATUS] step_b_last_exitcode=$LASTEXITCODE"
             Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
+            if (Test-Path $stepBLogPath) {
+              Write-Host "[StepB] step_b_exec.log tail (last 40 lines)"
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 40 -ErrorAction SilentlyContinue) | ForEach-Object { Write-Host $_ }
+            }
           }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -lc <pipefail-enabled>"
@@ -4769,23 +4793,27 @@ jobs:
             }
             if (Test-Path $stepBLogPath) {
               Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
-              Add-Content $rp '---- step_b_exec_log_traceback_full ----'
               $logLines = Get-Content -Encoding UTF8 -Path $stepBLogPath -ErrorAction SilentlyContinue
               $tbStart = -1
               for ($i = 0; $i -lt $logLines.Count; $i++) {
-                if ($logLines[$i] -match 'Traceback \(most recent call last\):') { $tbStart = $i }
+                if ($logLines[$i] -match 'Traceback \(most recent call last\):') {
+                  $tbStart = $i
+                  break
+                }
               }
               if ($tbStart -ge 0) {
-                $tbEnd = $logLines.Count - 1
-                for ($j = $tbStart + 1; $j -lt $logLines.Count; $j++) {
-                  if ([string]::IsNullOrWhiteSpace($logLines[$j]) -and $j -gt $tbStart + 1) { $tbEnd = $j - 1; break }
-                }
-                $logLines[$tbStart..$tbEnd] | Add-Content $rp
+                Add-Content $rp '---- step_b_exec_log_traceback_to_eof ----'
+                $logLines[$tbStart..($logLines.Count - 1)] | Add-Content $rp
               } else {
-                Add-Content $rp '[NG] traceback_block_not_found_in_step_b_exec_log'
+                Add-Content $rp '[WARN] traceback_header_not_found_in_step_b_exec_log'
+                if ($logLines.Count -le 300) {
+                  Add-Content $rp '---- step_b_exec_log_full ----'
+                  $logLines | Add-Content $rp
+                } else {
+                  Add-Content $rp '---- step_b_exec_log_tail_last_300 ----'
+                  ($logLines | Select-Object -Last 300) | Add-Content $rp
+                }
               }
-              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
-              ($logLines | Select-Object -Last 200) | Add-Content $rp
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
               Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
@@ -4796,7 +4824,9 @@ jobs:
             exit $rc
           }
           $predExists = Test-Path $expectedPredWin
-          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if ($predExists) { 'pass' } else { 'fail' })"
+          $predExistsStatus = if ($predExists) { 'pass' } else { 'fail' }
+          Write-Host "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$predExistsStatus"
+          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$predExistsStatus"
           if (-not $predExists) {
             Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all"
             Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
