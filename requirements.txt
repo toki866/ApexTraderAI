@@ -7,5 +7,6 @@ scikit-learn
 hdbscan
 gymnasium
 stable-baselines3
+PyWavelets>=1.6
 
 # mamba-ssm is installed conditionally by scripts/run_all_local_then_copy.bat

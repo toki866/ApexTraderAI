@@ -89,11 +89,19 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _check_pywavelets_available() -> Tuple[bool, str]:
+    try:
+        import pywt  # type: ignore
+        return True, str(getattr(pywt, "__version__", "unknown"))
+    except Exception:
+        return False, ""
+
+
 def _wavelet_levels_eff(window_len: int, wavelet_type: str, levels_req: int) -> int:
     try:
         import pywt  # type: ignore
     except Exception as e:
-        raise RuntimeError("PyWavelets is required for wavelet features. pip install PyWavelets") from e
+        raise RuntimeError("STEPB_FAIL_REASON=missing_pywavelets") from e
 
     w = pywt.Wavelet(str(wavelet_type))
     max_level = pywt.dwt_max_level(int(window_len), w.dec_len)
@@ -115,7 +123,7 @@ def _wavelet_detail_matrix(
     try:
         import pywt  # type: ignore
     except Exception as e:
-        raise RuntimeError("PyWavelets is required for wavelet features. pip install PyWavelets") from e
+        raise RuntimeError("STEPB_FAIL_REASON=missing_pywavelets") from e
 
     x = np.asarray(x, dtype=np.float32)
     T = int(len(x))
@@ -675,7 +683,16 @@ def run_mamba_multi_model_by_horizon(
     wavelet_mode = os.getenv("STEPB_MAMBA_WAVELET_MODE", "periodization")
     wavelet_source_col = os.getenv("STEPB_MAMBA_WAVELET_SOURCE_COL", "Close")
 
+    pywt_available, pywt_version = _check_pywavelets_available()
+    if pywt_available:
+        print(f"[StepB:mamba:{out_tag}] pywt_available=True version={pywt_version}")
+    else:
+        print(f"[StepB:mamba:{out_tag}] pywt_available=False")
+
     wavelet_levels_eff = 0
+    if wavelet_enabled and not pywt_available:
+        print("STEPB_FAIL_REASON=missing_pywavelets")
+        raise RuntimeError("STEPB_FAIL_REASON=missing_pywavelets")
     if wavelet_enabled:
         wavelet_levels_eff = _wavelet_levels_eff(lookback_days, wavelet_type, wavelet_levels_req)
         if wavelet_levels_eff <= 0:

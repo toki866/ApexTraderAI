@@ -172,6 +172,20 @@ if errorlevel 1 (
 )
 
 echo [RUN] mamba_ssm importable in WSL; proceeding with wsl_mamba backend>> "%LOG_FILE%"
+
+rem Verify pywt is importable in WSL runtime env before StepB starts
+wsl.exe %WSL_DIST_FLAG% %WSL_PYTHON% -c "import pywt; print('pywt_available=1', pywt.__version__)" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+  echo [StepB:mamba:mamba] pywt_available=False>> "%LOG_FILE%"
+  echo STEPB_FAIL_REASON=missing_pywavelets>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but pywt not importable via WSL python=%WSL_PYTHON%>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but pywt not importable via WSL python=%WSL_PYTHON%
+  set "LAST_CMD=wsl pywt import check"
+  set "LAST_EXIT=5"
+  goto :failed
+)
+
+echo [RUN] pywt importable in WSL runtime env>> "%LOG_FILE%"
 set "EFFECTIVE_ENABLE_MAMBA=%ENABLE_MAMBA%"
 set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
 
