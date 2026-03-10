@@ -364,6 +364,11 @@ class StepBService:
             f"align_reason={diag['align_reason']} fallback_file_count={diag['fallback_file_count']} "
             f"fallback_rebuilt_non_null_over_test={diag['fallback_rebuilt_non_null_over_test']}"
         )
+        print(
+            "[StepB:pred_time_all:stats] "
+            f"pred_close_rows={raw_pred_rows} pred_close_first_date={raw_min_date} pred_close_last_date={raw_max_date} "
+            f"test_split_rows={len(test_dates)} overlap_rows={non_null_rows}"
+        )
 
         if len(out_df) == 0 or coverage <= 0.0:
             _raise_stepb_fail("coverage_zero_after_test_alignment", f"coverage<=0.0 after test alignment: {diag}")
@@ -447,8 +452,34 @@ class StepBService:
             print("[StepB] load_stepa_inputs ok")
 
             forced_cfg = self._force_spec(cfg_all.mamba)
-            full_cfg = replace(forced_cfg, variant="full", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
-            periodic_cfg = replace(forced_cfg, variant="periodic", periodic_output_tag="mamba_periodic", enable_periodic_snapshots=True)
+            full_cfg = replace(
+                forced_cfg,
+                variant="full",
+                mode=run_mode,
+                train_start=getattr(cfg_all.mamba, "train_start", None),
+                train_end=getattr(cfg_all.mamba, "train_end", None),
+                test_start=getattr(cfg_all.mamba, "test_start", None),
+                test_end=getattr(cfg_all.mamba, "test_end", None),
+                date_range=getattr(cfg_all, "date_range", None),
+                use_wavelet=bool(getattr(cfg_all.mamba, "use_wavelet", True)),
+                periodic_use_wavelet=bool(getattr(cfg_all.mamba, "periodic_use_wavelet", False)),
+                periodic_output_tag="mamba_periodic",
+                enable_periodic_snapshots=True,
+            )
+            periodic_cfg = replace(
+                forced_cfg,
+                variant="periodic",
+                mode=run_mode,
+                train_start=getattr(cfg_all.mamba, "train_start", None),
+                train_end=getattr(cfg_all.mamba, "train_end", None),
+                test_start=getattr(cfg_all.mamba, "test_start", None),
+                test_end=getattr(cfg_all.mamba, "test_end", None),
+                date_range=getattr(cfg_all, "date_range", None),
+                use_wavelet=bool(getattr(cfg_all.mamba, "use_wavelet", True)),
+                periodic_use_wavelet=bool(getattr(cfg_all.mamba, "periodic_use_wavelet", False)),
+                periodic_output_tag="mamba_periodic",
+                enable_periodic_snapshots=True,
+            )
 
             print("[StepB] full.run begin")
             with timing.stage("stepB.full.run"):
