@@ -711,15 +711,18 @@ jobs:
             $created = $false
             $source = 'reused_existing'
           } else {
-            $winOutput = Join-Path (Join-Path $env:WORK_ROOT $env:APEX_RUN_ID) 'output'
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $winOutput = Join-Path (Join-Path (Join-Path $env:REPO_ROOT 'output') ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $winOutput = Join-Path $winOutput $testStartForPath
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
               $created = $false
-              $source = 'fresh_pending_stepa_simple'
+              $source = 'fresh_pending_stepa_simple_canonical'
             } else {
               New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
               $created = $true
-              $source = 'fresh_created'
+              $source = 'fresh_created_canonical'
             }
           }
 
@@ -1127,13 +1130,19 @@ jobs:
                       "stepA_split_summary_${primarySymbol}.csv"
                     )
 
-                    New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
-                    foreach ($requiredFile in $requiredStepAFiles) {
-                      $src = Join-Path $materializeFrom $requiredFile
-                      if (-not (Test-Path $src)) {
-                        throw "stepa_reuse_required_artifact_missing file='$src'"
+                    $fromNorm = [System.IO.Path]::GetFullPath($materializeFrom).TrimEnd('\')
+                    $toNorm = [System.IO.Path]::GetFullPath($materializeTo).TrimEnd('\')
+                    if ($fromNorm -eq $toNorm) {
+                      Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_copy=skipped reason=source_equals_destination path=$fromNorm"
+                    } else {
+                      New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
+                      foreach ($requiredFile in $requiredStepAFiles) {
+                        $src = Join-Path $materializeFrom $requiredFile
+                        if (-not (Test-Path $src)) {
+                          throw "stepa_reuse_required_artifact_missing file='$src'"
+                        }
+                        Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
                       }
-                      Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
                     }
 
                     foreach ($requiredFile in $requiredStepAFiles) {
@@ -1278,7 +1287,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; Write-Host "[StepB] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1336,7 +1346,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepC_reuse_matched_output_root=$mw" } }; Write-Host "[StepC] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepC_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=C status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=C status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepC] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1394,7 +1405,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepDPrime_reuse_matched_output_root=$mw" } }; Write-Host "[StepDPrime] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepDPrime_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=DPRIME status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepDPrime] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1453,7 +1465,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepE_reuse_matched_output_root=$mw" } }; Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepE_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=E status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=E status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepE] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1540,7 +1553,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepF_reuse_matched_output_root=$mw" } }; Write-Host "[StepF] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepF_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=F status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=F status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepF] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1915,8 +1929,18 @@ jobs:
               $outputRoot = $outputRootFromLog
               Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
-              $outputRoot = Join-Path $runDir.FullName 'output'
-              Write-Host "Resolved output_root from run_dir: $outputRoot"
+              $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+              $testStartForPath = "${{ inputs.test_start_date }}"
+              if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+              $canonicalOutput = Join-Path (Join-Path (Join-Path $env:REPO_ROOT 'output') ($env:MODE.ToLowerInvariant())) $primarySymbol
+              $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+              if (Test-Path $canonicalOutput) {
+                $outputRoot = $canonicalOutput
+                Write-Host "Resolved output_root from canonical path: $outputRoot"
+              } else {
+                $outputRoot = Join-Path $runDir.FullName 'output'
+                Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
+              }
             }
             "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -3767,15 +3791,18 @@ jobs:
             $created = $false
             $source = 'reused_existing'
           } else {
-            $winOutput = Join-Path (Join-Path $env:WORK_ROOT $env:APEX_RUN_ID) 'output'
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $winOutput = Join-Path (Join-Path (Join-Path $env:REPO_ROOT 'output') ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $winOutput = Join-Path $winOutput $testStartForPath
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
               $created = $false
-              $source = 'fresh_pending_stepa_simple'
+              $source = 'fresh_pending_stepa_simple_canonical'
             } else {
               New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
               $created = $true
-              $source = 'fresh_created'
+              $source = 'fresh_created_canonical'
             }
           }
 
@@ -4181,13 +4208,19 @@ jobs:
                       "stepA_split_summary_${primarySymbol}.csv"
                     )
 
-                    New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
-                    foreach ($requiredFile in $requiredStepAFiles) {
-                      $src = Join-Path $materializeFrom $requiredFile
-                      if (-not (Test-Path $src)) {
-                        throw "stepa_reuse_required_artifact_missing file='$src'"
+                    $fromNorm = [System.IO.Path]::GetFullPath($materializeFrom).TrimEnd('\')
+                    $toNorm = [System.IO.Path]::GetFullPath($materializeTo).TrimEnd('\')
+                    if ($fromNorm -eq $toNorm) {
+                      Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_copy=skipped reason=source_equals_destination path=$fromNorm"
+                    } else {
+                      New-Item -Path $materializeTo -ItemType Directory -Force | Out-Null
+                      foreach ($requiredFile in $requiredStepAFiles) {
+                        $src = Join-Path $materializeFrom $requiredFile
+                        if (-not (Test-Path $src)) {
+                          throw "stepa_reuse_required_artifact_missing file='$src'"
+                        }
+                        Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
                       }
-                      Copy-Item -Path $src -Destination (Join-Path $materializeTo $requiredFile) -Force
                     }
 
                     foreach ($requiredFile in $requiredStepAFiles) {
@@ -4332,7 +4365,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; Write-Host "[StepB] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4390,7 +4424,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=C manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=C status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=C status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepC_reuse_matched_output_root=$mw" } }; Write-Host "[StepC] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepC_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=C status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=C status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepC] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4448,7 +4483,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=DPRIME manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=DPRIME status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=DPRIME status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepDPrime_reuse_matched_output_root=$mw" } }; Write-Host "[StepDPrime] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepDPrime_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=DPRIME status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepDPrime] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4507,7 +4543,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=E manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=E status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=E status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepE_reuse_matched_output_root=$mw" } }; Write-Host "[StepE] status=reuse (all agents complete)"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepE_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=E status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=E status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepE] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4594,7 +4631,8 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=F manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=F status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=F status=$status"
-          if ($status -eq 'reuse') { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepF_reuse_matched_output_root=$mw" } }; Write-Host "[StepF] status=reuse"; exit 0 }
+          $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepF_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=F status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=F status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepF] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4969,8 +5007,18 @@ jobs:
               $outputRoot = $outputRootFromLog
               Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
-              $outputRoot = Join-Path $runDir.FullName 'output'
-              Write-Host "Resolved output_root from run_dir: $outputRoot"
+              $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+              $testStartForPath = "${{ inputs.test_start_date }}"
+              if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+              $canonicalOutput = Join-Path (Join-Path (Join-Path $env:REPO_ROOT 'output') ($env:MODE.ToLowerInvariant())) $primarySymbol
+              $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+              if (Test-Path $canonicalOutput) {
+                $outputRoot = $canonicalOutput
+                Write-Host "Resolved output_root from canonical path: $outputRoot"
+              } else {
+                $outputRoot = Join-Path $runDir.FullName 'output'
+                Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
+              }
             }
             "log_glob=$logGlob" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
