@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -538,7 +539,7 @@ class RunManifest:
         if existing is None or force_rebuild:
             data = cls._fresh_data(sig, reuse_enabled, force_rebuild)
         else:
-            data = existing
+            data = cls._normalize_loaded_data(existing, sig)
             data["reuse_enabled"] = reuse_enabled
             data["updated_at"] = _utcnow_iso()
 
@@ -583,19 +584,112 @@ class RunManifest:
     @classmethod
     def _migrate_v1_to_v2(cls, data: dict) -> dict:
         """Add v2 fields (elapsed_sec, audit_status) to a v1 manifest in-place."""
-        for step, info in data.get("steps", {}).items():
+        for step, info in (data.get("steps") or {}).items():
             if not isinstance(info, dict):
                 continue
             info.setdefault("elapsed_sec", None)
             info.setdefault("audit_status", None)
             # StepE agents
-            for _agent, ainfo in info.get("agents", {}).items():
+            for _agent, ainfo in (info.get("agents") or {}).items():
                 if isinstance(ainfo, dict):
                     ainfo.setdefault("elapsed_sec", None)
                     ainfo.setdefault("audit_status", None)
         data["schema_version"] = _SCHEMA_VERSION
         data.setdefault("source_output_root", None)
         data.setdefault("run_id", None)
+        return data
+
+    @classmethod
+    def _normalize_loaded_data(cls, data: dict, sig: Optional[RunSignature] = None) -> dict:
+        """Coerce nullable/missing manifest fields into safe containers.
+
+        Older/partially-written manifests can contain None values for keys that are
+        treated as dict/list by runtime logic. Normalize them to avoid NoneType
+        iteration errors during reuse checks.
+        """
+        if not isinstance(data, dict):
+            data = {}
+
+        def _warn(field: str) -> None:
+            print(f"[manifest_init] field={field} was None", file=sys.stderr)
+
+        def _as_dict(obj: Optional[dict], field: str) -> dict:
+            if obj is None:
+                _warn(field)
+                return {}
+            if isinstance(obj, dict):
+                return obj
+            return {}
+
+        def _as_list(obj: Optional[list], field: str) -> list:
+            if obj is None:
+                _warn(field)
+                return []
+            if isinstance(obj, list):
+                return obj
+            return []
+
+        data["signature"] = _as_dict(data.get("signature"), "signature")
+        data["requested_steps"] = _as_list(data.get("requested_steps"), "requested_steps")
+        data["steps"] = _as_dict(data.get("steps"), "steps")
+
+        if data["signature"].get("steps") is None:
+            _warn("signature.steps")
+            data["signature"]["steps"] = []
+        elif not isinstance(data["signature"].get("steps"), list):
+            data["signature"]["steps"] = []
+
+        if data["signature"].get("stepe_agents") is None:
+            _warn("signature.stepe_agents")
+            data["signature"]["stepe_agents"] = []
+        elif not isinstance(data["signature"].get("stepe_agents"), list):
+            data["signature"]["stepe_agents"] = []
+
+        default_steps = cls._fresh_data(sig, bool(data.get("reuse_enabled")), bool(data.get("force_rebuild")))["steps"]
+        for step, fallback in default_steps.items():
+            s = data["steps"].get(step)
+            if s is None:
+                _warn(f"steps.{step}")
+                s = {}
+            if not isinstance(s, dict):
+                s = {}
+            for k, v in fallback.items():
+                if s.get(k) is None and v is not None:
+                    _warn(f"steps.{step}.{k}")
+                    s[k] = v
+
+            # Legacy/custom keys used by some manifests.
+            if s.get("required_outputs") is None:
+                _warn(f"steps.{step}.required_outputs")
+                s["required_outputs"] = []
+            elif not isinstance(s.get("required_outputs"), list):
+                s["required_outputs"] = []
+
+            if s.get("prior_outputs") is None:
+                _warn(f"steps.{step}.prior_outputs")
+                s["prior_outputs"] = []
+            elif not isinstance(s.get("prior_outputs"), list):
+                s["prior_outputs"] = []
+
+            if s.get("artifacts") is None:
+                _warn(f"steps.{step}.artifacts")
+                s["artifacts"] = {}
+            elif not isinstance(s.get("artifacts"), dict):
+                s["artifacts"] = {}
+
+            if step == "E":
+                agents = s.get("agents")
+                if agents is None:
+                    _warn("steps.E.agents")
+                    agents = {}
+                if not isinstance(agents, dict):
+                    agents = {}
+                s["agents"] = agents
+            data["steps"][step] = s
+
+        if not data["requested_steps"] and sig is not None:
+            data["requested_steps"] = list(sig.steps)
+
         return data
 
     # ------------------------------------------------------------------
