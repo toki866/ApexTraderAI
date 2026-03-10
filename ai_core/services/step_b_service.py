@@ -464,11 +464,11 @@ class StepBService:
                 print(f"[StepB:checkpoint] write_pred_time_all fail reason={type(write_exc).__name__}:{write_exc}")
                 raise
 
-            print("[StepB:checkpoint] ensured stepB_pred_time_all begin")
+            print("[StepB:checkpoint] ensure_pred_time_all begin")
             if (not Path(pred_time_all_path).exists()) or Path(pred_time_all_path).stat().st_size <= 0:
-                print("[StepB:checkpoint] ensured stepB_pred_time_all fail reason=missing_pred_time_all")
+                print("[StepB:checkpoint] ensure_pred_time_all fail reason=missing_pred_time_all")
                 raise FileNotFoundError(f"STEPB_FAIL_REASON=missing_pred_time_all path={pred_time_all_path}")
-            print("[StepB:checkpoint] ensured stepB_pred_time_all ok")
+            print("[StepB:checkpoint] ensure_pred_time_all ok")
 
             info = {}
             nextday = None
