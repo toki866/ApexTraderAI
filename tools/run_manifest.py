@@ -84,6 +84,9 @@ def required_outputs_for_step(step: str, symbol: str, mode: str) -> Tuple[str, .
             f"stepA/{mode}/stepA_periodic_test_{sym}.csv",
             f"stepA/{mode}/stepA_tech_train_{sym}.csv",
             f"stepA/{mode}/stepA_tech_test_{sym}.csv",
+            f"stepA/{mode}/stepA_split_summary_{sym}.csv",
+            f"stepA/{mode}/stepA_periodic_future_{sym}.csv",
+            f"stepA/{mode}/stepA_daily_manifest_{sym}.csv",
             "split_summary.json",
         )
     if s == "B":
@@ -144,6 +147,27 @@ def _csv_valid(path: Path, required_cols: Tuple[str, ...]) -> bool:
     return all(c in cols for c in required_cols)
 
 
+def _validate_stepa_daily_manifest(output_root: Path, symbol: str, mode: str) -> bool:
+    manifest_path = Path(output_root) / f"stepA/{mode}/stepA_daily_manifest_{symbol}.csv"
+    if not manifest_path.exists() or manifest_path.stat().st_size <= 0:
+        return False
+    try:
+        manifest = pd.read_csv(manifest_path)
+    except Exception:
+        return False
+    if manifest.empty:
+        return False
+    required_cols = ("prices_path", "periodic_path", "tech_path", "periodic_future_path")
+    if not all(c in manifest.columns for c in required_cols):
+        return False
+    for c in required_cols:
+        for raw in manifest[c].fillna("").astype(str):
+            p = Path(raw.strip())
+            if not raw.strip() or not p.exists():
+                return False
+    return True
+
+
 def validate_step_outputs(step: str, output_root: Path, symbol: str, mode: str) -> Tuple[bool, str]:
     required = required_outputs_for_step(step, symbol, mode)
     for rel in required:
@@ -164,6 +188,8 @@ def validate_step_outputs(step: str, output_root: Path, symbol: str, mode: str) 
         p = Path(output_root) / rel
         if not _csv_valid(p, cols):
             return False, "invalid_output_data"
+    if step.upper() == "A" and not _validate_stepa_daily_manifest(Path(output_root), symbol, mode):
+        return False, "invalid_output_data"
     return True, "reuse"
 
 
@@ -409,12 +435,14 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
             f"stepA_periodic_test_{symbol}.csv",
             f"stepA_tech_train_{symbol}.csv",
             f"stepA_tech_test_{symbol}.csv",
+            f"stepA_split_summary_{symbol}.csv",
+            f"stepA_periodic_future_{symbol}.csv",
+            f"stepA_daily_manifest_{symbol}.csv",
             "split_summary.json",
         )
         if not all((base / name if name == "split_summary.json" else d / name).exists() for name in required):
             return False
-        # Optional historical artifact: do not fail reuse when absent.
-        return True
+        return _validate_stepa_daily_manifest(base, symbol, mode)
 
     if step_upper == "B":
         d = base / "stepB" / mode
@@ -926,9 +954,12 @@ def diagnose_stepa_simple_reuse(simple_sig: StepASimpleReuseSignature) -> Dict[s
         f"stepA/{mode}/stepA_periodic_test_{symbol}.csv",
         f"stepA/{mode}/stepA_tech_train_{symbol}.csv",
         f"stepA/{mode}/stepA_tech_test_{symbol}.csv",
+        f"stepA/{mode}/stepA_split_summary_{symbol}.csv",
+        f"stepA/{mode}/stepA_periodic_future_{symbol}.csv",
+        f"stepA/{mode}/stepA_daily_manifest_{symbol}.csv",
         "split_summary.json",
     ]
-    optional = [f"stepA/{mode}/stepA_split_summary_{symbol}.csv"]
+    optional: List[str] = []
 
     for rel in required:
         p = canonical_root / rel
@@ -938,6 +969,16 @@ def diagnose_stepa_simple_reuse(simple_sig: StepASimpleReuseSignature) -> Dict[s
         checks.append({"path": rel, "status": "pass" if p.exists() else "fail", "required": "false"})
 
     if not canonical_root.exists() or any(c["status"] == "fail" for c in checks if c["required"] == "true"):
+        return {
+            "matched": False,
+            "reason": "missing_required_outputs",
+            "canonical_output_root": str(canonical_root),
+            "checks": checks,
+            "stepa_reuse_path": str(canonical_root / "stepA" / mode),
+            "evaluation_stepa_path": str(canonical_root / "stepA" / mode),
+        }
+    if not _validate_stepa_daily_manifest(canonical_root, symbol, mode):
+        checks.append({"path": f"stepA/{mode}/stepA_daily_manifest_{symbol}.csv(manifest_paths)", "status": "fail", "required": "true"})
         return {
             "matched": False,
             "reason": "missing_required_outputs",

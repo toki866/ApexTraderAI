@@ -19,11 +19,7 @@ from typing import List, Sequence
 
 
 def validate_step_a(output_root: Path, symbol: str, mode: str) -> List[str]:
-    """Return missing artifact paths for StepA.
-
-    Hard required: prices_train, prices_test.
-    Soft required (warn-only, included in return list): periodic, tech, split_summary.
-    """
+    """Return missing artifact paths for StepA complete output set."""
     base = Path(output_root) / "stepA" / mode
     missing: List[str] = []
 
@@ -35,10 +31,34 @@ def validate_step_a(output_root: Path, symbol: str, mode: str) -> List[str]:
         f"stepA_tech_train_{symbol}.csv",
         f"stepA_tech_test_{symbol}.csv",
         f"stepA_split_summary_{symbol}.csv",
+        f"stepA_periodic_future_{symbol}.csv",
+        f"stepA_daily_manifest_{symbol}.csv",
     ):
         p = base / name
         if not p.exists():
             missing.append(str(p))
+
+    split_summary_json = Path(output_root) / "split_summary.json"
+    if not split_summary_json.exists():
+        missing.append(str(split_summary_json))
+
+    manifest_path = base / f"stepA_daily_manifest_{symbol}.csv"
+    if manifest_path.exists():
+        try:
+            manifest = pd.read_csv(manifest_path)
+            if manifest.empty:
+                missing.append(f"{manifest_path}::empty")
+            required_cols = ("prices_path", "periodic_path", "tech_path", "periodic_future_path")
+            for col in required_cols:
+                if col not in manifest.columns:
+                    missing.append(f"{manifest_path}::missing_column({col})")
+                    continue
+                for raw in manifest[col].fillna("").astype(str):
+                    if not raw.strip() or not Path(raw).exists():
+                        missing.append(f"{manifest_path}::missing_path({col})={raw}")
+                        break
+        except Exception as e:
+            missing.append(f"{manifest_path}::read_error={type(e).__name__}:{e}")
 
     return missing
 

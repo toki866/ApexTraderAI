@@ -1879,38 +1879,96 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f"stepA_tech_train_{symbol}.csv",
                         f"stepA_tech_test_{symbol}.csv",
                         f"stepA_split_summary_{symbol}.csv",
+                        f"stepA_periodic_future_{symbol}.csv",
+                        f"stepA_daily_manifest_{symbol}.csv",
                     ]
                     stepa_dir_resolved = Path(resolved_output_root) / "stepA" / resolved_mode
                     stepa_dir_canonical = Path(canonical_output_root) / "stepA" / resolved_mode
+                    stepa_daily_dir = stepa_dir_canonical / "daily"
                     print(f"[STEPA_VERIFY] canonical_stepa_dir={stepa_dir_canonical}")
 
-                    if stepa_dir_resolved.resolve() != stepa_dir_canonical.resolve():
-                        stepa_dir_canonical.mkdir(parents=True, exist_ok=True)
-                        for _name in stepa_required:
-                            _src = stepa_dir_resolved / _name
-                            _dst = stepa_dir_canonical / _name
-                            if _src.exists():
-                                shutil.copy2(_src, _dst)
-                                print(f"[STEPA_VERIFY] materialized src={_src} dst={_dst}")
-                        _split_src = Path(resolved_output_root) / "split_summary.json"
-                        _split_dst = Path(canonical_output_root) / "split_summary.json"
-                        if _split_src.exists():
-                            _split_dst.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(_split_src, _split_dst)
-                            print(f"[STEPA_VERIFY] materialized src={_split_src} dst={_split_dst}")
+                    if stepa_dir_resolved.resolve() != stepa_dir_canonical.resolve() and stepa_dir_resolved.exists():
+                        stepa_dir_canonical.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copytree(stepa_dir_resolved, stepa_dir_canonical, dirs_exist_ok=True)
+                        print(f"[STEPA_VERIFY] materialized src={stepa_dir_resolved} dst={stepa_dir_canonical}")
+
+                        for _root_name in ("split_summary.json", "run_manifest.json", "reuse_signature.json"):
+                            _root_src = Path(resolved_output_root) / _root_name
+                            _root_dst = Path(canonical_output_root) / _root_name
+                            if _root_src.exists():
+                                _root_dst.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(_root_src, _root_dst)
+                                print(f"[STEPA_VERIFY] materialized src={_root_src} dst={_root_dst}")
+
+                    _manifest_path = stepa_dir_canonical / f"stepA_daily_manifest_{symbol}.csv"
+                    if _manifest_path.exists():
+                        try:
+                            import pandas as _pd
+                            _manifest_df = _pd.read_csv(_manifest_path)
+                            _resolved_prefix = str(Path(resolved_output_root).resolve()).replace('\\', '/')
+                            _canonical_prefix = str(Path(canonical_output_root).resolve()).replace('\\', '/')
+                            for _col in ("prices_path", "periodic_path", "tech_path", "features_path", "window_features_path", "periodic_future_path"):
+                                if _col in _manifest_df.columns:
+                                    _manifest_df[_col] = _manifest_df[_col].fillna("").astype(str).str.replace(_resolved_prefix, _canonical_prefix, regex=False)
+                            _manifest_df.to_csv(_manifest_path, index=False)
+                        except Exception as _manifest_e:
+                            print(f"[STEPA_VERIFY] manifest_rewrite=fail reason={type(_manifest_e).__name__}:{_manifest_e}")
 
                     stepa_missing: List[str] = []
+                    _status_map = {
+                        f"stepA_prices_train_{symbol}.csv": "prices_train",
+                        f"stepA_prices_test_{symbol}.csv": "prices_test",
+                        f"stepA_periodic_train_{symbol}.csv": "periodic_train",
+                        f"stepA_periodic_test_{symbol}.csv": "periodic_test",
+                        f"stepA_tech_train_{symbol}.csv": "tech_train",
+                        f"stepA_tech_test_{symbol}.csv": "tech_test",
+                        f"stepA_split_summary_{symbol}.csv": "split_summary_csv",
+                        f"stepA_periodic_future_{symbol}.csv": "periodic_future",
+                        f"stepA_daily_manifest_{symbol}.csv": "daily_manifest",
+                    }
                     for _name in stepa_required:
                         _p = stepa_dir_canonical / _name
                         _ok = _p.exists()
-                        print(f"[STEPA_VERIFY] file={_p} exists={int(_ok)}")
+                        print(f"[STEPA_VERIFY] {_status_map.get(_name, _name)}={'pass' if _ok else 'fail'}")
                         if not _ok:
                             stepa_missing.append(_name)
+
                     _split_summary_json = Path(canonical_output_root) / "split_summary.json"
                     _split_ok = _split_summary_json.exists()
-                    print(f"[STEPA_VERIFY] file={_split_summary_json} exists={int(_split_ok)}")
+                    print(f"[STEPA_VERIFY] split_summary_json={'pass' if _split_ok else 'fail'}")
                     if not _split_ok:
                         stepa_missing.append("split_summary.json")
+
+                    def _count_glob(_pat: str) -> int:
+                        if not stepa_daily_dir.exists():
+                            return 0
+                        return len(list(stepa_daily_dir.glob(_pat)))
+
+                    _daily_count_prices = _count_glob(f"stepA_prices_{symbol}_*.csv")
+                    _daily_count_periodic = _count_glob(f"stepA_periodic_{symbol}_*.csv")
+                    _daily_count_tech = _count_glob(f"stepA_tech_{symbol}_*.csv")
+                    _daily_count_periodic_future = _count_glob(f"stepA_periodic_future_{symbol}_*_m*.csv")
+                    print(f"[STEPA_VERIFY] daily_count_prices={_daily_count_prices}")
+                    print(f"[STEPA_VERIFY] daily_count_periodic={_daily_count_periodic}")
+                    print(f"[STEPA_VERIFY] daily_count_tech={_daily_count_tech}")
+                    print(f"[STEPA_VERIFY] daily_count_periodic_future={_daily_count_periodic_future}")
+
+                    if _manifest_path.exists():
+                        try:
+                            import pandas as _pd
+                            _mani = _pd.read_csv(_manifest_path)
+                            _manifest_missing: List[str] = []
+                            for _col in ("prices_path", "periodic_path", "tech_path", "periodic_future_path"):
+                                if _col not in _mani.columns:
+                                    _manifest_missing.append(f"manifest_missing_col:{_col}")
+                                    continue
+                                for _raw in _mani[_col].fillna("").astype(str):
+                                    if not _raw.strip() or not Path(_raw).exists():
+                                        _manifest_missing.append(_raw or f"blank:{_col}")
+                            if _manifest_missing:
+                                stepa_missing.extend(_manifest_missing)
+                        except Exception as _manifest_verify_e:
+                            stepa_missing.append(f"daily_manifest_read_error:{type(_manifest_verify_e).__name__}")
 
                     if stepa_missing:
                         print(f"[STEPA_VERIFY] missing={','.join(stepa_missing)}")
