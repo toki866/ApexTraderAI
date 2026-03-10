@@ -1355,8 +1355,9 @@ jobs:
               Add-Content $rp "[REUSE] stepB split_mismatch_keys=$($reuseDecision.split_mismatch_keys -join ',')"
             }
           }
-          Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
-          Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          $stepBStatusReason = if ($status -eq 'skip') { 'reuse' } elseif ("$($reuseDecision.reason)" -eq 'missing_required_outputs') { 'generate_missing_output' } elseif ([string]::IsNullOrWhiteSpace("$($reuseDecision.reason)")) { 'execute' } else { "$($reuseDecision.reason)" }
+          Write-Host "[STEP_STATUS] step=B status=$status reason=$stepBStatusReason output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=B status=$status reason=$stepBStatusReason"
           $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
           $expectedPredWsl = "$wslOut/stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv"
           Write-Host "[STEPB] output_root=$wslOut"
@@ -1384,6 +1385,7 @@ jobs:
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
+          $PSNativeCommandUseErrorActionPreference = $false
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
@@ -1421,8 +1423,23 @@ jobs:
             }
             if (Test-Path $stepBLogPath) {
               Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
+              Add-Content $rp '---- step_b_exec_log_traceback_full ----'
+              $logLines = Get-Content -Encoding UTF8 -Path $stepBLogPath -ErrorAction SilentlyContinue
+              $tbStart = -1
+              for ($i = 0; $i -lt $logLines.Count; $i++) {
+                if ($logLines[$i] -match 'Traceback \(most recent call last\):') { $tbStart = $i }
+              }
+              if ($tbStart -ge 0) {
+                $tbEnd = $logLines.Count - 1
+                for ($j = $tbStart + 1; $j -lt $logLines.Count; $j++) {
+                  if ([string]::IsNullOrWhiteSpace($logLines[$j]) -and $j -gt $tbStart + 1) { $tbEnd = $j - 1; break }
+                }
+                $logLines[$tbStart..$tbEnd] | Add-Content $rp
+              } else {
+                Add-Content $rp '[NG] traceback_block_not_found_in_step_b_exec_log'
+              }
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
-              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+              ($logLines | Select-Object -Last 200) | Add-Content $rp
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
               Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
@@ -1444,7 +1461,7 @@ jobs:
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
             }
-            Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
+            Write-Error "STEPB_FAIL_REASON=missing_pred_time_all; StepB post-check failed (missing expected output): $expectedPredWin"
             exit 1
           }
           Add-Content $rp "[OK] step_b post_check_required=$expectedPredWin"
@@ -2183,6 +2200,11 @@ jobs:
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
           if (Test-Path $consoleLog) {
             Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
+          }
+          $stepBExecLog = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          if (Test-Path $stepBExecLog) {
+            Copy-Item -Path $stepBExecLog -Destination (Join-Path $artifactRoot 'step_b_exec.log') -Force
+            Copy-Item -Path $stepBExecLog -Destination (Join-Path $workspaceLogRoot 'step_b_exec.log') -Force
           }
 
           $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
@@ -3154,12 +3176,14 @@ jobs:
           $runLogPath = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
           $stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'
           $oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepBExecLogWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
 
           if ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }
           if ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }
           if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
           if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
           if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
+          if (Test-Path $stepBExecLogWorkspace) { Copy-Item -Path $stepBExecLogWorkspace -Destination (Join-Path $diagOut 'step_b_exec.log') -Force }
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           if ($outputRoot -and (Test-Path $outputRoot)) {
             $timingEvents = Join-Path $outputRoot (Join-Path 'timing' (Join-Path $env:MODE 'timing_events.jsonl'))
@@ -4677,8 +4701,9 @@ jobs:
               Add-Content $rp "[REUSE] stepB split_mismatch_keys=$($reuseDecision.split_mismatch_keys -join ',')"
             }
           }
-          Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
-          Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          $stepBStatusReason = if ($status -eq 'skip') { 'reuse' } elseif ("$($reuseDecision.reason)" -eq 'missing_required_outputs') { 'generate_missing_output' } elseif ([string]::IsNullOrWhiteSpace("$($reuseDecision.reason)")) { 'execute' } else { "$($reuseDecision.reason)" }
+          Write-Host "[STEP_STATUS] step=B status=$status reason=$stepBStatusReason output_root=$outRoot"
+          Add-Content $rp "[STEP_STATUS] step=B status=$status reason=$stepBStatusReason"
           $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
           $expectedPredWsl = "$wslOut/stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv"
           Write-Host "[STEPB] output_root=$wslOut"
@@ -4706,6 +4731,7 @@ jobs:
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
+          $PSNativeCommandUseErrorActionPreference = $false
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
@@ -4743,8 +4769,23 @@ jobs:
             }
             if (Test-Path $stepBLogPath) {
               Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
+              Add-Content $rp '---- step_b_exec_log_traceback_full ----'
+              $logLines = Get-Content -Encoding UTF8 -Path $stepBLogPath -ErrorAction SilentlyContinue
+              $tbStart = -1
+              for ($i = 0; $i -lt $logLines.Count; $i++) {
+                if ($logLines[$i] -match 'Traceback \(most recent call last\):') { $tbStart = $i }
+              }
+              if ($tbStart -ge 0) {
+                $tbEnd = $logLines.Count - 1
+                for ($j = $tbStart + 1; $j -lt $logLines.Count; $j++) {
+                  if ([string]::IsNullOrWhiteSpace($logLines[$j]) -and $j -gt $tbStart + 1) { $tbEnd = $j - 1; break }
+                }
+                $logLines[$tbStart..$tbEnd] | Add-Content $rp
+              } else {
+                Add-Content $rp '[NG] traceback_block_not_found_in_step_b_exec_log'
+              }
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
-              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+              ($logLines | Select-Object -Last 200) | Add-Content $rp
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
               Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
@@ -4766,7 +4807,7 @@ jobs:
             } else {
               Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
             }
-            Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
+            Write-Error "STEPB_FAIL_REASON=missing_pred_time_all; StepB post-check failed (missing expected output): $expectedPredWin"
             exit 1
           }
           Add-Content $rp "[OK] step_b post_check_required=$expectedPredWin"
@@ -5477,6 +5518,11 @@ jobs:
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
           if (Test-Path $consoleLog) {
             Copy-Item -Path $consoleLog -Destination (Join-Path $artifactRoot 'run_all_local_then_copy_console.log') -Force
+          }
+          $stepBExecLog = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          if (Test-Path $stepBExecLog) {
+            Copy-Item -Path $stepBExecLog -Destination (Join-Path $artifactRoot 'step_b_exec.log') -Force
+            Copy-Item -Path $stepBExecLog -Destination (Join-Path $workspaceLogRoot 'step_b_exec.log') -Force
           }
 
           $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
@@ -6397,12 +6443,14 @@ jobs:
           $runLogPath = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
           $stepSummaryGlob = Join-Path $env:RUNNER_TEMP 'step_summary_*'
           $oneTapReportWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $stepBExecLogWorkspace = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
 
           if ($latestRunnerLog) { Copy-Item -Path $latestRunnerLog.FullName -Destination (Join-Path $diagOut $latestRunnerLog.Name) -Force }
           if ($latestWorkerLog) { Copy-Item -Path $latestWorkerLog.FullName -Destination (Join-Path $diagOut $latestWorkerLog.Name) -Force }
           if (Test-Path $workflowLog) { Copy-Item -Path $workflowLog -Destination (Join-Path $diagOut 'workflow_console.log') -Force }
           if ($runLogPath -and (Test-Path $runLogPath)) { Copy-Item -Path $runLogPath -Destination (Join-Path $diagOut (Split-Path $runLogPath -Leaf)) -Force }
           if (Test-Path $oneTapReportWorkspace) { Copy-Item -Path $oneTapReportWorkspace -Destination (Join-Path $diagOut 'ONE_TAP_ERROR_REPORT.txt') -Force }
+          if (Test-Path $stepBExecLogWorkspace) { Copy-Item -Path $stepBExecLogWorkspace -Destination (Join-Path $diagOut 'step_b_exec.log') -Force }
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           if ($outputRoot -and (Test-Path $outputRoot)) {
             $timingEvents = Join-Path $outputRoot (Join-Path 'timing' (Join-Path $env:MODE 'timing_events.jsonl'))

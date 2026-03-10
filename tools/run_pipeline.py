@@ -2152,6 +2152,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _stepb_expected_pred_file = Path(resolved_output_root) / "stepB" / resolved_mamba_mode / f"stepB_pred_time_all_{symbol}.csv"
                 print(f"[STEPB] output_root={resolved_output_root}")
                 print(f"[STEPB] expected_pred_file={_stepb_expected_pred_file}")
+                print(f"[STEPB_PRE] required=stepB/{resolved_mamba_mode}/stepB_pred_time_all_{symbol}.csv exists={'pass' if _stepb_expected_pred_file.exists() else 'fail'}")
                 if _can_reuse_step("B"):
                     print(f"[StepB] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("B", "reuse")
