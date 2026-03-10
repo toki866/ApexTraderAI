@@ -54,6 +54,26 @@ def _parse_date(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     return out
 
 
+
+
+def _canonical_eval_roots(output_root: str, mode: str, symbol: str) -> list[str]:
+    roots = [output_root]
+    try:
+        from tools.run_manifest import resolve_canonical_output_root
+
+        norm = os.path.normpath(output_root)
+        parts = norm.split(os.sep)
+        test_start = ""
+        if len(parts) >= 1:
+            tail = parts[-1]
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", tail):
+                test_start = tail
+        canonical = str(resolve_canonical_output_root(mode, symbol, test_start or "unknown_test_start"))
+        if canonical not in roots:
+            roots.append(canonical)
+    except Exception:
+        pass
+    return roots
 def _to_float(v: Any) -> float | None:
     try:
         if v is None:
@@ -527,9 +547,26 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
 
     # StepA
     try:
-        prices_path = _find_first(os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv"))
+        stepa_search_roots = _canonical_eval_roots(output_root, mode, symbol)
+        prices_path = None
+        stepa_patterns: list[str] = []
+        for _root in stepa_search_roots:
+            _pattern = os.path.join(_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv")
+            stepa_patterns.append(_pattern)
+            prices_path = _find_first(_pattern)
+            if prices_path:
+                break
+
         if not prices_path:
-            report["stepA"] = {"status": "SKIP", "summary": "stepA_prices_test file missing", "details": {}}
+            missing_path = stepa_patterns[0] if stepa_patterns else os.path.join(output_root, "stepA", "*", f"stepA_prices_test_{symbol}.csv")
+            report["stepA"] = {
+                "status": "SKIP",
+                "summary": "stepA_prices_test file missing",
+                "details": {
+                    "missing_path": missing_path,
+                    "searched_patterns": stepa_patterns,
+                },
+            }
         else:
             px = _parse_date(_read_csv(prices_path), "Date")
             stepa_prices = px
@@ -542,6 +579,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                     sum(int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns)
                 ),
                 "ohlcv_missing": {c: int(px[c].isna().sum()) for c in ["Open", "High", "Low", "Close", "Volume"] if c in px.columns},
+                "searched_patterns": stepa_patterns,
             }
             report["stepA"] = {"status": "OK", "summary": "prices_test evaluated", "details": d}
     except Exception as exc:
