@@ -612,7 +612,6 @@ def _load_prices_dates(
         output_root / "stepA" / mode / f"stepA_prices_{symbol}.csv",
         output_root / "stepA" / "display" / f"stepA_prices_{symbol}.csv",
         output_root / f"stepA_prices_{symbol}.csv",
-        repo_root / "output" / f"stepA_prices_{symbol}.csv",
         # (Priority 3) raw source fallback
         data_root / f"prices_{symbol}.csv",
     ]
@@ -655,7 +654,9 @@ def _build_date_range(
     import pandas as pd
     from ai_core.types.common import DateRange
 
-    out_root = Path(output_root) if output_root is not None else (repo_root / "output")
+    if output_root is None:
+        raise ValueError("output_root is required for _build_date_range")
+    out_root = Path(output_root)
     data_root = Path(data_root) if data_root is not None else (repo_root / "data")
 
     dates, _, searched_paths = _load_prices_dates(
@@ -1640,21 +1641,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     app_config = _get_app_config(repo_root)
 
-    cfg_output_root = Path(getattr(app_config, "output_root", "output"))
     resolved_mode = (args.mode or "sim").strip().lower()
     canonical_test_start = str(args.test_start or "unknown_test_start")
-    resolved_output_root = repo_root / "output" / resolved_mode / str(symbol).upper() / canonical_test_start
+    cli_output_root: Optional[Path] = None
+    if args.output_root:
+        cli_output_root = Path(args.output_root).expanduser()
+        if not cli_output_root.is_absolute():
+            cli_output_root = (repo_root / cli_output_root).resolve()
+        else:
+            cli_output_root = cli_output_root.resolve()
     try:
         from tools.run_manifest import resolve_canonical_output_root as _resolve_canonical_output_root
 
-        canonical_output_root = _resolve_canonical_output_root(resolved_mode, symbol, canonical_test_start)
+        canonical_output_root = cli_output_root or _resolve_canonical_output_root(resolved_mode, symbol, canonical_test_start)
     except Exception:
-        canonical_output_root = resolved_output_root
+        if cli_output_root is None:
+            raise
+        canonical_output_root = cli_output_root
+    resolved_output_root = canonical_output_root
     resolved_mamba_mode = (args.mode or args.mamba_mode or "sim").strip().lower()
     resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
+    print(f"[PIPELINE] args_output_root={args.output_root}")
     print(f"[PIPELINE] resolved_output_root={resolved_output_root}")
     print(f"[PIPELINE] canonical_output_root={canonical_output_root}")
     print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
@@ -2141,6 +2151,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
 
             if "B" in steps:
+                app_config = _apply_config_output_root(app_config, Path(canonical_output_root))
+                print(f"[PIPELINE] args_output_root={args.output_root}")
+                print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
+                print(f"[PIPELINE] cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}")
                 _check_and_repair_split_summary_before_stepb(
                     resolved_output_root=Path(resolved_output_root),
                     canonical_output_root=Path(canonical_output_root),

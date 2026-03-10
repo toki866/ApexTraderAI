@@ -22,6 +22,10 @@ class StepBService:
     def __init__(self, app_config: AppConfig) -> None:
         self.app_config = app_config
 
+    def _is_repo_cache_path(self, p: Path) -> bool:
+        norm = str(p).replace("\\", "/").lower()
+        return "/apex_repo_cache/" in norm and "/output" in norm
+
     def _timing(self) -> TimingLogger:
         t = getattr(self.app_config, "_timing_logger", None)
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
@@ -33,7 +37,18 @@ class StepBService:
         return "sim" if m not in ("sim", "live") else m
 
     def _out_root(self) -> Path:
-        return Path(getattr(getattr(self.app_config, "data", None), "output_root", getattr(self.app_config, "output_root", "output")))
+        candidate = Path(getattr(getattr(self.app_config, "data", None), "output_root", getattr(self.app_config, "output_root", "output")))
+        if self._is_repo_cache_path(candidate):
+            canonical = Path("C:/work/apex_work/output") if sys.platform.startswith("win") else Path("/mnt/c/work/apex_work/output")
+            print(
+                f"[StepB:output_root:FAIL] repo_cache_output_root_detected={candidate} canonical_output_base={canonical}",
+                file=sys.stderr,
+            )
+            raise RuntimeError(
+                "StepBService output_root points to repo cache output path; expected apex_work/output canonical root. "
+                f"detected={candidate} canonical_base={canonical}"
+            )
+        return candidate
 
     def _out_dir(self, run_mode: str) -> Path:
         p = self._out_root() / "stepB" / run_mode
@@ -41,7 +56,11 @@ class StepBService:
         return p
 
     def _mode_dir(self, run_mode: str) -> Path:
-        return self._out_root() / "stepA" / run_mode
+        p = self._out_root() / "stepA" / run_mode
+        if self._is_repo_cache_path(p):
+            print(f"[StepB:mode_dir:FAIL] repo_cache_mode_dir_detected={p}", file=sys.stderr)
+            raise RuntimeError(f"StepBService mode_dir points to repo cache output path: {p}")
+        return p
 
     def _load_stepa_split_df(self, symbol: str, run_mode: str, kind: str, split: str) -> pd.DataFrame:
         p = self._mode_dir(run_mode) / f"stepA_{kind}_{split}_{symbol}.csv"
