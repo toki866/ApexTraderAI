@@ -30,8 +30,11 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
     if not canonical_root.exists():
         return {"status":"run","reason":"missing_step_dir","final":"execute","symbol":"pass","mode":"pass","split":"fail","required_outputs":"fail","validation":"skip"}
 
+    split_summary_path = canonical_root / "split_summary.json"
+    print(f"[reuse] step={step} split_summary_probe={split_summary_path}", file=sys.stderr)
     summary = load_split_summary(canonical_root)
     if summary is None:
+        print(f"[reuse] step={step} split_summary_missing_at={split_summary_path}", file=sys.stderr)
         return {"status":"run","reason":"split_summary_missing","final":"execute","symbol":"pass","mode":"pass","split":"fail","required_outputs":"fail","validation":"skip"}
 
     symbol_ok = str(summary.get('symbol','')).upper() == str(symbol).upper()

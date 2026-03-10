@@ -33,6 +33,7 @@ import argparse
 import dataclasses
 import inspect
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -1485,12 +1486,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     resolved_mode = (args.mode or "sim").strip().lower()
     canonical_test_start = str(args.test_start or "unknown_test_start")
     resolved_output_root = repo_root / "output" / resolved_mode / str(symbol).upper() / canonical_test_start
+    try:
+        from tools.run_manifest import resolve_canonical_output_root as _resolve_canonical_output_root
+
+        canonical_output_root = _resolve_canonical_output_root(resolved_mode, symbol, canonical_test_start)
+    except Exception:
+        canonical_output_root = resolved_output_root
     resolved_mamba_mode = (args.mode or args.mamba_mode or "sim").strip().lower()
     resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
     print(f"[PIPELINE] resolved_output_root={resolved_output_root}")
+    print(f"[PIPELINE] canonical_output_root={canonical_output_root}")
     print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
     print(f"[PIPELINE] cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}")
 
@@ -1661,6 +1669,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         split_path = Path(resolved_output_root) / "split_summary.json"
         split_path.write_text(_json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[reuse] split_summary_written={split_path}")
+        if Path(canonical_output_root).resolve() != Path(resolved_output_root).resolve():
+            canonical_split_path = Path(canonical_output_root) / "split_summary.json"
+            canonical_split_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_split_path.write_text(_json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[reuse] split_summary_materialized={canonical_split_path}")
     except Exception as _split_e:
         print(f"[reuse] WARNING split summary write failed: {type(_split_e).__name__}: {_split_e}", file=sys.stderr)
 
@@ -1851,6 +1864,53 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _run_manifest.mark_step_elapsed("A", _elapsed_a)
                         _run_manifest.mark_step_audit("A", "PASS")
                     _emit_step_status("A", status="run", started_at=_t0_a_wall, ended_at=time.time(), validated=True)
+
+                    stepa_required = [
+                        f"stepA_prices_train_{symbol}.csv",
+                        f"stepA_prices_test_{symbol}.csv",
+                        f"stepA_periodic_train_{symbol}.csv",
+                        f"stepA_periodic_test_{symbol}.csv",
+                        f"stepA_tech_train_{symbol}.csv",
+                        f"stepA_tech_test_{symbol}.csv",
+                        f"stepA_split_summary_{symbol}.csv",
+                    ]
+                    stepa_dir_resolved = Path(resolved_output_root) / "stepA" / resolved_mode
+                    stepa_dir_canonical = Path(canonical_output_root) / "stepA" / resolved_mode
+                    print(f"[STEPA_VERIFY] canonical_stepa_dir={stepa_dir_canonical}")
+
+                    if stepa_dir_resolved.resolve() != stepa_dir_canonical.resolve():
+                        stepa_dir_canonical.mkdir(parents=True, exist_ok=True)
+                        for _name in stepa_required:
+                            _src = stepa_dir_resolved / _name
+                            _dst = stepa_dir_canonical / _name
+                            if _src.exists():
+                                shutil.copy2(_src, _dst)
+                                print(f"[STEPA_VERIFY] materialized src={_src} dst={_dst}")
+                        _split_src = Path(resolved_output_root) / "split_summary.json"
+                        _split_dst = Path(canonical_output_root) / "split_summary.json"
+                        if _split_src.exists():
+                            _split_dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(_split_src, _split_dst)
+                            print(f"[STEPA_VERIFY] materialized src={_split_src} dst={_split_dst}")
+
+                    stepa_missing: List[str] = []
+                    for _name in stepa_required:
+                        _p = stepa_dir_canonical / _name
+                        _ok = _p.exists()
+                        print(f"[STEPA_VERIFY] file={_p} exists={int(_ok)}")
+                        if not _ok:
+                            stepa_missing.append(_name)
+                    _split_summary_json = Path(canonical_output_root) / "split_summary.json"
+                    _split_ok = _split_summary_json.exists()
+                    print(f"[STEPA_VERIFY] file={_split_summary_json} exists={int(_split_ok)}")
+                    if not _split_ok:
+                        stepa_missing.append("split_summary.json")
+
+                    if stepa_missing:
+                        print(f"[STEPA_VERIFY] missing={','.join(stepa_missing)}")
+                        print(f"[ONE_TAP][STEPA_VERIFY] missing={','.join(stepa_missing)}")
+                    else:
+                        print("[STEPA_VERIFY] missing=none")
                     print("[StepA] done")
 
             if "B" in steps:
