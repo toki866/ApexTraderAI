@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CLI tool: scan WORK_ROOT for a prior run matching the given signature.
+"""CLI tool: resolve canonical output root reuse for given signature.
 
 Machine-readable mode:
 - stdout contains only the matched output_root path (single line) or empty.
@@ -62,8 +62,8 @@ def _parse_symbol_list(s: str):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Find a matching prior run in scan_root.")
-    ap.add_argument("--scan-root", required=True, help="Root directory to scan (WORK_ROOT).")
+    ap = argparse.ArgumentParser(description="Resolve canonical output root for reuse.")
+    ap.add_argument("--scan-root", default="", help="Deprecated compatibility option (ignored).")
     ap.add_argument("--symbol", required=True)
     ap.add_argument("--mode", default="sim")
     ap.add_argument("--test-start", dest="test_start", default="")
@@ -108,9 +108,8 @@ def main() -> int:
             a.strip() for a in args.stepe_agents.split(",") if a.strip()
         )
 
-    scan_root = Path(args.scan_root)
     print(
-        f"[find_reuse_run] scope={args.reuse_scope} scan_root={scan_root} symbol={args.symbol} mode={args.mode} "
+        f"[find_reuse_run] scope={args.reuse_scope} scan_root=ignored symbol={args.symbol} mode={args.mode} "
         f"test_start={args.test_start} train_years={args.train_years} test_months={args.test_months}",
         file=sys.stderr,
     )
@@ -124,7 +123,7 @@ def main() -> int:
             train_years=int(args.train_years),
             test_months=int(args.test_months),
         )
-        result = find_latest_matching_stepa_simple_run(scan_root, simple_sig)
+        result = find_latest_matching_stepa_simple_run(Path(), simple_sig)
     elif args.reuse_scope == "output_root":
         symbols = _parse_symbol_list(args.symbol)
         reuse_sig = build_reuse_output_signature(
@@ -137,7 +136,7 @@ def main() -> int:
             algorithm_signature=args.algorithm_signature,
             parameter_signature=args.parameter_signature,
         )
-        result = find_matching_output_root(scan_root, reuse_sig)
+        result = find_matching_output_root(Path(), reuse_sig)
     else:
         sig = build_run_signature(
             symbol=args.symbol,
@@ -152,16 +151,16 @@ def main() -> int:
             mamba_horizons=_parse_int_list(args.mamba_horizons),
             stepe_agents=stepe_agents_parsed,
         )
-        result = find_latest_matching_run(scan_root, sig)
+        result = find_latest_matching_run(Path(), sig)
     path_line = str(result) if result is not None else ""
 
     if args.print_json:
         payload = {
             "scope": args.reuse_scope,
             "path": path_line,
-            "run_id": (Path(path_line).parent.name if path_line else ""),
+            "run_id": "",
             "matched": bool(path_line),
-            "selected_policy": "latest_matching_run",
+            "selected_policy": "canonical_output_root",
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     elif args.print_path_only:
@@ -174,7 +173,7 @@ def main() -> int:
 
     if args.print_path_only or args.print_json:
         print(
-            f"[find_reuse_run] matched={path_line or '<none>'} selected_policy=latest_matching_run",
+            f"[find_reuse_run] matched={path_line or '<none>'} selected_policy=canonical_output_root",
             file=sys.stderr,
         )
 

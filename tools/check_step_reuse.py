@@ -13,7 +13,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.run_manifest import (
-    build_canonical_output_root,
+    resolve_canonical_output_root,
     load_split_summary,
     required_outputs_for_step,
     split_summary_matches,
@@ -57,7 +57,7 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--output-root', required=True)
-    ap.add_argument('--scan-root', default='')
+    ap.add_argument('--scan-root', default='')  # deprecated compatibility arg
     ap.add_argument('--step', required=True)
     ap.add_argument('--symbol', required=True)
     ap.add_argument('--mode', required=True)
@@ -73,7 +73,7 @@ def main() -> int:
     ap.add_argument('--router-signature', default='')
     args = ap.parse_args()
 
-    canonical_root = build_canonical_output_root(_REPO_ROOT / 'output', args.mode, args.symbol, args.test_start)
+    canonical_root = resolve_canonical_output_root(args.mode, args.symbol, args.test_start)
     d = _decision(args.step, canonical_root, args.symbol, args.mode, args.test_start, args.train_years, args.test_months)
 
     print(

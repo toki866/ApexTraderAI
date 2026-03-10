@@ -43,6 +43,19 @@ _OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
 _MANIFEST_FILENAME = "run_manifest.json"
 _REUSE_SIGNATURE_FILENAME = "reuse_signature.json"
 _SCHEMA_VERSION = 2
+_CANONICAL_OUTPUT_BASE_WINDOWS = Path("C:/work/apex_work/output")
+_CANONICAL_OUTPUT_BASE_WSL = Path("/mnt/c/work/apex_work/output")
+
+
+def build_canonical_output_base() -> Path:
+    """Return canonical output base path for current runtime.
+
+    Canonical base is fixed to C:/work/apex_work/output on Windows and
+    /mnt/c/work/apex_work/output on WSL/Linux.
+    """
+    if os.name == "nt":
+        return _CANONICAL_OUTPUT_BASE_WINDOWS
+    return _CANONICAL_OUTPUT_BASE_WSL
 
 
 def build_canonical_output_root(base_output_root: Path, mode: str, symbol: str, test_start: str) -> Path:
@@ -52,6 +65,11 @@ def build_canonical_output_root(base_output_root: Path, mode: str, symbol: str, 
     """
     ts = str(test_start or "").strip() or "unknown_test_start"
     return Path(base_output_root) / str(mode).strip().lower() / str(symbol).strip().upper() / ts
+
+
+def resolve_canonical_output_root(mode: str, symbol: str, test_start: str) -> Path:
+    """Return canonical output root using fixed canonical output base."""
+    return build_canonical_output_root(build_canonical_output_base(), mode, symbol, test_start)
 
 
 def required_outputs_for_step(step: str, symbol: str, mode: str) -> Tuple[str, ...]:
@@ -303,45 +321,12 @@ def _extract_reuse_signature_from_manifest(output_root: Path) -> Optional[dict]:
 
 
 def find_matching_output_root(scan_root: Path, reuse_sig: ReuseOutputSignature) -> Optional[Path]:
-    """Find output root whose reuse_signature.json matches the requested key.
-
-    Primary source: reuse_signature.json.
-    Fallback: run_manifest.json-derived signature when reuse_signature.json is absent.
-    """
-    scan_root = Path(scan_root)
-    if not scan_root.exists():
+    """Return canonical output root (scan_root is ignored for compatibility)."""
+    symbols = _normalize_symbols(reuse_sig.symbols)
+    if not symbols:
         return None
-
-    target = reuse_sig.to_dict()
-    try:
-        candidates = sorted(scan_root.iterdir(), key=lambda p: p.name, reverse=True)
-    except Exception:
-        return None
-
-    for run_dir in candidates:
-        if not run_dir.is_dir():
-            continue
-        output_root = run_dir / "output"
-        if not output_root.exists():
-            continue
-        candidate = _load_reuse_signature(output_root)
-        if candidate is None:
-            candidate = _extract_reuse_signature_from_manifest(output_root)
-        if candidate is None:
-            continue
-
-        if (
-            str(candidate.get("mode", "")) == target["mode"]
-            and tuple(_normalize_symbols(candidate.get("symbols"))) == tuple(target["symbols"])
-            and str(candidate.get("test_start_date", "")) == target["test_start_date"]
-            and int(candidate.get("train_years", -1)) == target["train_years"]
-            and int(candidate.get("test_months", -1)) == target["test_months"]
-            and str(candidate.get("feature_signature", "")) == target["feature_signature"]
-            and str(candidate.get("algorithm_signature", "")) == target["algorithm_signature"]
-            and str(candidate.get("parameter_signature", "")) == target["parameter_signature"]
-        ):
-            return output_root
-    return None
+    candidate = resolve_canonical_output_root(reuse_sig.mode, symbols[0], reuse_sig.test_start_date)
+    return candidate if candidate.exists() else None
 
 
 def build_run_signature(
@@ -747,129 +732,25 @@ class RunManifest:
 # ---------------------------------------------------------------------------
 
 def find_latest_matching_run(scan_root: Path, sig: RunSignature) -> Optional[Path]:
-    """Scan <scan_root>/*/output/run_manifest.json for a matching prior run.
-
-    Returns the output_root Path of the best match (most steps complete),
-    or None if no match is found.
-
-    "Match" = same signature_hash AND at least one step is "complete".
-    """
-    scan_root = Path(scan_root)
-    if not scan_root.exists():
-        return None
-
-    target_hash = sig.stable_hash()
-    best: Optional[Path] = None
-    best_count = -1
-
-    try:
-        candidates = sorted(scan_root.iterdir(), key=lambda p: p.name, reverse=True)
-    except Exception:
-        return None
-
-    for run_dir in candidates:
-        if not run_dir.is_dir():
-            continue
-        manifest_path = run_dir / "output" / _MANIFEST_FILENAME
-        if not manifest_path.exists():
-            continue
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if data.get("schema_version") != _SCHEMA_VERSION:
-            continue
-        if data.get("signature_hash") != target_hash:
-            continue
-
-        # Count completed steps
-        count = sum(
-            1 for v in data.get("steps", {}).values()
-            if isinstance(v, dict) and v.get("status") in ("complete", "reuse")
-        )
-        if count > best_count:
-            best_count = count
-            best = run_dir / "output"
-
-    return best if best_count > 0 else None
+    """Return canonical output root (scan_root is ignored for compatibility)."""
+    candidate = resolve_canonical_output_root(sig.mode, sig.symbol, sig.test_start)
+    return candidate if candidate.exists() else None
 
 
 def find_latest_matching_stepa_simple_run(
     scan_root: Path,
     simple_sig: StepASimpleReuseSignature,
 ) -> Optional[Path]:
-    """Find latest prior run usable for StepA simple reuse.
+    """Return canonical output root usable for StepA simple reuse.
 
-    Candidate rules:
-    - StepA artifacts must exist for every symbol in simple_sig.symbols.
-    - If run_manifest.json is present *and readable*, require:
-      steps.A.status in {complete, reuse} and signature keys match
-      (mode, test_start, train_years, test_months).
-    - If manifest is missing or broken, artifact-only fallback is allowed.
+    scan_root is intentionally ignored to remove run_id-based scanning.
     """
-    scan_root = Path(scan_root)
-    if not scan_root.exists():
+    symbols = _normalize_symbols(simple_sig.symbols)
+    if not symbols:
         return None
-
-    try:
-        candidates = sorted(scan_root.iterdir(), key=lambda p: p.name, reverse=True)
-    except Exception:
+    output_root = resolve_canonical_output_root(simple_sig.mode, symbols[0], simple_sig.test_start)
+    if not output_root.exists():
         return None
-
-    for run_dir in candidates:
-        if not run_dir.is_dir():
-            continue
-        output_root = run_dir / "output"
-        if not output_root.exists():
-            continue
-
-        # StepA artifacts must exist for every requested symbol.
-        if not all(
-            check_step_artifacts("A", output_root, symbol=s, mode=simple_sig.mode)
-            for s in simple_sig.symbols
-        ):
-            continue
-
-        manifest_path = output_root / _MANIFEST_FILENAME
-        if not manifest_path.exists():
-            return output_root
-
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            # Broken manifest fallback is explicitly allowed.
-            return output_root
-
-        step_a_status = (
-            data.get("steps", {}).get("A", {}).get("status")
-            if isinstance(data, dict)
-            else None
-        )
-        if step_a_status not in ("complete", "reuse"):
-            continue
-
-        sig = data.get("signature", {}) if isinstance(data, dict) else {}
-        if not isinstance(sig, dict):
-            continue
-
-        if str(sig.get("mode", "")).strip().lower() != str(simple_sig.mode).strip().lower():
-            continue
-        if str(sig.get("test_start", "")).strip() != str(simple_sig.test_start).strip():
-            continue
-        if int(sig.get("train_years", -1)) != int(simple_sig.train_years):
-            continue
-        if int(sig.get("test_months", -1)) != int(simple_sig.test_months):
-            continue
-
-        # symbols may be stored as a single signature.symbol or list-like signature.symbols.
-        # If absent/unreadable, artifact-only validation above remains authoritative.
-        requested_symbols = _normalize_symbols(simple_sig.symbols)
-        manifest_symbols = _normalize_symbols(sig.get("symbols"))
-        if not manifest_symbols:
-            manifest_symbols = _normalize_symbols(sig.get("symbol"))
-        if manifest_symbols and manifest_symbols != requested_symbols:
-            continue
-
-        return output_root
-
-    return None
+    if not all(check_step_artifacts("A", output_root, symbol=s, mode=simple_sig.mode) for s in symbols):
+        return None
+    return output_root
