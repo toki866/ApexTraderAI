@@ -408,9 +408,12 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
             f"stepA_periodic_test_{symbol}.csv",
             f"stepA_tech_train_{symbol}.csv",
             f"stepA_tech_test_{symbol}.csv",
-            f"stepA_split_summary_{symbol}.csv",
+            "split_summary.json",
         )
-        return all((d / name).exists() for name in required)
+        if not all((base / name if name == "split_summary.json" else d / name).exists() for name in required):
+            return False
+        # Optional historical artifact: do not fail reuse when absent.
+        return True
 
     if step_upper == "B":
         d = base / "stepB" / mode
@@ -754,3 +757,89 @@ def find_latest_matching_stepa_simple_run(
     if not all(check_step_artifacts("A", output_root, symbol=s, mode=simple_sig.mode) for s in symbols):
         return None
     return output_root
+
+
+def diagnose_stepa_simple_reuse(simple_sig: StepASimpleReuseSignature) -> Dict[str, Any]:
+    """Return detailed StepA simple-reuse diagnostics.
+
+    reason values are constrained to:
+    - missing_required_outputs
+    - invalid_output_data
+    - symbol_mismatch
+    - mode_mismatch
+    - split_mismatch
+    - reuse
+    """
+    symbols = _normalize_symbols(simple_sig.symbols)
+    symbol = symbols[0] if symbols else ""
+    mode = str(simple_sig.mode)
+    canonical_root = resolve_canonical_output_root(mode, symbol, simple_sig.test_start)
+    checks: List[Dict[str, str]] = []
+
+    required = [
+        f"stepA/{mode}/stepA_prices_train_{symbol}.csv",
+        f"stepA/{mode}/stepA_prices_test_{symbol}.csv",
+        f"stepA/{mode}/stepA_periodic_train_{symbol}.csv",
+        f"stepA/{mode}/stepA_periodic_test_{symbol}.csv",
+        f"stepA/{mode}/stepA_tech_train_{symbol}.csv",
+        f"stepA/{mode}/stepA_tech_test_{symbol}.csv",
+        "split_summary.json",
+    ]
+    optional = [f"stepA/{mode}/stepA_split_summary_{symbol}.csv"]
+
+    for rel in required:
+        p = canonical_root / rel
+        checks.append({"path": rel, "status": "pass" if p.exists() else "fail", "required": "true"})
+    for rel in optional:
+        p = canonical_root / rel
+        checks.append({"path": rel, "status": "pass" if p.exists() else "fail", "required": "false"})
+
+    if not canonical_root.exists() or any(c["status"] == "fail" for c in checks if c["required"] == "true"):
+        return {
+            "matched": False,
+            "reason": "missing_required_outputs",
+            "canonical_output_root": str(canonical_root),
+            "checks": checks,
+            "stepa_reuse_path": str(canonical_root / "stepA" / mode),
+            "evaluation_stepa_path": str(canonical_root / "stepA" / mode),
+        }
+
+    summary = load_split_summary(canonical_root)
+    if not isinstance(summary, dict):
+        return {
+            "matched": False,
+            "reason": "invalid_output_data",
+            "canonical_output_root": str(canonical_root),
+            "checks": checks,
+            "stepa_reuse_path": str(canonical_root / "stepA" / mode),
+            "evaluation_stepa_path": str(canonical_root / "stepA" / mode),
+        }
+    if str(summary.get("symbol", "")).upper() != symbol.upper():
+        reason = "symbol_mismatch"
+    elif str(summary.get("mode", "")).lower() != mode.lower():
+        reason = "mode_mismatch"
+    elif not split_summary_matches(
+        summary,
+        symbol=symbol,
+        mode=mode,
+        test_start=str(simple_sig.test_start or ""),
+        train_years=int(simple_sig.train_years),
+        test_months=int(simple_sig.test_months),
+    ):
+        reason = "split_mismatch"
+    else:
+        prices_train = canonical_root / f"stepA/{mode}/stepA_prices_train_{symbol}.csv"
+        prices_test = canonical_root / f"stepA/{mode}/stepA_prices_test_{symbol}.csv"
+        csv_ok = _csv_valid(prices_train, ("Date", "Open", "High", "Low", "Close", "Volume")) and _csv_valid(
+            prices_test, ("Date", "Open", "High", "Low", "Close", "Volume")
+        )
+        reason = "reuse" if csv_ok else "invalid_output_data"
+
+    return {
+        "matched": reason == "reuse",
+        "reason": reason,
+        "canonical_output_root": str(canonical_root),
+        "checks": checks,
+        "stepa_reuse_path": str(canonical_root / "stepA" / mode),
+        "evaluation_stepa_path": str(canonical_root / "stepA" / mode),
+    }

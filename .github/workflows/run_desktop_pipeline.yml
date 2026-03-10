@@ -989,7 +989,30 @@ jobs:
           $reuseFound = $false
           $reuseWsl = ''
           $reuseRunId = ''
+          $stepaReuseReason = 'missing_required_outputs'
+          $stepaCanonicalRoot = ''
+          $stepaEvalPath = ''
+          $stepaReusePath = ''
+          $stepaDiagChecks = @()
           if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
+            $diagCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --diagnose-stepa-simple --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $diagTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_diag_" + [guid]::NewGuid().ToString('N') + ".txt")
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $diagCmd 1> $diagTmp
+            $diagRaw = if (Test-Path $diagTmp) { (Get-Content $diagTmp -Raw -Encoding UTF8) } else { '' }
+            $diagLine = (($diagRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($diagLine) {
+              try {
+                $diag = $diagLine | ConvertFrom-Json
+                $stepaReuseReason = ("$($diag.reason)").Trim()
+                $stepaCanonicalRoot = ("$($diag.canonical_output_root)").Trim()
+                $stepaEvalPath = ("$($diag.evaluation_stepa_path)").Trim()
+                $stepaReusePath = ("$($diag.stepa_reuse_path)").Trim()
+                $stepaDiagChecks = @($diag.checks)
+              } catch {
+                Add-Content $rp "[REUSE] stepa_simple_diag_parse_error=$_"
+              }
+            }
+
             $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
@@ -1025,6 +1048,18 @@ jobs:
           Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
           Add-Content $rp "[REUSE] stepa_reuse_matched_run_id="
           Add-Content $rp '[REUSE] stepa_reuse_selected_policy=canonical_output_root'
+          Add-Content $rp "[REUSE] stepa_reuse_reason=$stepaReuseReason"
+          Add-Content $rp "[REUSE] stepa_reuse_canonical_output_root=$stepaCanonicalRoot"
+          Add-Content $rp "[REUSE] stepa_reuse_eval_stepa_path=$stepaEvalPath"
+          Add-Content $rp "[REUSE] stepa_reuse_stepa_path=$stepaReusePath"
+          foreach ($ck in $stepaDiagChecks) {
+            $ckPath = ("$($ck.path)").Trim()
+            $ckStatus = ("$($ck.status)").Trim()
+            $ckRequired = ("$($ck.required)").Trim()
+            if ($ckPath) {
+              Add-Content $rp "[REUSE][STEPA_REQUIRED] path=$ckPath required=$ckRequired status=$ckStatus"
+            }
+          }
           if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
             "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -1153,13 +1188,13 @@ jobs:
                       }
                     }
 
-                    $stepAStatus = 'reuse'
-                    $stepAReason = 'simple_reuse_matched'
+                    $stepAStatus = 'skip'
+                    $stepAReason = 'reuse'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
                     Add-Content $rp "[STEP_STATUS] stepA_materialized_from=$materializeFrom"
                     Add-Content $rp "[STEP_STATUS] stepA_materialized_to=$materializeTo"
-                    Add-Content $rp '[STEP_STATUS] step=A status=reuse'
-                    Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
+                    Add-Content $rp '[STEP_STATUS] step=A status=skip'
+                    Add-Content $rp '[STEP_STATUS] reason=reuse'
                     Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
 
                     $nowIso = (Get-Date).ToUniversalTime().ToString('o')
@@ -4252,7 +4287,30 @@ jobs:
           $reuseFound = $false
           $reuseWsl = ''
           $reuseRunId = ''
+          $stepaReuseReason = 'missing_required_outputs'
+          $stepaCanonicalRoot = ''
+          $stepaEvalPath = ''
+          $stepaReusePath = ''
+          $stepaDiagChecks = @()
           if ($env:REUSE_OUTPUT -eq '1' -and $env:FORCE_REBUILD -ne '1') {
+            $diagCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --diagnose-stepa-simple --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
+            $diagTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_diag_" + [guid]::NewGuid().ToString('N') + ".txt")
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $diagCmd 1> $diagTmp
+            $diagRaw = if (Test-Path $diagTmp) { (Get-Content $diagTmp -Raw -Encoding UTF8) } else { '' }
+            $diagLine = (($diagRaw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) | Select-Object -First 1)
+            if ($diagLine) {
+              try {
+                $diag = $diagLine | ConvertFrom-Json
+                $stepaReuseReason = ("$($diag.reason)").Trim()
+                $stepaCanonicalRoot = ("$($diag.canonical_output_root)").Trim()
+                $stepaEvalPath = ("$($diag.evaluation_stepa_path)").Trim()
+                $stepaReusePath = ("$($diag.stepa_reuse_path)").Trim()
+                $stepaDiagChecks = @($diag.checks)
+              } catch {
+                Add-Content $rp "[REUSE] stepa_simple_diag_parse_error=$_"
+              }
+            }
+
             $findCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/find_reuse_run.py --reuse-scope stepA_simple --print-json --symbol '$primarySymbol' --mode $env:MODE --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }}"
             $stdoutTmp = Join-Path $env:RUNNER_TEMP ("reuse_stepa_simple_stdout_" + [guid]::NewGuid().ToString('N') + ".txt")
             wsl.exe -d $env:WSL_DISTRO -- bash -c $findCmd 1> $stdoutTmp
@@ -4288,6 +4346,18 @@ jobs:
           Add-Content $rp "[REUSE] stepa_reuse_matched_output_root=$reuseWin"
           Add-Content $rp "[REUSE] stepa_reuse_matched_run_id="
           Add-Content $rp '[REUSE] stepa_reuse_selected_policy=canonical_output_root'
+          Add-Content $rp "[REUSE] stepa_reuse_reason=$stepaReuseReason"
+          Add-Content $rp "[REUSE] stepa_reuse_canonical_output_root=$stepaCanonicalRoot"
+          Add-Content $rp "[REUSE] stepa_reuse_eval_stepa_path=$stepaEvalPath"
+          Add-Content $rp "[REUSE] stepa_reuse_stepa_path=$stepaReusePath"
+          foreach ($ck in $stepaDiagChecks) {
+            $ckPath = ("$($ck.path)").Trim()
+            $ckStatus = ("$($ck.status)").Trim()
+            $ckRequired = ("$($ck.required)").Trim()
+            if ($ckPath) {
+              Add-Content $rp "[REUSE][STEPA_REQUIRED] path=$ckPath required=$ckRequired status=$ckStatus"
+            }
+          }
           if ($computedSteps -eq 'A' -and $reuseFound -and $reuseWin) {
             "EFFECTIVE_WIN_OUTPUT=$reuseWin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "EFFECTIVE_WSL_OUTPUT=$reuseWsl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -4413,13 +4483,13 @@ jobs:
                       }
                     }
 
-                    $stepAStatus = 'reuse'
-                    $stepAReason = 'simple_reuse_matched'
+                    $stepAStatus = 'skip'
+                    $stepAReason = 'reuse'
                     Add-Content $rp "[STEP_STATUS] stepA_simple_reuse_source='$env:STEPA_REUSE_WIN_OUTPUT'"
                     Add-Content $rp "[STEP_STATUS] stepA_materialized_from=$materializeFrom"
                     Add-Content $rp "[STEP_STATUS] stepA_materialized_to=$materializeTo"
-                    Add-Content $rp '[STEP_STATUS] step=A status=reuse'
-                    Add-Content $rp '[STEP_STATUS] reason=simple_reuse_matched'
+                    Add-Content $rp '[STEP_STATUS] step=A status=skip'
+                    Add-Content $rp '[STEP_STATUS] reason=reuse'
                     Add-Content $rp "[STEP_STATUS] stepa_reuse_source=$env:STEPA_REUSE_WIN_OUTPUT"
 
                     $nowIso = (Get-Date).ToUniversalTime().ToString('o')
