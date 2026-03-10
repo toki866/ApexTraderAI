@@ -36,6 +36,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1914,6 +1915,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print("[StepA] done")
 
             if "B" in steps:
+                _stepb_expected_pred_file = Path(resolved_output_root) / "stepB" / resolved_mamba_mode / f"stepB_pred_time_all_{symbol}.csv"
+                print(f"[STEPB] output_root={resolved_output_root}")
+                print(f"[STEPB] expected_pred_file={_stepb_expected_pred_file}")
                 if _can_reuse_step("B"):
                     print(f"[StepB] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("B", "reuse")
@@ -1939,7 +1943,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             print(f"[StepB] ensured: {p}")
                         except Exception as e:
                             print(f"[StepB] WARN: failed to ensure stepB_pred_time_all: {e}", file=sys.stderr)
+                        _post_stepb_missing: List[str] = []
+                        if not _stepb_expected_pred_file.exists():
+                            _post_stepb_missing.append(str(_stepb_expected_pred_file))
+                            print(f"[STEPB_POST] required=stepB/{resolved_mamba_mode}/stepB_pred_time_all_{symbol}.csv exists=fail", file=sys.stderr)
+                        else:
+                            print(f"[STEPB_POST] required=stepB/{resolved_mamba_mode}/stepB_pred_time_all_{symbol}.csv exists=pass")
                         _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
+                        if _post_stepb_missing:
+                            _miss_b.extend(_post_stepb_missing)
                         if _miss_b:
                             if _run_manifest is not None:
                                 _run_manifest.mark_step_elapsed("B", _elapsed_b)
@@ -2256,8 +2268,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
         return 0
-    except Exception:
+    except Exception as exc:
         print(f"[PIPELINE] status=failed steps={','.join(steps)} output_root={resolved_output_root}")
+        print(f"[PIPELINE] exception={type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc()
         raise
 
 

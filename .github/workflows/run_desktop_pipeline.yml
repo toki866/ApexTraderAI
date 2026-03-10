@@ -1312,6 +1312,12 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
+          $expectedPredWsl = "$wslOut/stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv"
+          Write-Host "[STEPB] output_root=$wslOut"
+          Write-Host "[STEPB] expected_pred_file=$expectedPredWsl"
+          Add-Content $rp "[STEPB] output_root=$wslOut"
+          Add-Content $rp "[STEPB] expected_pred_file=$expectedPredWsl"
           $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
           if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
@@ -1332,46 +1338,53 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
+          # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
           $rc = 1
           $stepBException = ''
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
+          $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            $rc = $LASTEXITCODE
+          }
           catch {
             $stepBException = ($_ | Out-String).Trim()
             Add-Content $rp "[NG] step_b exception=$stepBException"
+            $rc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
           }
-          finally { Write-Host "[StepB] rc=$rc" }
+          finally {
+            Write-Host "[StepB] rc=$rc"
+            Add-Content $rp "[STEP_STATUS] step_b_last_exitcode=$LASTEXITCODE"
+            Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
+          }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
             Add-Content $rp "[NG] step_b rc=$rc"
             if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
               Add-Content $rp "[NG] step_b exception_body=$stepBException"
             }
-            $tailSource = $null
-            if ($env:RUN_LOG_PATH -and (Test-Path $env:RUN_LOG_PATH)) {
-              $tailSource = $env:RUN_LOG_PATH
-              Add-Content $rp "[NG] step_b log_tail_source=RUN_LOG_PATH:$tailSource"
-            } elseif ($env:RUN_CONSOLE_LOG -and (Test-Path $env:RUN_CONSOLE_LOG)) {
-              $tailSource = $env:RUN_CONSOLE_LOG
-              Add-Content $rp "[NG] step_b log_tail_source=RUN_CONSOLE_LOG:$tailSource"
+            if (Test-Path $stepBLogPath) {
+              Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
+              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
             } else {
-              $fallbackConsole = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-              if (Test-Path $fallbackConsole) {
-                $tailSource = $fallbackConsole
-                Add-Content $rp "[NG] step_b log_tail_source=RUNNER_TEMP_CONSOLE:$tailSource"
-              }
-            }
-            if ($tailSource) {
-              Add-Content $rp '---- step_b_log_tail_last_200 ----'
-              (Get-Content -Encoding UTF8 -Path $tailSource -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
-            } else {
-              Add-Content $rp '[WARN] step_b log tail unavailable (RUN_LOG_PATH/console missing)'
+              Add-Content $rp '[WARN] step_b exec log missing; tail unavailable'
             }
             Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
             Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
             Write-Error "StepB failed rc=$rc"
             exit $rc
           }
+          if (-not (Test-Path $expectedPredWin)) {
+            Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
+            Add-Content $rp "[NG] step_b fail_reason=missing_required_outputs_after_stepB"
+            if (Test-Path $stepBLogPath) {
+              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            }
+            Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
+            exit 1
+          }
+          Add-Content $rp "[OK] step_b post_check_required=$expectedPredWin"
           Add-Content $rp '[OK] step_b'
 
       - name: StepC
@@ -4558,6 +4571,12 @@ jobs:
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
+          $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
+          $expectedPredWsl = "$wslOut/stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv"
+          Write-Host "[STEPB] output_root=$wslOut"
+          Write-Host "[STEPB] expected_pred_file=$expectedPredWsl"
+          Add-Content $rp "[STEPB] output_root=$wslOut"
+          Add-Content $rp "[STEPB] expected_pred_file=$expectedPredWsl"
           $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
           if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
@@ -4578,46 +4597,53 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
+          # [E] Execute with tee logging so stdout/stderr are preserved for ONE_TAP
           $rc = 1
           $stepBException = ''
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
+          $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            $rc = $LASTEXITCODE
+          }
           catch {
             $stepBException = ($_ | Out-String).Trim()
             Add-Content $rp "[NG] step_b exception=$stepBException"
+            $rc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
           }
-          finally { Write-Host "[StepB] rc=$rc" }
+          finally {
+            Write-Host "[StepB] rc=$rc"
+            Add-Content $rp "[STEP_STATUS] step_b_last_exitcode=$LASTEXITCODE"
+            Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
+          }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
             Add-Content $rp "[NG] step_b rc=$rc"
             if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
               Add-Content $rp "[NG] step_b exception_body=$stepBException"
             }
-            $tailSource = $null
-            if ($env:RUN_LOG_PATH -and (Test-Path $env:RUN_LOG_PATH)) {
-              $tailSource = $env:RUN_LOG_PATH
-              Add-Content $rp "[NG] step_b log_tail_source=RUN_LOG_PATH:$tailSource"
-            } elseif ($env:RUN_CONSOLE_LOG -and (Test-Path $env:RUN_CONSOLE_LOG)) {
-              $tailSource = $env:RUN_CONSOLE_LOG
-              Add-Content $rp "[NG] step_b log_tail_source=RUN_CONSOLE_LOG:$tailSource"
+            if (Test-Path $stepBLogPath) {
+              Add-Content $rp "[NG] step_b stderr_tail_source=STEP_B_EXEC_LOG:$stepBLogPath"
+              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
             } else {
-              $fallbackConsole = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
-              if (Test-Path $fallbackConsole) {
-                $tailSource = $fallbackConsole
-                Add-Content $rp "[NG] step_b log_tail_source=RUNNER_TEMP_CONSOLE:$tailSource"
-              }
-            }
-            if ($tailSource) {
-              Add-Content $rp '---- step_b_log_tail_last_200 ----'
-              (Get-Content -Encoding UTF8 -Path $tailSource -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
-            } else {
-              Add-Content $rp '[WARN] step_b log tail unavailable (RUN_LOG_PATH/console missing)'
+              Add-Content $rp '[WARN] step_b exec log missing; tail unavailable'
             }
             Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
             Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
             Write-Error "StepB failed rc=$rc"
             exit $rc
           }
+          if (-not (Test-Path $expectedPredWin)) {
+            Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
+            Add-Content $rp "[NG] step_b fail_reason=missing_required_outputs_after_stepB"
+            if (Test-Path $stepBLogPath) {
+              Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            }
+            Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
+            exit 1
+          }
+          Add-Content $rp "[OK] step_b post_check_required=$expectedPredWin"
           Add-Content $rp '[OK] step_b'
 
       - name: StepC

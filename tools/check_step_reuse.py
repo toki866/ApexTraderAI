@@ -48,6 +48,12 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
     if not split_ok:
         return {"status":"run","reason":"split_mismatch","final":"execute","symbol":"pass","mode":"pass","split":"fail","required_outputs":"skip","validation":"skip"}
 
+    print(f"[reuse] step={step} canonical_output_root={canonical_root}", file=sys.stderr)
+    for rel in required_outputs_for_step(step, symbol, mode):
+        probe = canonical_root / rel
+        exists_str = "pass" if probe.exists() else "fail"
+        print(f"[reuse] step={step} required={rel} exists={exists_str}", file=sys.stderr)
+
     valid, v_reason = validate_step_outputs(step, canonical_root, symbol, mode)
     req_ok = v_reason != 'missing_required_outputs'
     if not valid:
