@@ -1544,7 +1544,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 pass
         except Exception as _e:
-            print(f"[reuse] WARNING: failed to initialise run manifest: {type(_e).__name__}: {_e}", file=sys.stderr)
+            print(f"[reuse] ERROR: failed to initialise run manifest: {type(_e).__name__}: {_e}", file=sys.stderr)
+            try:
+                import traceback as _traceback
+                _traceback.print_exc()
+            except Exception:
+                pass
             _run_manifest = None
 
     def _can_reuse_step(step_key: str) -> bool:
