@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import inspect
+import json
 import os
 import shutil
 import sys
@@ -948,6 +949,162 @@ def _run_stepA(app_config, symbol: str, date_range):
     return fn(symbol=symbol, date_range=date_range)
 
 
+def _read_stepa_split_summary_csv(summary_csv: Path) -> Dict[str, str]:
+    import pandas as pd
+
+    if not summary_csv.exists():
+        raise FileNotFoundError(f"missing_stepa_split_summary_csv={summary_csv}")
+
+    df = pd.read_csv(summary_csv)
+    if "key" not in df.columns or "value" not in df.columns:
+        raise ValueError(f"invalid_stepa_split_summary_format={summary_csv}")
+
+    out: Dict[str, str] = {}
+    for _, row in df.iterrows():
+        k = str(row.get("key", "")).strip()
+        if not k:
+            continue
+        raw_v = row.get("value", "")
+        out[k] = "" if raw_v is None else str(raw_v).strip()
+    return out
+
+
+def _build_split_payload_from_stepa_summary(
+    summary_csv: Path,
+    *,
+    symbol: str,
+    mode: str,
+    train_years: int,
+    test_months: int,
+) -> Dict[str, Any]:
+    summary_map = _read_stepa_split_summary_csv(summary_csv)
+
+    def _pick_date(name: str) -> str:
+        raw = str(summary_map.get(name, "")).strip()
+        if not raw:
+            return ""
+        try:
+            import pandas as pd
+
+            return str(pd.to_datetime(raw).date())
+        except Exception:
+            return raw[:10]
+
+    def _pick_int(name: str, fallback: int) -> int:
+        raw = str(summary_map.get(name, "")).strip()
+        if not raw:
+            return int(fallback)
+        try:
+            return int(float(raw))
+        except Exception:
+            return int(fallback)
+
+    return {
+        "symbol": str(symbol).upper(),
+        "mode": str(mode),
+        "test_start": _pick_date("test_start"),
+        "train_start": _pick_date("train_start"),
+        "train_end": _pick_date("train_end"),
+        "test_end": _pick_date("test_end"),
+        "train_years": _pick_int("train_years", train_years),
+        "test_months": _pick_int("test_months", test_months),
+    }
+
+
+def _write_split_summary_json_payload(dst: Path, payload: Dict[str, Any], log_prefix: str) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[{log_prefix}] split_summary_written={dst}")
+
+
+def _sync_root_split_summary_from_stepa(
+    *,
+    resolved_output_root: Path,
+    canonical_output_root: Path,
+    symbol: str,
+    mode: str,
+    train_years: int,
+    test_months: int,
+    log_prefix: str,
+) -> Dict[str, Any]:
+    summary_csv = Path(canonical_output_root) / "stepA" / str(mode) / f"stepA_split_summary_{symbol}.csv"
+    payload = _build_split_payload_from_stepa_summary(
+        summary_csv,
+        symbol=symbol,
+        mode=mode,
+        train_years=train_years,
+        test_months=test_months,
+    )
+    _write_split_summary_json_payload(Path(canonical_output_root) / "split_summary.json", payload, log_prefix)
+    if Path(canonical_output_root).resolve() != Path(resolved_output_root).resolve():
+        _write_split_summary_json_payload(Path(resolved_output_root) / "split_summary.json", payload, log_prefix)
+    return payload
+
+
+def _check_and_repair_split_summary_before_stepb(
+    *,
+    resolved_output_root: Path,
+    canonical_output_root: Path,
+    symbol: str,
+    mode: str,
+    train_years: int,
+    test_months: int,
+) -> None:
+    expected = _build_split_payload_from_stepa_summary(
+        Path(canonical_output_root) / "stepA" / str(mode) / f"stepA_split_summary_{symbol}.csv",
+        symbol=symbol,
+        mode=mode,
+        train_years=train_years,
+        test_months=test_months,
+    )
+
+    root_split_path = Path(canonical_output_root) / "split_summary.json"
+    current: Dict[str, Any] = {}
+    if root_split_path.exists():
+        try:
+            current = json.loads(root_split_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[SPLIT_CHECK] root_split_summary_read=fail path={root_split_path} reason={type(e).__name__}:{e}")
+
+    check_keys = (
+        "symbol",
+        "mode",
+        "train_start",
+        "train_end",
+        "test_start",
+        "test_end",
+        "train_years",
+        "test_months",
+    )
+    mismatch: List[str] = []
+    for k in check_keys:
+        if str(current.get(k, "")) != str(expected.get(k, "")):
+            mismatch.append(f"{k}:root={current.get(k)!r}:stepA={expected.get(k)!r}")
+
+    if mismatch:
+        print(f"[SPLIT_CHECK] mismatch_detected count={len(mismatch)}")
+        for item in mismatch:
+            print(f"[SPLIT_CHECK] mismatch {item}")
+        _sync_root_split_summary_from_stepa(
+            resolved_output_root=resolved_output_root,
+            canonical_output_root=canonical_output_root,
+            symbol=symbol,
+            mode=mode,
+            train_years=train_years,
+            test_months=test_months,
+            log_prefix="SPLIT_REPAIR",
+        )
+
+        repaired = json.loads(root_split_path.read_text(encoding="utf-8")) if root_split_path.exists() else {}
+        residual = [k for k in check_keys if str(repaired.get(k, "")) != str(expected.get(k, ""))]
+        if residual:
+            raise RuntimeError(f"split_summary_repair_failed keys={','.join(residual)}")
+        print("[SPLIT_CHECK] repaired=ok")
+        return
+
+    print("[SPLIT_CHECK] split_summary_consistent=pass")
+
+
 def _read_config_data_dir(app_config: Any) -> Optional[Path]:
     """Best-effort read of AppConfig data root (data_dir/data_root)."""
 
@@ -1661,7 +1818,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     try:
-        import json as _json
         split_payload = {
             "symbol": str(symbol).upper(),
             "mode": str(resolved_mode),
@@ -1672,14 +1828,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "train_years": int(args.train_years),
             "test_months": int(args.test_months),
         }
-        split_path = Path(resolved_output_root) / "split_summary.json"
-        split_path.write_text(_json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[reuse] split_summary_written={split_path}")
+        _write_split_summary_json_payload(Path(canonical_output_root) / "split_summary.json", split_payload, "reuse")
         if Path(canonical_output_root).resolve() != Path(resolved_output_root).resolve():
-            canonical_split_path = Path(canonical_output_root) / "split_summary.json"
-            canonical_split_path.parent.mkdir(parents=True, exist_ok=True)
-            canonical_split_path.write_text(_json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"[reuse] split_summary_materialized={canonical_split_path}")
+            _write_split_summary_json_payload(Path(resolved_output_root) / "split_summary.json", split_payload, "reuse")
     except Exception as _split_e:
         print(f"[reuse] WARNING split summary write failed: {type(_split_e).__name__}: {_split_e}", file=sys.stderr)
 
@@ -1975,9 +2126,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         print(f"[ONE_TAP][STEPA_VERIFY] missing={','.join(stepa_missing)}")
                     else:
                         print("[STEPA_VERIFY] missing=none")
+
                     print("[StepA] done")
 
+            if "A" in steps:
+                _sync_root_split_summary_from_stepa(
+                    resolved_output_root=Path(resolved_output_root),
+                    canonical_output_root=Path(canonical_output_root),
+                    symbol=symbol,
+                    mode=resolved_mode,
+                    train_years=int(args.train_years),
+                    test_months=int(args.test_months),
+                    log_prefix="STEPA_SYNC",
+                )
+
             if "B" in steps:
+                _check_and_repair_split_summary_before_stepb(
+                    resolved_output_root=Path(resolved_output_root),
+                    canonical_output_root=Path(canonical_output_root),
+                    symbol=symbol,
+                    mode=resolved_mode,
+                    train_years=int(args.train_years),
+                    test_months=int(args.test_months),
+                )
                 _stepb_expected_pred_file = Path(resolved_output_root) / "stepB" / resolved_mamba_mode / f"stepB_pred_time_all_{symbol}.csv"
                 print(f"[STEPB] output_root={resolved_output_root}")
                 print(f"[STEPB] expected_pred_file={_stepb_expected_pred_file}")
