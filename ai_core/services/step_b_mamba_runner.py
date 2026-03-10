@@ -66,8 +66,9 @@ except Exception:
 
 # ----------------------------------------------------------------------
 # Optional Wavelet front-end (leakage-safe)
-#   - Enabled by env: STEPB_MAMBA_USE_WAVELET=1
-#   - Applies to FULL variant only (not periodic).
+#   - Default is config-driven (full=True / periodic=False)
+#   - Env STEPB_MAMBA_USE_WAVELET can override config for both variants.
+#   - Applies to FULL by default; periodic stays off unless explicitly enabled.
 #   - Wavelet features are computed **per lookback window** from Close (past-only),
 #     and appended as additional channels to the sequence input.
 #   - This avoids future-leakage that would happen if you wavelet-transform the full
@@ -434,17 +435,19 @@ def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp,
     test_start = _as_date(_get(cfg, "test_start", None))
     test_end = _as_date(_get(cfg, "test_end", None))
 
-    dr = _get(app_config, "date_range", None)
-    if dr is not None:
+    cfg_date_range = _get(cfg, "date_range", None)
+    for dr in (cfg_date_range, _get(app_config, "date_range", None)):
+        if dr is None:
+            continue
         try:
             if pd.isna(train_start):
-                train_start = _as_date(getattr(dr, "train_start", None))
+                train_start = _as_date(_get(dr, "train_start", None))
             if pd.isna(train_end):
-                train_end = _as_date(getattr(dr, "train_end", None))
+                train_end = _as_date(_get(dr, "train_end", None))
             if pd.isna(test_start):
-                test_start = _as_date(getattr(dr, "test_start", None))
+                test_start = _as_date(_get(dr, "test_start", _get(dr, "start", None)))
             if pd.isna(test_end):
-                test_end = _as_date(getattr(dr, "test_end", None))
+                test_end = _as_date(_get(dr, "test_end", _get(dr, "end", None)))
         except Exception:
             pass
 
@@ -463,6 +466,25 @@ def _infer_split(app_config: Any, cfg: Any) -> Tuple[pd.Timestamp, pd.Timestamp,
             train_end = pd.Timestamp(test_end)
         if pd.isna(test_start):
             test_start = pd.Timestamp(train_end)
+
+    def _fmt(v: Any) -> str:
+        if isinstance(v, pd.Timestamp):
+            return "" if pd.isna(v) else str(v.date())
+        return "" if v is None else str(v)
+
+    print(f"[StepB:split] cfg_train_start={_fmt(_get(cfg, 'train_start', None))}")
+    print(f"[StepB:split] cfg_train_end={_fmt(_get(cfg, 'train_end', None))}")
+    print(f"[StepB:split] cfg_test_start={_fmt(_get(cfg, 'test_start', None))}")
+    print(f"[StepB:split] cfg_test_end={_fmt(_get(cfg, 'test_end', None))}")
+    print(f"[StepB:split] cfg_date_range={_fmt(cfg_date_range)}")
+    print(f"[StepB:split] app_config_date_range={_fmt(_get(app_config, 'date_range', None))}")
+    print(f"[StepB:split] resolved_train_start={_fmt(train_start)}")
+    print(f"[StepB:split] resolved_train_end={_fmt(train_end)}")
+    print(f"[StepB:split] resolved_test_start={_fmt(test_start)}")
+    print(f"[StepB:split] resolved_test_end={_fmt(test_end)}")
+
+    if mode == "sim" and ((pd.isna(test_start) or pd.isna(test_end)) or pd.Timestamp(test_start).normalize() >= pd.Timestamp(test_end).normalize()):
+        raise RuntimeError(f"STEPB_FAIL_REASON=split_resolution_invalid_for_sim mode={mode} test_start={_fmt(test_start)} test_end={_fmt(test_end)}")
 
     return train_start, train_end, test_start, test_end, mode
 
@@ -639,8 +661,15 @@ def run_mamba_multi_model_by_horizon(
     # ---- Train a model per horizon, then infer for all anchors ----
     all_anchor_idx = list(range(lookback_days - 1, len(df) - 1))
 
-    # ---- Optional wavelet augmentation (FULL only, leakage-safe per window) ----
-    wavelet_enabled = (not is_periodic) and _env_flag("STEPB_MAMBA_USE_WAVELET", False)
+    # ---- Optional wavelet augmentation (config-first, env override) ----
+    cfg_wavelet_default = bool(_get(cfg, "periodic_use_wavelet", False)) if is_periodic else bool(_get(cfg, "use_wavelet", True))
+    wavelet_enabled = bool(cfg_wavelet_default)
+    wavelet_enabled_source = "config"
+    env_wavelet_raw = os.getenv("STEPB_MAMBA_USE_WAVELET", "")
+    if str(env_wavelet_raw).strip() != "":
+        wavelet_enabled = _env_flag("STEPB_MAMBA_USE_WAVELET", wavelet_enabled)
+        wavelet_enabled_source = "env"
+
     wavelet_type = os.getenv("STEPB_MAMBA_WAVELET_TYPE", "db4")
     wavelet_levels_req = int(os.getenv("STEPB_MAMBA_WAVELET_LEVELS", "3") or "3")
     wavelet_mode = os.getenv("STEPB_MAMBA_WAVELET_MODE", "periodization")
@@ -655,7 +684,11 @@ def run_mamba_multi_model_by_horizon(
     base_dim = int(X_all.shape[1])
     final_dim = int(base_dim + (wavelet_levels_eff if wavelet_enabled else 0))
 
-    if _env_flag("STEPB_MAMBA_USE_WAVELET", False) or wavelet_enabled:
+    print(
+        f"[StepB:mamba:{out_tag}] wavelet_enabled={wavelet_enabled} source={wavelet_enabled_source} "
+        f"cfg_default={cfg_wavelet_default} env_override={'set' if str(env_wavelet_raw).strip() != '' else 'unset'}"
+    )
+    if str(env_wavelet_raw).strip() != "" or wavelet_enabled:
         print(f"[StepB:mamba:{out_tag}] wavelet_enabled={wavelet_enabled} type={wavelet_type} levels_req={wavelet_levels_req} levels_eff={wavelet_levels_eff} source={wavelet_source_col} feature_dim_base={base_dim} feature_dim_final={final_dim}")
 
     def _append_wavelet_to_seq(base_seq: np.ndarray, close_seq: np.ndarray) -> np.ndarray:

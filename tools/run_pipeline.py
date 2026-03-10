@@ -1827,6 +1827,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         env_horizon_days=env_horizon_base,
     )
 
+    # Best-effort propagation: make date_range visible from app_config for downstream services.
+    try:
+        if isinstance(app_config, dict):
+            app_config["date_range"] = date_range
+        else:
+            setattr(app_config, "date_range", date_range)
+    except Exception:
+        app_config = _ConfigShim(app_config, date_range=date_range)
+
     try:
         split_payload = {
             "symbol": str(symbol).upper(),

@@ -50,6 +50,8 @@ class WaveletMambaTrainConfig:
     periodic_manifest_suffix: str = "periodic"
     periodic_output_tag: str = "mamba_periodic"
     periodic_endpoints: Tuple[int, ...] = (1, 5, 10, 20)
+    use_wavelet: bool = True
+    periodic_use_wavelet: bool = False
     date_range: Optional[DateRange] = None
 
 
