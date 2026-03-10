@@ -1198,6 +1198,29 @@ jobs:
                 Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
                 Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
+                # Canonical reuse probe contract: always materialize split_summary.json at output_root root.
+                try {
+                  $stepASymbol = (('${{ inputs.symbols }}' -split ',')[0]).Trim().ToUpperInvariant()
+                  if ([string]::IsNullOrWhiteSpace($stepASymbol)) { $stepASymbol = 'SOXL' }
+                  $splitSummaryPath = Join-Path $outRoot 'split_summary.json'
+                  if (-not (Test-Path $splitSummaryPath)) {
+                    $splitPayload = [ordered]@{
+                      symbol = $stepASymbol
+                      mode = "$env:MODE".ToLowerInvariant()
+                      test_start = "${{ inputs.test_start_date }}"
+                      train_years = [int]"${{ inputs.train_years }}"
+                      test_months = [int]"${{ inputs.test_months }}"
+                    }
+                    $null = New-Item -ItemType Directory -Path (Split-Path $splitSummaryPath -Parent) -Force
+                    $splitPayload | ConvertTo-Json -Depth 8 | Set-Content -Path $splitSummaryPath -Encoding UTF8
+                    Add-Content $rp "[REUSE] stepA_split_summary_materialized=$splitSummaryPath"
+                  } else {
+                    Add-Content $rp "[REUSE] stepA_split_summary_present=$splitSummaryPath"
+                  }
+                } catch {
+                  Add-Content $rp "[WARN] stepA_split_summary_materialize_failed=$_"
+                }
+
                 $shouldExecuteStepA = ($stepAStatus -eq 'run')
                 if (-not $shouldExecuteStepA) {
                   Write-Host "[StepA] status=$stepAStatus reason=$stepAReason (prior artifacts materialized into current output_root)"
@@ -1311,10 +1334,44 @@ jobs:
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
           $rc = 1
+          $stepBException = ''
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_b exception=$_" }
+          catch {
+            $stepBException = ($_ | Out-String).Trim()
+            Add-Content $rp "[NG] step_b exception=$stepBException"
+          }
           finally { Write-Host "[StepB] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"; Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) {
+            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+            Add-Content $rp "[NG] step_b rc=$rc"
+            if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
+              Add-Content $rp "[NG] step_b exception_body=$stepBException"
+            }
+            $tailSource = $null
+            if ($env:RUN_LOG_PATH -and (Test-Path $env:RUN_LOG_PATH)) {
+              $tailSource = $env:RUN_LOG_PATH
+              Add-Content $rp "[NG] step_b log_tail_source=RUN_LOG_PATH:$tailSource"
+            } elseif ($env:RUN_CONSOLE_LOG -and (Test-Path $env:RUN_CONSOLE_LOG)) {
+              $tailSource = $env:RUN_CONSOLE_LOG
+              Add-Content $rp "[NG] step_b log_tail_source=RUN_CONSOLE_LOG:$tailSource"
+            } else {
+              $fallbackConsole = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+              if (Test-Path $fallbackConsole) {
+                $tailSource = $fallbackConsole
+                Add-Content $rp "[NG] step_b log_tail_source=RUNNER_TEMP_CONSOLE:$tailSource"
+              }
+            }
+            if ($tailSource) {
+              Add-Content $rp '---- step_b_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $tailSource -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            } else {
+              Add-Content $rp '[WARN] step_b log tail unavailable (RUN_LOG_PATH/console missing)'
+            }
+            Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
+            Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
+            Write-Error "StepB failed rc=$rc"
+            exit $rc
+          }
           Add-Content $rp '[OK] step_b'
 
       - name: StepC
@@ -1677,33 +1734,49 @@ jobs:
             Add-Content $report "[WARN] console log not found"
           }
 
-          # run_*.log tail (best effort)
+          # run log tail (canonical: RUN_LOG_PATH / session_logs first; runs/*/logs last fallback)
           $workRoot = 'C:\work\apex_work\runs'
+          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
+          Add-Content $report ("[INFO] session_log_root={0}" -f $sessionLogRoot)
+
+          $runLogCandidates = @()
+          if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
+          if (Test-Path $sessionLogRoot) {
+            $sessionLogs = Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending
+            $runLogCandidates += ($sessionLogs | ForEach-Object { $_.FullName })
+          }
+
           $latestRunDir = $null
           if ($env:APEX_RUN_ID) {
             $candidateRunDir = Join-Path $workRoot $env:APEX_RUN_ID
-            if (Test-Path $candidateRunDir) {
-              $latestRunDir = Get-Item $candidateRunDir
-            }
+            if (Test-Path $candidateRunDir) { $latestRunDir = Get-Item $candidateRunDir }
           }
-          if (-not $latestRunDir) {
+          if (-not $latestRunDir -and (Test-Path $workRoot)) {
             $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
           }
-          Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           if ($latestRunDir) {
             Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)
             $latestRunLog = Get-ChildItem -Path (Join-Path $latestRunDir.FullName 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($latestRunLog) {
-              Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)
-              Add-Content $report "---- run_log_tail (last 350 lines) ----"
-              (Get-Content -Encoding UTF8 $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
-            } else {
-              Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"
-            }
+            if ($latestRunLog) { $runLogCandidates += $latestRunLog.FullName }
           } else {
             Add-Content $report "[WARN] no run_dir found under work_root"
+          }
+
+          $selectedRunLog = $runLogCandidates |
+            Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique |
+            Select-Object -First 1
+
+          if ($selectedRunLog) {
+            Add-Content $report ("[INFO] run_log_selected={0}" -f $selectedRunLog)
+            Add-Content $report "---- run_log_tail (last 350 lines) ----"
+            (Get-Content -Encoding UTF8 $selectedRunLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+          } else {
+            Add-Content $report "[WARN] run_*.log not found in RUN_LOG_PATH/session_logs/runs fallback"
           }
 
           $global:LASTEXITCODE = 0
@@ -1760,14 +1833,25 @@ jobs:
           $runDirForPackage = ''
           $outputRootForPackage = ''
           $runsRoot = 'C:\work\apex_work\runs'
+
+          if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+            $outputRootForPackage = $env:EFFECTIVE_WIN_OUTPUT
+          } else {
+            $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) {
+              $outputRootForPackage = $canonicalOutput
+            }
+          }
+
           if (Test-Path $runsRoot) {
             $latestRun = $null
-            $candidate = $null
             if ($env:APEX_RUN_ID) {
               $candidate = Join-Path $runsRoot $env:APEX_RUN_ID
-              if (Test-Path $candidate) {
-                $latestRun = Get-Item $candidate
-              }
+              if (Test-Path $candidate) { $latestRun = Get-Item $candidate }
             }
             if (-not $latestRun) {
               $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
@@ -1776,7 +1860,10 @@ jobs:
             }
             if ($latestRun) {
               $runDirForPackage = $latestRun.FullName
-              $outputRootForPackage = Join-Path $runDirForPackage 'output'
+              if (-not $outputRootForPackage) {
+                $fallbackOutput = Join-Path $runDirForPackage 'output'
+                if (Test-Path $fallbackOutput) { $outputRootForPackage = $fallbackOutput }
+              }
             }
           }
           Add-Content -Path $reportPath -Value @(
@@ -1923,13 +2010,24 @@ jobs:
           if ($runDir) {
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
-            $runLogPath = Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name)
+            $runLogPath = ''
+            $sessionLogRoot = 'C:\work\apex_work\session_logs'
+            $runLogCandidates = @()
+            if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
+            if (Test-Path $sessionLogRoot) {
+              $runLogCandidates += (Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                ForEach-Object { $_.FullName })
+            }
+            $runLogCandidates += (Join-Path $runDir.FullName ("logs\run_{0}.log" -f $runDir.Name))
+            $selectedRunLog = $runLogCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique | Select-Object -First 1
+            if ($selectedRunLog) {
+              $runLogPath = $selectedRunLog
+              $logGlob = [System.IO.Path]::Combine((Split-Path -Parent $runLogPath), 'run_*.log')
+            }
             if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
               $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
               Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
-            } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
-              $outputRoot = $outputRootFromLog
-              Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $testStartForPath = "${{ inputs.test_start_date }}"
@@ -1939,6 +2037,9 @@ jobs:
               if (Test-Path $canonicalOutput) {
                 $outputRoot = $canonicalOutput
                 Write-Host "Resolved output_root from canonical path: $outputRoot"
+              } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+                $outputRoot = $outputRootFromLog
+                Write-Host "Resolved output_root from console log fallback: $outputRoot"
               } else {
                 $outputRoot = Join-Path $runDir.FullName 'output'
                 Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
@@ -2009,6 +2110,18 @@ jobs:
           }
 
           $runLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ((-not $runLog) -or (-not (Test-Path $runLog))) {
+            if ($env:RUN_LOG_PATH -and (Test-Path $env:RUN_LOG_PATH)) {
+              $runLog = $env:RUN_LOG_PATH
+            }
+          }
+          if ((-not $runLog) -or (-not (Test-Path $runLog))) {
+            $sessionLogRoot = 'C:\work\apex_work\session_logs'
+            if (Test-Path $sessionLogRoot) {
+              $latestSessionLog = Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestSessionLog) { $runLog = $latestSessionLog.FullName }
+            }
+          }
           if ((-not $runLog) -or (-not (Test-Path $runLog))) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if ($runDir -and (Test-Path $runDir)) {
@@ -2107,11 +2220,24 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $workRoot='C:\work\apex_work\runs'
-          $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
-          if (-not $latest) { Write-Host "[WARN] no run_dir"; exit 0 }
-
-          $outputRoot=Join-Path $latest.FullName 'output'
-          if (-not (Test-Path $outputRoot)) { Write-Host "[WARN] no output_root"; exit 0 }
+          $outputRoot=''
+          if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+            $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
+            $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+            if ($latest) { $outputRoot=Join-Path $latest.FullName 'output' }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) { Write-Host "[WARN] no output_root"; exit 0 }
 
           $repDir=Join-Path $env:GITHUB_WORKSPACE 'temp\eval'
           New-Item $repDir -ItemType Directory -Force | Out-Null
@@ -2143,6 +2269,20 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
@@ -2182,6 +2322,20 @@ jobs:
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
@@ -2213,6 +2367,20 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
@@ -4277,6 +4445,29 @@ jobs:
                 Write-Host "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
                 Add-Content $rp "[STEP_STATUS] step=A status=$stepAStatus reason=$stepAReason output_root=$outRoot"
 
+                # Canonical reuse probe contract: always materialize split_summary.json at output_root root.
+                try {
+                  $stepASymbol = (('${{ inputs.symbols }}' -split ',')[0]).Trim().ToUpperInvariant()
+                  if ([string]::IsNullOrWhiteSpace($stepASymbol)) { $stepASymbol = 'SOXL' }
+                  $splitSummaryPath = Join-Path $outRoot 'split_summary.json'
+                  if (-not (Test-Path $splitSummaryPath)) {
+                    $splitPayload = [ordered]@{
+                      symbol = $stepASymbol
+                      mode = "$env:MODE".ToLowerInvariant()
+                      test_start = "${{ inputs.test_start_date }}"
+                      train_years = [int]"${{ inputs.train_years }}"
+                      test_months = [int]"${{ inputs.test_months }}"
+                    }
+                    $null = New-Item -ItemType Directory -Path (Split-Path $splitSummaryPath -Parent) -Force
+                    $splitPayload | ConvertTo-Json -Depth 8 | Set-Content -Path $splitSummaryPath -Encoding UTF8
+                    Add-Content $rp "[REUSE] stepA_split_summary_materialized=$splitSummaryPath"
+                  } else {
+                    Add-Content $rp "[REUSE] stepA_split_summary_present=$splitSummaryPath"
+                  }
+                } catch {
+                  Add-Content $rp "[WARN] stepA_split_summary_materialize_failed=$_"
+                }
+
                 if ($stepAStatus -eq 'skip') {
                   Write-Host '[StepA] status=reuse (prior artifacts materialized into current output_root)'
                 } else {
@@ -4389,10 +4580,44 @@ jobs:
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
           # [E] Execute with try/finally so rc is always logged
           $rc = 1
+          $stepBException = ''
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_b exception=$_" }
+          catch {
+            $stepBException = ($_ | Out-String).Trim()
+            Add-Content $rp "[NG] step_b exception=$stepBException"
+          }
           finally { Write-Host "[StepB] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_b rc=$rc"; Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"; Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"; Write-Error "StepB failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) {
+            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+            Add-Content $rp "[NG] step_b rc=$rc"
+            if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
+              Add-Content $rp "[NG] step_b exception_body=$stepBException"
+            }
+            $tailSource = $null
+            if ($env:RUN_LOG_PATH -and (Test-Path $env:RUN_LOG_PATH)) {
+              $tailSource = $env:RUN_LOG_PATH
+              Add-Content $rp "[NG] step_b log_tail_source=RUN_LOG_PATH:$tailSource"
+            } elseif ($env:RUN_CONSOLE_LOG -and (Test-Path $env:RUN_CONSOLE_LOG)) {
+              $tailSource = $env:RUN_CONSOLE_LOG
+              Add-Content $rp "[NG] step_b log_tail_source=RUN_CONSOLE_LOG:$tailSource"
+            } else {
+              $fallbackConsole = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
+              if (Test-Path $fallbackConsole) {
+                $tailSource = $fallbackConsole
+                Add-Content $rp "[NG] step_b log_tail_source=RUNNER_TEMP_CONSOLE:$tailSource"
+              }
+            }
+            if ($tailSource) {
+              Add-Content $rp '---- step_b_log_tail_last_200 ----'
+              (Get-Content -Encoding UTF8 -Path $tailSource -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            } else {
+              Add-Content $rp '[WARN] step_b log tail unavailable (RUN_LOG_PATH/console missing)'
+            }
+            Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
+            Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
+            Write-Error "StepB failed rc=$rc"
+            exit $rc
+          }
           Add-Content $rp '[OK] step_b'
 
       - name: StepC
@@ -4755,33 +4980,49 @@ jobs:
             Add-Content $report "[WARN] console log not found"
           }
 
-          # run_*.log tail (best effort)
+          # run log tail (canonical: RUN_LOG_PATH / session_logs first; runs/*/logs last fallback)
           $workRoot = 'C:\work\apex_work\runs'
+          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
+          Add-Content $report ("[INFO] session_log_root={0}" -f $sessionLogRoot)
+
+          $runLogCandidates = @()
+          if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
+          if (Test-Path $sessionLogRoot) {
+            $sessionLogs = Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending
+            $runLogCandidates += ($sessionLogs | ForEach-Object { $_.FullName })
+          }
+
           $latestRunDir = $null
           if ($env:APEX_RUN_ID) {
             $candidateRunDir = Join-Path $workRoot $env:APEX_RUN_ID
-            if (Test-Path $candidateRunDir) {
-              $latestRunDir = Get-Item $candidateRunDir
-            }
+            if (Test-Path $candidateRunDir) { $latestRunDir = Get-Item $candidateRunDir }
           }
-          if (-not $latestRunDir) {
+          if (-not $latestRunDir -and (Test-Path $workRoot)) {
             $latestRunDir = Get-ChildItem -Path $workRoot -Directory -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
           }
-          Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           if ($latestRunDir) {
             Add-Content $report ("[INFO] latest_run_dir={0}" -f $latestRunDir.FullName)
             $latestRunLog = Get-ChildItem -Path (Join-Path $latestRunDir.FullName 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($latestRunLog) {
-              Add-Content $report ("[INFO] run_log={0}" -f $latestRunLog.FullName)
-              Add-Content $report "---- run_log_tail (last 350 lines) ----"
-              (Get-Content -Encoding UTF8 $latestRunLog.FullName -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
-            } else {
-              Add-Content $report "[WARN] run_*.log not found under latest_run_dir\logs"
-            }
+            if ($latestRunLog) { $runLogCandidates += $latestRunLog.FullName }
           } else {
             Add-Content $report "[WARN] no run_dir found under work_root"
+          }
+
+          $selectedRunLog = $runLogCandidates |
+            Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique |
+            Select-Object -First 1
+
+          if ($selectedRunLog) {
+            Add-Content $report ("[INFO] run_log_selected={0}" -f $selectedRunLog)
+            Add-Content $report "---- run_log_tail (last 350 lines) ----"
+            (Get-Content -Encoding UTF8 $selectedRunLog -Tail 350 -ErrorAction SilentlyContinue) | Add-Content $report
+          } else {
+            Add-Content $report "[WARN] run_*.log not found in RUN_LOG_PATH/session_logs/runs fallback"
           }
 
           $global:LASTEXITCODE = 0
@@ -5005,9 +5246,6 @@ jobs:
             if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
               $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
               Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
-            } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
-              $outputRoot = $outputRootFromLog
-              Write-Host "Resolved output_root from console log (reuse): $outputRoot"
             } else {
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $testStartForPath = "${{ inputs.test_start_date }}"
@@ -5017,6 +5255,9 @@ jobs:
               if (Test-Path $canonicalOutput) {
                 $outputRoot = $canonicalOutput
                 Write-Host "Resolved output_root from canonical path: $outputRoot"
+              } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+                $outputRoot = $outputRootFromLog
+                Write-Host "Resolved output_root from console log fallback: $outputRoot"
               } else {
                 $outputRoot = Join-Path $runDir.FullName 'output'
                 Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
@@ -5219,6 +5460,20 @@ jobs:
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
@@ -5257,6 +5512,20 @@ jobs:
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
@@ -5288,6 +5557,20 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
+            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
+            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {

@@ -81,6 +81,29 @@ if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path $RunDir)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) {
+  if (-not [string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT) -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
+    $OutputRoot = $env:EFFECTIVE_WIN_OUTPUT
+    $outputRootSource = 'env_effective_win_output'
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) {
+  $modeName = if ($env:MODE) { $env:MODE.ToLowerInvariant() } else { 'sim' }
+  $symbolsRaw = if ($env:SYMBOLS) { $env:SYMBOLS } elseif ($env:INPUT_SYMBOLS) { $env:INPUT_SYMBOLS } else { 'SOXL' }
+  $primarySymbol = (($symbolsRaw -split ',')[0]).Trim().ToUpperInvariant()
+  if ([string]::IsNullOrWhiteSpace($primarySymbol)) { $primarySymbol = 'SOXL' }
+  $testStart = if ($env:TEST_START_DATE) { $env:TEST_START_DATE } elseif ($env:INPUT_TEST_START_DATE) { $env:INPUT_TEST_START_DATE } else { '' }
+  if (-not [string]::IsNullOrWhiteSpace($testStart)) {
+    $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' $modeName) $primarySymbol
+    $canonicalOutput = Join-Path $canonicalOutput $testStart
+    if (Test-Path $canonicalOutput) {
+      $OutputRoot = $canonicalOutput
+      $outputRootSource = 'canonical_output_root'
+    }
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) {
   if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
     $OutputRoot = Join-Path $RunDir 'output'
     $outputRootSource = 'run_dir_fallback'
@@ -154,6 +177,16 @@ if (Test-Path $runnerDiag) {
 $oneTapReport = Join-Path $workspaceTemp 'ONE_TAP_ERROR_REPORT.txt'
 if (Test-Path $oneTapReport) {
   $sourceItems[$oneTapReport] = $true
+}
+
+$sessionLogRoot = 'C:\work\apex_work\session_logs'
+if (Test-Path $sessionLogRoot) {
+  $sessionRunLog = Get-ChildItem -Path $sessionLogRoot -File -Filter 'run_*.log' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if ($sessionRunLog) {
+    $sourceItems[$sessionRunLog.FullName] = $true
+  }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($RunDir) -and (Test-Path $RunDir)) {
