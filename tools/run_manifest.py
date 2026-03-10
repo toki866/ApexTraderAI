@@ -21,7 +21,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -610,12 +610,14 @@ class RunManifest:
         if not isinstance(data, dict):
             data = {}
 
+        failure_field = "<unknown>"
+
         def _warn_default(field: str, default_repr: str) -> None:
-            print(f"[manifest_init] field={field} was None; defaulted to {default_repr}", file=sys.stderr)
+            print(f"[manifest_init] field={field} was None -> {default_repr}", file=sys.stderr)
 
         def _warn_invalid(field: str, actual: object, default_repr: str) -> None:
             print(
-                f"[manifest_init] field={field} had invalid type={type(actual).__name__}; defaulted to {default_repr}",
+                f"[manifest_init] field={field} had invalid type={type(actual).__name__} -> {default_repr}",
                 file=sys.stderr,
             )
 
@@ -634,82 +636,110 @@ class RunManifest:
                 return []
             if isinstance(obj, list):
                 return obj
+            if isinstance(obj, tuple):
+                print(f"[manifest_init] field={field} had type=tuple -> list", file=sys.stderr)
+                return list(obj)
+            if isinstance(obj, set):
+                print(f"[manifest_init] field={field} had type=set -> list", file=sys.stderr)
+                return list(obj)
             _warn_invalid(field, obj, "[]")
             return []
 
-        data["artifacts"] = _as_list(data.get("artifacts"), "artifacts")
-        data["entries"] = _as_list(data.get("entries"), "entries")
-        data["history"] = _as_list(data.get("history"), "history")
-        data["required_outputs"] = _as_list(data.get("required_outputs"), "required_outputs")
-        data["signature"] = _as_dict(data.get("signature"), "signature")
-        data["requested_steps"] = _as_list(data.get("requested_steps"), "requested_steps")
-        data["steps"] = _as_dict(data.get("steps"), "steps")
+        try:
+            failure_field = "artifacts"
+            data["artifacts"] = _as_list(data.get("artifacts"), "artifacts")
+            failure_field = "entries"
+            data["entries"] = _as_list(data.get("entries"), "entries")
+            failure_field = "history"
+            data["history"] = _as_list(data.get("history"), "history")
+            failure_field = "required_outputs"
+            data["required_outputs"] = _as_list(data.get("required_outputs"), "required_outputs")
+            failure_field = "signature"
+            data["signature"] = _as_dict(data.get("signature"), "signature")
+            failure_field = "requested_steps"
+            data["requested_steps"] = _as_list(data.get("requested_steps"), "requested_steps")
+            failure_field = "steps"
+            data["steps"] = _as_dict(data.get("steps"), "steps")
 
-        if data["signature"].get("steps") is None:
-            _warn_default("signature.steps", "[]")
-            data["signature"]["steps"] = []
-        elif not isinstance(data["signature"].get("steps"), list):
-            _warn_invalid("signature.steps", data["signature"].get("steps"), "[]")
-            data["signature"]["steps"] = []
+            failure_field = "signature.steps"
+            if data["signature"].get("steps") is None:
+                _warn_default("signature.steps", "[]")
+                data["signature"]["steps"] = []
+            elif not isinstance(data["signature"].get("steps"), list):
+                _warn_invalid("signature.steps", data["signature"].get("steps"), "[]")
+                data["signature"]["steps"] = []
 
-        if data["signature"].get("stepe_agents") is None:
-            _warn_default("signature.stepe_agents", "[]")
-            data["signature"]["stepe_agents"] = []
-        elif not isinstance(data["signature"].get("stepe_agents"), list):
-            _warn_invalid("signature.stepe_agents", data["signature"].get("stepe_agents"), "[]")
-            data["signature"]["stepe_agents"] = []
+            failure_field = "signature.stepe_agents"
+            if data["signature"].get("stepe_agents") is None:
+                _warn_default("signature.stepe_agents", "[]")
+                data["signature"]["stepe_agents"] = []
+            elif not isinstance(data["signature"].get("stepe_agents"), list):
+                _warn_invalid("signature.stepe_agents", data["signature"].get("stepe_agents"), "[]")
+                data["signature"]["stepe_agents"] = []
 
-        default_steps = cls._fresh_data(sig, bool(data.get("reuse_enabled")), bool(data.get("force_rebuild")))["steps"]
-        for step, fallback in default_steps.items():
-            s = data["steps"].get(step)
-            if s is None:
-                _warn_default(f"steps.{step}", "{}")
-                s = {}
-            if not isinstance(s, dict):
-                _warn_invalid(f"steps.{step}", s, "{}")
-                s = {}
-            for k, v in fallback.items():
-                if s.get(k) is None and v is not None:
-                    _warn_default(f"steps.{step}.{k}", repr(v))
-                    s[k] = v
+            failure_field = "steps"
+            default_steps = cls._fresh_data(sig, bool(data.get("reuse_enabled")), bool(data.get("force_rebuild")))["steps"]
+            for step, fallback in default_steps.items():
+                failure_field = f"steps.{step}"
+                s = data["steps"].get(step)
+                if s is None:
+                    _warn_default(f"steps.{step}", "{}")
+                    s = {}
+                if not isinstance(s, dict):
+                    _warn_invalid(f"steps.{step}", s, "{}")
+                    s = {}
+                for k, v in fallback.items():
+                    failure_field = f"steps.{step}.{k}"
+                    if s.get(k) is None and v is not None:
+                        _default_repr = "{}" if isinstance(v, dict) else "[]" if isinstance(v, list) else repr(v)
+                        _warn_default(f"steps.{step}.{k}", _default_repr)
+                        s[k] = v
 
-            # Legacy/custom keys used by some manifests.
-            if s.get("required_outputs") is None:
-                _warn_default(f"steps.{step}.required_outputs", "[]")
-                s["required_outputs"] = []
-            elif not isinstance(s.get("required_outputs"), list):
-                _warn_invalid(f"steps.{step}.required_outputs", s.get("required_outputs"), "[]")
-                s["required_outputs"] = []
+                # Legacy/custom keys used by some manifests.
+                failure_field = f"steps.{step}.required_outputs"
+                if s.get("required_outputs") is None:
+                    _warn_default(f"steps.{step}.required_outputs", "[]")
+                    s["required_outputs"] = []
+                elif not isinstance(s.get("required_outputs"), list):
+                    _warn_invalid(f"steps.{step}.required_outputs", s.get("required_outputs"), "[]")
+                    s["required_outputs"] = []
 
-            if s.get("prior_outputs") is None:
-                _warn_default(f"steps.{step}.prior_outputs", "[]")
-                s["prior_outputs"] = []
-            elif not isinstance(s.get("prior_outputs"), list):
-                _warn_invalid(f"steps.{step}.prior_outputs", s.get("prior_outputs"), "[]")
-                s["prior_outputs"] = []
+                failure_field = f"steps.{step}.prior_outputs"
+                if s.get("prior_outputs") is None:
+                    _warn_default(f"steps.{step}.prior_outputs", "[]")
+                    s["prior_outputs"] = []
+                elif not isinstance(s.get("prior_outputs"), list):
+                    _warn_invalid(f"steps.{step}.prior_outputs", s.get("prior_outputs"), "[]")
+                    s["prior_outputs"] = []
 
-            if s.get("artifacts") is None:
-                _warn_default(f"steps.{step}.artifacts", "{}")
-                s["artifacts"] = {}
-            elif not isinstance(s.get("artifacts"), dict):
-                _warn_invalid(f"steps.{step}.artifacts", s.get("artifacts"), "{}")
-                s["artifacts"] = {}
+                failure_field = f"steps.{step}.artifacts"
+                if s.get("artifacts") is None:
+                    _warn_default(f"steps.{step}.artifacts", "{}")
+                    s["artifacts"] = {}
+                elif not isinstance(s.get("artifacts"), dict):
+                    _warn_invalid(f"steps.{step}.artifacts", s.get("artifacts"), "{}")
+                    s["artifacts"] = {}
 
-            if step == "E":
-                agents = s.get("agents")
-                if agents is None:
-                    _warn_default("steps.E.agents", "{}")
-                    agents = {}
-                if not isinstance(agents, dict):
-                    _warn_invalid("steps.E.agents", agents, "{}")
-                    agents = {}
-                s["agents"] = agents
-            data["steps"][step] = s
+                if step == "E":
+                    failure_field = "steps.E.agents"
+                    agents = s.get("agents")
+                    if agents is None:
+                        _warn_default("steps.E.agents", "{}")
+                        agents = {}
+                    if not isinstance(agents, dict):
+                        _warn_invalid("steps.E.agents", agents, "{}")
+                        agents = {}
+                    s["agents"] = agents
+                data["steps"][step] = s
 
-        if not data["requested_steps"] and sig is not None:
-            data["requested_steps"] = list(sig.steps)
+            failure_field = "requested_steps"
+            if not data["requested_steps"] and sig is not None:
+                data["requested_steps"] = list(sig.steps)
 
-        return data
+            return data
+        except Exception:
+            print(f"[manifest_init] failure_field={failure_field}", file=sys.stderr)
+            raise
 
     # ------------------------------------------------------------------
     # Step status helpers
