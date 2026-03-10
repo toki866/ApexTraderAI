@@ -73,23 +73,23 @@ Requirement already satisfied: idna<4,>=2.5 in c:\users\becky\appdata\local\prog
 Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\becky\appdata\local\programs\python\python310\lib\site-packages (from requests>=2.31->yfinance->-r C:\work\apex_repo_cache\ApexTraderAI\requirements.txt (line 4)) (2.0.3)
 Requirement already satisfied: mpmath<1.4,>=1.1.0 in c:\users\becky\appdata\local\programs\python\python310\lib\site-packages (from sympy>=1.13.3->torch<3.0,>=2.3->stable-baselines3->-r C:\work\apex_repo_cache\ApexTraderAI\requirements.txt (line 9)) (1.3.0)
 Requirement already satisfied: MarkupSafe>=2.0 in c:\users\becky\appdata\roaming\python\python310\site-packages (from jinja2->torch<3.0,>=2.3->stable-baselines3->-r C:\work\apex_repo_cache\ApexTraderAI\requirements.txt (line 9)) (3.0.3)
-[PREPARE_ENV] prepare_data begin prepCmd=cd '/mnt/c/work/apex_repo_cache/ApexTraderAI' && '/home/becky/miniforge3/envs/mamba_cuda/bin/python' tools/run_with_python.py tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir '/mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data'
-[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data/prices_SOXL.csv (2086 rows)
-[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data/prices_SOXS.csv (2086 rows)
-[CMD] /home/becky/miniforge3/envs/mamba_cuda/bin/python tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data
+[PREPARE_ENV] prepare_data begin prepCmd=cd '/mnt/c/work/apex_repo_cache/ApexTraderAI' && '/home/becky/miniforge3/envs/mamba_cuda/bin/python' tools/run_with_python.py tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir '/mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data'
+[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data/prices_SOXL.csv (2086 rows)
+[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data/prices_SOXS.csv (2086 rows)
+[CMD] /home/becky/miniforge3/envs/mamba_cuda/bin/python tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data
 [RC] 0
 [INFO] work_root=C:\work\apex_work\runs
 [INFO] session_log_root=C:\work\apex_work\session_logs
-[INFO] latest_run_dir=C:\work\apex_work\runs\gh22927096334_att1_sim_20260311_072622_67f6b4b
-[INFO] run_log_selected=C:\work\apex_work\session_logs\22927096334_att1\run_gh22927096334_att1_sim_20260311_072622_67f6b4b.log
+[INFO] latest_run_dir=C:\work\apex_work\runs\gh22927096334_att2_sim_20260311_085108_67f6b4b
+[INFO] run_log_selected=C:\work\apex_work\session_logs\22927096334_att2\run_gh22927096334_att2_sim_20260311_085108_67f6b4b.log
 ---- run_log_tail (last 350 lines) ----
-[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data/prices_SOXL.csv (2086 rows)
-[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data/prices_SOXS.csv (2086 rows)
-[CMD] /home/becky/miniforge3/envs/mamba_cuda/bin/python tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir /mnt/c/work/apex_work/runs/gh22927096334_att1_sim_20260311_072622_67f6b4b/data
+[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data/prices_SOXL.csv (2086 rows)
+[prepare_data] wrote /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data/prices_SOXS.csv (2086 rows)
+[CMD] /home/becky/miniforge3/envs/mamba_cuda/bin/python tools/prepare_data.py --symbols SOXL,SOXS --start 2013-12-27 --end 2022-04-10 --force --data-dir /mnt/c/work/apex_work/runs/gh22927096334_att2_sim_20260311_085108_67f6b4b/data
 [RC] 0
 [STEP] package_diagnostics_to_onedrive
 [INFO] diag_script=C:\work\apex_repo_cache\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
-[PUBLISH] run_dir=C:\work\apex_work\runs\gh22927096334_att1_sim_20260311_072622_67f6b4b
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh22927096334_att2_sim_20260311_085108_67f6b4b
 [PUBLISH] output_root=C:\\work\\apex_work\\output\\sim\\SOXL\\2022-01-03
 [WARN] publish issue: D' state CSV missing under output/stepDprime/<mode> or stepD_prime/<mode>.
 [WARN] publish issue: D' embeddings CSV missing under output/stepDprime/<mode>/embeddings or stepD_prime/<mode>/embeddings.
@@ -99,6 +99,6 @@ Requirement already satisfied: MarkupSafe>=2.0 in c:\users\becky\appdata\roaming
 [STEP] resolve_latest_run_artifacts
 [INFO] work_root=C:\work\apex_work\runs
 [OK] resolve_latest_run_artifacts
-[OK] run_dir=C:\work\apex_work\runs\gh22927096334_att1_sim_20260311_072622_67f6b4b
-[OK] run_id=gh22927096334_att1_sim_20260311_072622_67f6b4b
+[OK] run_dir=C:\work\apex_work\runs\gh22927096334_att2_sim_20260311_085108_67f6b4b
+[OK] run_id=gh22927096334_att2_sim_20260311_085108_67f6b4b
 ```
