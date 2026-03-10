@@ -2181,6 +2181,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if not _stepb_expected_pred_file.exists():
                             _post_stepb_missing.append(str(_stepb_expected_pred_file))
                             print(f"[STEPB_POST] required=stepB/{resolved_mamba_mode}/stepB_pred_time_all_{symbol}.csv exists=fail", file=sys.stderr)
+                            print("[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all", file=sys.stderr)
                         else:
                             print(f"[STEPB_POST] required=stepB/{resolved_mamba_mode}/stepB_pred_time_all_{symbol}.csv exists=pass")
                         _miss_b = validate_step_b(Path(resolved_output_root), symbol, resolved_mamba_mode)
@@ -2200,6 +2201,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _emit_step_status("B", status="run", started_at=_t0_b_wall, ended_at=time.time(), validated=True)
                         print("[StepB] done")
                     except Exception:
+                        traceback.print_exc(file=sys.stderr)
                         # Make downstream skip-reason explicit in run log / ONE_TAP parsers.
                         for _downstream in ("C", "DPRIME", "E", "F"):
                             if _downstream in steps:

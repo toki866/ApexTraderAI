@@ -39,6 +39,16 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
 
     symbol_ok = str(summary.get('symbol','')).upper() == str(symbol).upper()
     mode_ok = str(summary.get('mode','')).lower() == str(mode).lower()
+    split_expect = {
+        'test_start': str(test_start or ''),
+        'train_years': int(train_years),
+        'test_months': int(test_months),
+    }
+    split_current = {
+        'test_start': str(summary.get('test_start', '') or ''),
+        'train_years': int(summary.get('train_years', 0) or 0),
+        'test_months': int(summary.get('test_months', 0) or 0),
+    }
     split_ok = split_summary_matches(summary, symbol=symbol, mode=mode, test_start=test_start, train_years=train_years, test_months=test_months)
 
     if not symbol_ok:
@@ -46,7 +56,21 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
     if not mode_ok:
         return {"status":"run","reason":"mode_mismatch","final":"execute","symbol":"pass","mode":"fail","split":"fail","required_outputs":"skip","validation":"skip"}
     if not split_ok:
-        return {"status":"run","reason":"split_mismatch","final":"execute","symbol":"pass","mode":"pass","split":"fail","required_outputs":"skip","validation":"skip"}
+        mismatch_keys = [k for k in ('test_start', 'train_years', 'test_months') if split_current.get(k) != split_expect.get(k)]
+        print(f"[reuse] step={step} split_mismatch current={split_current} candidate={split_expect} keys={mismatch_keys}", file=sys.stderr)
+        return {
+            "status":"run",
+            "reason":"split_mismatch",
+            "final":"execute",
+            "symbol":"pass",
+            "mode":"pass",
+            "split":"fail",
+            "required_outputs":"skip",
+            "validation":"skip",
+            "split_mismatch_keys": mismatch_keys,
+            "split_current": split_current,
+            "split_candidate": split_expect,
+        }
 
     print(f"[reuse] step={step} canonical_output_root={canonical_root}", file=sys.stderr)
     for rel in required_outputs_for_step(step, symbol, mode):
@@ -115,6 +139,9 @@ def main() -> int:
           'required_outputs': list(required_outputs_for_step(args.step, args.symbol, args.mode)),
       },
       'reuse_match_found': d['status'] == 'skip',
+      'split_mismatch_keys': d.get('split_mismatch_keys', []),
+      'split_current': d.get('split_current', {}),
+      'split_candidate': d.get('split_candidate', {}),
     }
     print(json.dumps(payload, ensure_ascii=False))
     return 0

@@ -1345,6 +1345,16 @@ jobs:
             } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
+          if ("$($reuseDecision.reason)" -eq 'split_mismatch') {
+            $splitKey = $reuseDecision.reuse_key
+            Add-Content $rp "[REUSE] stepB reason=split_mismatch current_split=test_start=${{ inputs.test_start_date }} train_years=${{ inputs.train_years }} test_months=${{ inputs.test_months }}"
+            if ($splitKey) {
+              Add-Content $rp "[REUSE] stepB reason=split_mismatch candidate_split=test_start=$($splitKey.test_start) train_years=$($splitKey.train_years) test_months=$($splitKey.test_months)"
+            }
+            if ($reuseDecision.split_mismatch_keys) {
+              Add-Content $rp "[REUSE] stepB split_mismatch_keys=$($reuseDecision.split_mismatch_keys -join ',')"
+            }
+          }
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
@@ -1354,7 +1364,7 @@ jobs:
           Add-Content $rp "[STEPB] output_root=$wslOut"
           Add-Content $rp "[STEPB] expected_pred_file=$expectedPredWsl"
           $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
-          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if (Test-Path $expectedPredWin) { 'pass' } else { 'fail' })"; if (-not (Test-Path $expectedPredWin)) { Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all" }; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -1377,8 +1387,19 @@ jobs:
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          New-Item -ItemType Directory -Path (Split-Path -Parent $stepBLogPath) -Force | Out-Null
           try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            if (-not (Test-Path $stepBLogPath)) {
+              New-Item -ItemType File -Path $stepBLogPath -Force | Out-Null
+            }
+          } catch {
+            $stepBException = "step_b_exec_log_create_failed: $($_ | Out-String).Trim()"
+            Add-Content $rp "[NG] step_b exec_log_create_failed path=$stepBLogPath error=$stepBException"
+          }
+          Add-Content $rp "[STEP_STATUS] step_b_expected_pred_before=$expectedPredWin"
+          Add-Content $rp "[STEPB_PRE] expected_pred_file=$expectedPredWsl"
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c" 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
             $rc = $LASTEXITCODE
           }
           catch {
@@ -1392,7 +1413,8 @@ jobs:
             Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
           }
           if ($rc -ne 0) {
-            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -lc <pipefail-enabled>"
+            Add-Content $rp "[NG] step_b command_payload=$c"
             Add-Content $rp "[NG] step_b rc=$rc"
             if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
               Add-Content $rp "[NG] step_b exception_body=$stepBException"
@@ -1402,19 +1424,25 @@ jobs:
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
               (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
             } else {
-              Add-Content $rp '[WARN] step_b exec log missing; tail unavailable'
+              Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
+              Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
             }
             Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
             Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
             Write-Error "StepB failed rc=$rc"
             exit $rc
           }
-          if (-not (Test-Path $expectedPredWin)) {
+          $predExists = Test-Path $expectedPredWin
+          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if ($predExists) { 'pass' } else { 'fail' })"
+          if (-not $predExists) {
+            Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all"
             Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
             Add-Content $rp "[NG] step_b fail_reason=missing_required_outputs_after_stepB"
             if (Test-Path $stepBLogPath) {
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
               (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            } else {
+              Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
             }
             Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
             exit 1
@@ -4639,6 +4667,16 @@ jobs:
             } catch { Add-Content $rp "[STEP_STATUS] step=B reuse_probe_error=$_" }
           }
           Add-Content $rp "[STEP_STATUS] step=B manifest_reuse=$($reuseDecision.manifest_reuse) artifact_reuse=$($reuseDecision.artifact_reuse) reason=$($reuseDecision.reason) matched_run_id=$($reuseDecision.run_id) manifest_reason=$($reuseDecision.manifest_reason) manifest_path=$($reuseDecision.manifest_path) parse_error_type=$($reuseDecision.parse_error_type) fallback_to_artifact_check=$($reuseDecision.fallback_to_artifact_check) reuse_key=$($reuseDecision.reuse_key | ConvertTo-Json -Compress) reuse_match_found=$($reuseDecision.reuse_match_found) reuse_matched_output_root=$($reuseDecision.matched_output_root) reuse_selected_policy=$($reuseDecision.selected_policy)"
+          if ("$($reuseDecision.reason)" -eq 'split_mismatch') {
+            $splitKey = $reuseDecision.reuse_key
+            Add-Content $rp "[REUSE] stepB reason=split_mismatch current_split=test_start=${{ inputs.test_start_date }} train_years=${{ inputs.train_years }} test_months=${{ inputs.test_months }}"
+            if ($splitKey) {
+              Add-Content $rp "[REUSE] stepB reason=split_mismatch candidate_split=test_start=$($splitKey.test_start) train_years=$($splitKey.train_years) test_months=$($splitKey.test_months)"
+            }
+            if ($reuseDecision.split_mismatch_keys) {
+              Add-Content $rp "[REUSE] stepB split_mismatch_keys=$($reuseDecision.split_mismatch_keys -join ',')"
+            }
+          }
           Write-Host "[STEP_STATUS] step=B status=$status output_root=$outRoot"
           Add-Content $rp "[STEP_STATUS] step=B status=$status"
           $expectedPredWin = Join-Path $outRoot ("stepB\$env:MODE\stepB_pred_time_all_{0}.csv" -f $sym1)
@@ -4648,7 +4686,7 @@ jobs:
           Add-Content $rp "[STEPB] output_root=$wslOut"
           Add-Content $rp "[STEPB] expected_pred_file=$expectedPredWsl"
           $isReuse = ($status -eq 'skip') -or ("$($reuseDecision.final)" -eq 'reuse')
-          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
+          if ($isReuse) { if ($reuseDecision.matched_output_root) { $m=$reuseDecision.matched_output_root; if ($m -match '^/mnt/([a-z])/(.*)$') { $drv=$Matches[1].ToUpperInvariant(); $rest=$Matches[2] -replace '/', '\\'; $mw="${drv}:\\$rest"; "EFFECTIVE_WSL_OUTPUT=$m" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; "EFFECTIVE_WIN_OUTPUT=$mw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8; Add-Content $rp "[REUSE] stepB_reuse_matched_output_root=$mw" } }; $status='skip'; Write-Host "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEP_STATUS] step=B status=skip reason=reuse matched_output_root=$($reuseDecision.matched_output_root)"; Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if (Test-Path $expectedPredWin) { 'pass' } else { 'fail' })"; if (-not (Test-Path $expectedPredWin)) { Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all" }; Write-Host "[StepB] status=skip reason=reuse"; exit 0 }
           # [B] Log WSL paths before execution
           Write-Host "[WSL_PATHS] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
           Write-Host "[WSL_PATHS] WSL_DATA_DIR=$env:WSL_DATA_DIR"
@@ -4671,8 +4709,19 @@ jobs:
           $rc = 1
           $stepBException = ''
           $stepBLogPath = Join-Path $env:GITHUB_WORKSPACE 'temp\step_b_exec.log'
+          New-Item -ItemType Directory -Path (Split-Path -Parent $stepBLogPath) -Force | Out-Null
           try {
-            wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
+            if (-not (Test-Path $stepBLogPath)) {
+              New-Item -ItemType File -Path $stepBLogPath -Force | Out-Null
+            }
+          } catch {
+            $stepBException = "step_b_exec_log_create_failed: $($_ | Out-String).Trim()"
+            Add-Content $rp "[NG] step_b exec_log_create_failed path=$stepBLogPath error=$stepBException"
+          }
+          Add-Content $rp "[STEP_STATUS] step_b_expected_pred_before=$expectedPredWin"
+          Add-Content $rp "[STEPB_PRE] expected_pred_file=$expectedPredWsl"
+          try {
+            wsl.exe -d $env:WSL_DISTRO -- bash -lc "set -o pipefail; $c" 2>&1 | Tee-Object -FilePath $stepBLogPath -Append
             $rc = $LASTEXITCODE
           }
           catch {
@@ -4686,7 +4735,8 @@ jobs:
             Add-Content $rp "[STEP_STATUS] step_b_exec_log=$stepBLogPath"
           }
           if ($rc -ne 0) {
-            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
+            Add-Content $rp "[NG] step_b command=wsl.exe -d $env:WSL_DISTRO -- bash -lc <pipefail-enabled>"
+            Add-Content $rp "[NG] step_b command_payload=$c"
             Add-Content $rp "[NG] step_b rc=$rc"
             if (-not [string]::IsNullOrWhiteSpace($stepBException)) {
               Add-Content $rp "[NG] step_b exception_body=$stepBException"
@@ -4696,19 +4746,25 @@ jobs:
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
               (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
             } else {
-              Add-Content $rp '[WARN] step_b exec log missing; tail unavailable'
+              Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
+              Add-Content $rp "[NG] step_b exec_log_path=$stepBLogPath"
             }
             Add-Content $rp "[ROOT_CAUSE] root_failure_step=B"
             Add-Content $rp "[ROOT_CAUSE] downstream_blocked_by=StepB"
             Write-Error "StepB failed rc=$rc"
             exit $rc
           }
-          if (-not (Test-Path $expectedPredWin)) {
+          $predExists = Test-Path $expectedPredWin
+          Add-Content $rp "[STEPB_POST] required=stepB/$env:MODE/stepB_pred_time_all_${sym1}.csv exists=$(if ($predExists) { 'pass' } else { 'fail' })"
+          if (-not $predExists) {
+            Add-Content $rp "[STEPB_POST] STEPB_FAIL_REASON=missing_pred_time_all"
             Add-Content $rp "[NG] step_b post_check_missing_required=$expectedPredWin"
             Add-Content $rp "[NG] step_b fail_reason=missing_required_outputs_after_stepB"
             if (Test-Path $stepBLogPath) {
               Add-Content $rp '---- step_b_exec_log_tail_last_200 ----'
               (Get-Content -Encoding UTF8 -Path $stepBLogPath -Tail 200 -ErrorAction SilentlyContinue) | Add-Content $rp
+            } else {
+              Add-Content $rp '[NG] step_b exec log missing; tail unavailable'
             }
             Write-Error "StepB post-check failed (missing expected output): $expectedPredWin"
             exit 1
