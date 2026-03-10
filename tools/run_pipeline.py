@@ -597,17 +597,20 @@ def _load_prices_dates(
     output_root: Path,
     data_root: Path,
     mode: str,
-) -> Tuple[Optional[Any], Optional[Any], List[Path]]:
+) -> Tuple[Optional[Any], Optional[Any], List[Path], List[Path]]:
     import pandas as pd
 
     mode = (mode or "sim").strip().lower()
     if mode == "ops":
         mode = "live"
 
+    split_train = output_root / "stepA" / mode / f"stepA_prices_train_{symbol}.csv"
+    split_test = output_root / "stepA" / mode / f"stepA_prices_test_{symbol}.csv"
+
     candidates = [
         # (Priority 1) split outputs in the requested mode
-        output_root / "stepA" / mode / f"stepA_prices_train_{symbol}.csv",
-        output_root / "stepA" / mode / f"stepA_prices_test_{symbol}.csv",
+        split_train,
+        split_test,
         # (Priority 2) consolidated stepA prices (display and compatibility variants)
         output_root / "stepA" / mode / f"stepA_prices_{symbol}.csv",
         output_root / "stepA" / "display" / f"stepA_prices_{symbol}.csv",
@@ -618,8 +621,13 @@ def _load_prices_dates(
 
     selected_dates = None
     selected_close = None
-    for p in candidates:
-        if p.exists():
+    selected_files: List[Path] = []
+
+    # Split train/test pair has the highest priority and must be merged if both exist.
+    if split_train.exists() and split_test.exists():
+        merged_dates = []
+        merged_close = []
+        for p in (split_train, split_test):
             df = pd.read_csv(p)
             date_col = next((c for c in df.columns if c.lower() == "date"), None)
             if date_col is None:
@@ -629,12 +637,42 @@ def _load_prices_dates(
             except Exception:
                 pass
             close_col = next((c for c in df.columns if c.lower() == "close"), None)
-            dates = df[date_col]
-            close = df[close_col] if close_col else None
-            if selected_dates is None:
-                selected_dates = dates
-                selected_close = close
-    return selected_dates, selected_close, candidates
+            merged_dates.append(df[date_col])
+            if close_col is not None:
+                merged_close.append(df[close_col])
+        if merged_dates:
+            selected_dates = pd.concat(merged_dates, ignore_index=True)
+            if merged_close:
+                selected_close = pd.concat(merged_close, ignore_index=True)
+            selected_files = [split_train, split_test]
+
+    if selected_dates is None:
+        for p in candidates:
+            if p.exists():
+                df = pd.read_csv(p)
+                date_col = next((c for c in df.columns if c.lower() == "date"), None)
+                if date_col is None:
+                    continue
+                try:
+                    df[date_col] = pd.to_datetime(df[date_col])
+                except Exception:
+                    pass
+                close_col = next((c for c in df.columns if c.lower() == "close"), None)
+                selected_dates = df[date_col]
+                selected_close = df[close_col] if close_col else None
+                selected_files = [p]
+                break
+
+    return selected_dates, selected_close, candidates, selected_files
+
+
+def _read_split_summary_json(summary_json: Path) -> Dict[str, Any]:
+    if not summary_json.exists():
+        raise FileNotFoundError(f"missing_split_summary_json={summary_json}")
+    payload = json.loads(summary_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid_split_summary_json={summary_json}")
+    return payload
 
 
 def _build_date_range(
@@ -659,7 +697,10 @@ def _build_date_range(
     out_root = Path(output_root)
     data_root = Path(data_root) if data_root is not None else (repo_root / "data")
 
-    dates, _, searched_paths = _load_prices_dates(
+    split_summary_json = out_root / "split_summary.json"
+    split_summary_csv = out_root / "stepA" / str(mode or "sim").lower() / f"stepA_split_summary_{symbol}.csv"
+
+    dates, _, searched_paths, selected_price_files = _load_prices_dates(
         symbol=symbol,
         repo_root=repo_root,
         output_root=out_root,
@@ -678,25 +719,89 @@ def _build_date_range(
     dmin = pd.to_datetime(dates_sorted.iloc[0]).normalize()
     dmax = pd.to_datetime(dates_sorted.iloc[-1]).normalize()
 
-    test_start_input = (
-        pd.to_datetime(test_start).normalize()
-        if test_start
-        else (pd.to_datetime(dates_sorted.iloc[-1]).normalize() - pd.DateOffset(months=test_months))
+    print(
+        f"[DATE_RANGE] prices_source_files={','.join(str(p) for p in selected_price_files) if selected_price_files else 'none'}"
     )
-    ts = snap_prev_by_prices(test_start_input, dates_sorted)
+    print(f"[DATE_RANGE] dates_min={str(dmin.date())}")
+    print(f"[DATE_RANGE] dates_max={str(dmax.date())}")
+    print(f"[DATE_RANGE] cli_test_start={str(test_start) if test_start else ''}")
 
-    train_start_raw = ts - pd.DateOffset(years=train_years)
-    train_end_raw = ts - pd.Timedelta(days=1)
-    test_end_raw = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+    split_source = ""
+    split_payload: Dict[str, Any] = {}
+    if split_summary_json.exists():
+        split_payload = _read_split_summary_json(split_summary_json)
+        split_source = "split_summary_json"
+    elif split_summary_csv.exists():
+        split_payload = _build_split_payload_from_stepa_summary(
+            split_summary_csv,
+            symbol=symbol,
+            mode=str(mode or "sim").lower(),
+            train_years=int(train_years),
+            test_months=int(test_months),
+        )
+        split_source = "stepA_split_summary_csv"
 
-    train_start = snap_prev_by_prices(train_start_raw, dates_sorted)
-    train_end = snap_prev_by_prices(train_end_raw, dates_sorted)
-    test_end = snap_prev_by_prices(test_end_raw, dates_sorted)
+    cli_test_start_dt = pd.to_datetime(test_start).normalize() if test_start else None
+
+    if split_source:
+        def _from_payload(name: str) -> Optional[Any]:
+            raw = str(split_payload.get(name, "")).strip()
+            if not raw:
+                return None
+            try:
+                return pd.to_datetime(raw).normalize()
+            except Exception:
+                return None
+
+        train_start = _from_payload("train_start")
+        train_end = _from_payload("train_end")
+        ts = _from_payload("test_start")
+        test_end = _from_payload("test_end")
+
+        if not (train_start and train_end and ts and test_end):
+            split_source = ""
+        elif cli_test_start_dt is not None and ts != cli_test_start_dt:
+            mismatch = str((ts - cli_test_start_dt).days)
+            print(f"[DATE_RANGE] cli_test_start={str(cli_test_start_dt.date())}")
+            print(f"[DATE_RANGE] split_summary_test_start={str(ts.date())}")
+            print(f"[DATE_RANGE] mismatch={mismatch}d")
+
+    if not split_source:
+        print("[DATE_RANGE] source=prices_csv_fallback")
+        test_start_input = (
+            cli_test_start_dt
+            if cli_test_start_dt is not None
+            else (pd.to_datetime(dates_sorted.iloc[-1]).normalize() - pd.DateOffset(months=test_months))
+        )
+        ts = snap_prev_by_prices(test_start_input, dates_sorted)
+
+        train_start_raw = ts - pd.DateOffset(years=train_years)
+        train_end_raw = ts - pd.Timedelta(days=1)
+        test_end_raw = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+
+        train_start = snap_prev_by_prices(train_start_raw, dates_sorted)
+        train_end = snap_prev_by_prices(train_end_raw, dates_sorted)
+        test_end = snap_prev_by_prices(test_end_raw, dates_sorted)
+    else:
+        print(f"[DATE_RANGE] source={split_source}")
 
     train_start = min(max(train_start, dmin), dmax)
     train_end = min(max(train_end, dmin), dmax)
     ts = min(max(ts, dmin), dmax)
     test_end = min(max(test_end, dmin), dmax)
+    print(f"[DATE_RANGE] resolved_train_start={str(train_start.date())}")
+    print(f"[DATE_RANGE] resolved_train_end={str(train_end.date())}")
+    print(f"[DATE_RANGE] resolved_test_start={str(ts.date())}")
+    print(f"[DATE_RANGE] resolved_test_end={str(test_end.date())}")
+
+    if str(mode or "sim").lower() == "sim":
+        if ts == test_end:
+            raise RuntimeError("date_range_invalid_before_stepB: sim_requires_test_span")
+        if cli_test_start_dt is not None and ts < cli_test_start_dt:
+            raise RuntimeError(
+                "date_range_invalid_before_stepB: test_start_rounded_before_cli "
+                f"cli={str(cli_test_start_dt.date())} resolved={str(ts.date())}"
+            )
     kwargs = {"train_start": train_start, "train_end": train_end, "test_start": ts, "test_end": test_end}
     dr = DateRange(**kwargs)
     dr = _ensure_date_range_aliases(dr)
