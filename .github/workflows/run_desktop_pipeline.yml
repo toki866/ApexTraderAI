@@ -987,6 +987,32 @@ jobs:
           Add-Content $rp '[OK] prepare_environment'
           Write-Host '[PREPARE_ENV] success'
 
+
+      - name: Record prepare_environment failure root cause and downstream skip reasons
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $prepareOutcome = '${{ steps.prepare_env.outcome }}'
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_RUN_DIR=$env:WIN_RUN_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_DATA_DIR=$env:WIN_DATA_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_OUTPUT_DIR=$env:WIN_OUTPUT_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_DATA_DIR=$env:WSL_DATA_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] prepare_environment_outcome=$prepareOutcome"
+          if ($prepareOutcome -eq 'failure') {
+            Add-Content $rp '[ROOT_CAUSE] root_failure_step=prepare_environment'
+            Add-Content $rp '[ROOT_CAUSE] downstream_blocked_by=prepare_environment'
+            Add-Content $rp '[NG] prepare_environment_outcome=failure'
+            foreach ($stepName in @('B','C','DPRIME','E','F')) {
+              $line = "[STEP_STATUS] step=$stepName status=skip reason=prepare_environment_failure"
+              Add-Content $rp $line
+              Write-Host $line
+            }
+          }
+
       - name: Resolve StepA simple reuse source
         id: resolve_reuse_stepa
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -1341,7 +1367,7 @@ jobs:
 
       - name: StepB
         id: step_b
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1547,7 +1573,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1606,7 +1632,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1665,7 +1691,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1754,7 +1780,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4392,6 +4418,32 @@ jobs:
           Add-Content $rp '[OK] prepare_environment'
           Write-Host '[PREPARE_ENV] success'
 
+
+      - name: Record prepare_environment failure root cause and downstream skip reasons
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $prepareOutcome = '${{ steps.prepare_env.outcome }}'
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_RUN_DIR=$env:WIN_RUN_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_DATA_DIR=$env:WIN_DATA_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WIN_OUTPUT_DIR=$env:WIN_OUTPUT_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_REPO_ROOT=$env:WSL_REPO_ROOT"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_DATA_DIR=$env:WSL_DATA_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] WSL_OUTPUT_DIR=$env:WSL_OUTPUT_DIR"
+          Add-Content $rp "[PREPARE_ENV][FINAL] prepare_environment_outcome=$prepareOutcome"
+          if ($prepareOutcome -eq 'failure') {
+            Add-Content $rp '[ROOT_CAUSE] root_failure_step=prepare_environment'
+            Add-Content $rp '[ROOT_CAUSE] downstream_blocked_by=prepare_environment'
+            Add-Content $rp '[NG] prepare_environment_outcome=failure'
+            foreach ($stepName in @('B','C','DPRIME','E','F')) {
+              $line = "[STEP_STATUS] step=$stepName status=skip reason=prepare_environment_failure"
+              Add-Content $rp $line
+              Write-Host $line
+            }
+          }
+
       - name: Resolve StepA simple reuse source
         id: resolve_reuse_stepa
         if: ${{ always() && steps.prep_repo.outcome == 'success' }}
@@ -4742,7 +4794,7 @@ jobs:
 
       - name: StepB
         id: step_b
-        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4908,7 +4960,7 @@ jobs:
 
       - name: StepC
         id: step_c
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -4967,7 +5019,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -5026,7 +5078,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -5115,7 +5167,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
