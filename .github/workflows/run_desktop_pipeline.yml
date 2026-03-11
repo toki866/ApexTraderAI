@@ -1762,24 +1762,29 @@ jobs:
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
 
-          $stepDPrimeCandidates = @(
-            (Join-Path $outRoot ("stepDprime\\$env:MODE")),
-            (Join-Path $outRoot ("stepD_prime\\$env:MODE"))
-          )
-          $selectedDPrimeRoot = $null
-          $selectedDPrimeCsvCount = 0
+          $canonicalDPrimeRoot = Join-Path $outRoot ("stepDprime\\$env:MODE")
+          $legacyDPrimeRoot = Join-Path $outRoot ("stepD_prime\\$env:MODE")
+          if ((Test-Path $legacyDPrimeRoot) -and -not (Test-Path $canonicalDPrimeRoot)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalDPrimeRoot) -Force | Out-Null
+            Move-Item -Path $legacyDPrimeRoot -Destination $canonicalDPrimeRoot -Force
+            $warn = "[WARN] migrated_legacy_dprime_dir old=$legacyDPrimeRoot new=$canonicalDPrimeRoot"
+            Write-Warning $warn
+            Add-Content $rp $warn
+          } elseif ((Test-Path $legacyDPrimeRoot) -and (Test-Path $canonicalDPrimeRoot)) {
+            $warn = "[WARN] duplicate_dprime_dirs_detected old=$legacyDPrimeRoot new=$canonicalDPrimeRoot"
+            Write-Warning $warn
+            Write-Warning "[WARN] canonical_dprime_dir=$canonicalDPrimeRoot"
+            Add-Content $rp $warn
+            Add-Content $rp "[WARN] canonical_dprime_dir=$canonicalDPrimeRoot"
+          }
 
-          foreach ($candidate in $stepDPrimeCandidates) {
-            Write-Host "[STEPE_PRE] dprime_root_candidate=$candidate"
-            Add-Content $rp "[STEPE_PRE] dprime_root_candidate=$candidate"
-            if (Test-Path $candidate) {
-              $csvCount = @(Get-ChildItem -Path $candidate -Filter '*.csv' -File -ErrorAction SilentlyContinue).Count
-              if ($csvCount -gt 0) {
-                $selectedDPrimeRoot = $candidate
-                $selectedDPrimeCsvCount = $csvCount
-                break
-              }
-            }
+          $stepDPrimeCandidates = @($canonicalDPrimeRoot)
+          $selectedDPrimeRoot = $canonicalDPrimeRoot
+          $selectedDPrimeCsvCount = 0
+          Write-Host "[STEPE_PRE] dprime_root_candidate=$canonicalDPrimeRoot"
+          Add-Content $rp "[STEPE_PRE] dprime_root_candidate=$canonicalDPrimeRoot"
+          if (Test-Path $canonicalDPrimeRoot) {
+            $selectedDPrimeCsvCount = @(Get-ChildItem -Path $canonicalDPrimeRoot -Filter '*.csv' -File -ErrorAction SilentlyContinue).Count
           }
 
           Write-Host "[STEPE_PRE] dprime_root_selected=$selectedDPrimeRoot"
@@ -2868,7 +2873,7 @@ jobs:
           $specs = @(
             @{ Label = 'StepA'; RelativeGlob = 'stepA/<mode>/**/*.csv'; Base = 'stepA'; Patterns = @('*.csv') },
             @{ Label = 'StepB'; RelativeGlob = 'stepB/<mode>/**/*.csv'; Base = 'stepB'; Patterns = @('*.csv') },
-            @{ Label = 'StepDPrime'; RelativeGlob = 'stepD_prime/<mode>/**/*.csv'; Base = 'stepD_prime'; Patterns = @('*.csv') },
+            @{ Label = 'StepDPrime'; RelativeGlob = 'stepDprime/<mode>/**/*.csv'; Base = 'stepDprime'; Patterns = @('*.csv') },
             @{ Label = 'StepE'; RelativeGlob = 'stepE/<mode>/**/stepE_daily_log_*.csv'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv') },
             @{ Label = 'StepF'; RelativeGlob = 'stepF/<mode>/**/stepF_*.* (csv/json)'; Base = 'stepF'; Patterns = @('stepF_*.csv','stepF_*.json') }
           )
@@ -6176,7 +6181,7 @@ jobs:
           $specs = @(
             @{ Label = 'StepA'; RelativeGlob = 'stepA/<mode>/**/*.csv'; Base = 'stepA'; Patterns = @('*.csv') },
             @{ Label = 'StepB'; RelativeGlob = 'stepB/<mode>/**/*.csv'; Base = 'stepB'; Patterns = @('*.csv') },
-            @{ Label = 'StepDPrime'; RelativeGlob = 'stepD_prime/<mode>/**/*.csv'; Base = 'stepD_prime'; Patterns = @('*.csv') },
+            @{ Label = 'StepDPrime'; RelativeGlob = 'stepDprime/<mode>/**/*.csv'; Base = 'stepDprime'; Patterns = @('*.csv') },
             @{ Label = 'StepE'; RelativeGlob = 'stepE/<mode>/**/stepE_daily_log_*.csv'; Base = 'stepE'; Patterns = @('stepE_daily_log_*.csv') },
             @{ Label = 'StepF'; RelativeGlob = 'stepF/<mode>/**/stepF_*.* (csv/json)'; Base = 'stepF'; Patterns = @('stepF_*.csv','stepF_*.json') }
           )

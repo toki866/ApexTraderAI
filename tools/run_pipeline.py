@@ -1966,7 +1966,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     results['agents'] = enabled_agents
     # Optional: configure StepE to use StepD' transformer embeddings (compression-as-learning).
     # This lets StepE consume embeddings from:
-    #   <output_root>/stepD_prime/<mode>/embeddings/stepDprime_{source}_h{HH}_{SYMBOL}_embeddings.csv
+    #   <output_root>/stepDprime/<mode>/embeddings/stepDprime_{source}_h{HH}_{SYMBOL}_embeddings.csv
     # rather than relying on StepD envelopes as sequential features.
     stepe_use_dprime = bool(getattr(args, "stepE_use_stepd_prime", False) or getattr(args, "stepE_dprime_sources", None) or getattr(args, "stepE_dprime_horizons", None))
     if stepe_use_dprime:

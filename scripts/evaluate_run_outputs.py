@@ -488,7 +488,7 @@ def _generate_plots(output_root: str, mode: str, symbol: str, report: dict[str, 
 
 
 def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
-    base = os.path.join(output_root, "stepD_prime", mode)
+    base = os.path.join(output_root, "stepDprime", mode)
     state_patterns = [
         os.path.join(base, f"stepDprime_state_*_{symbol}_train.csv"),
         os.path.join(base, f"stepDprime_state_*_{symbol}_test.csv"),
@@ -821,7 +821,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- symbol: `{report.get('symbol')}`",
         f"- overall_status: **{report.get('overall_status')}**",
         "",
-        "## D' (stepD_prime) artifacts",
+        "## D' (stepDprime) artifacts",
     ]
     dprime = report.get("dprime", {})
     ddet = dprime.get("details", {})

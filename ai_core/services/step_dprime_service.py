@@ -219,10 +219,8 @@ class StepDPrimeService:
         stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
         stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
         stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
-        legacy_dir = Path(cfg.legacy_stepDprime_root) if cfg.legacy_stepDprime_root else out_root / "stepD_prime" / mode
-        emb_dir = legacy_dir / "embeddings"
+        emb_dir = stepd_dir / "embeddings"
         stepd_dir.mkdir(parents=True, exist_ok=True)
-        legacy_dir.mkdir(parents=True, exist_ok=True)
         emb_dir.mkdir(parents=True, exist_ok=True)
 
         with timing.stage("stepDPrime.load_inputs"):
@@ -354,11 +352,6 @@ class StepDPrimeService:
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
                         {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
                     ]).to_csv(s_path, index=False)
-
-                    lp_tr = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_train.csv"
-                    lp_te = legacy_dir / f"stepDprime_state_{profile}_{cfg.symbol}_test.csv"
-                    df_tr.to_csv(lp_tr, index=False)
-                    df_te.to_csv(lp_te, index=False)
 
                     emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
 
