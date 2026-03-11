@@ -508,9 +508,19 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
 
 
 def check_stepe_agent_artifact(agent: str, output_root: Path, symbol: str, mode: str) -> bool:
-    """Return True if the StepE daily_log artifact for *agent* exists."""
-    p = Path(output_root) / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
-    return p.exists()
+    """Return True if required StepE artifacts for *agent* exist.
+
+    Required minimum set:
+    - stepE_daily_log_<agent>_<SYMBOL>.csv
+    - stepE_summary_<agent>_<SYMBOL>.json
+    - model artifact: .pt or _ppo.zip
+    """
+    base = Path(output_root) / "stepE" / mode
+    daily = base / f"stepE_daily_log_{agent}_{symbol}.csv"
+    summary = base / f"stepE_summary_{agent}_{symbol}.json"
+    model_pt = base / "models" / f"stepE_{agent}_{symbol}.pt"
+    model_zip = base / "models" / f"stepE_{agent}_{symbol}_ppo.zip"
+    return daily.exists() and summary.exists() and (model_pt.exists() or model_zip.exists())
 
 
 # ---------------------------------------------------------------------------
