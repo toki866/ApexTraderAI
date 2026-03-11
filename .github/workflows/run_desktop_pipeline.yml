@@ -952,8 +952,9 @@ jobs:
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $wslReqRc
           }
 
-          $wslPywtCheckCmd = "source ~/.bashrc >/dev/null 2>&1; cd '$wslRepoRoot' && '$env:WSL_PYTHON' -c 'import pywt; print(\"pywt_available=1\", pywt.__version__)'"
-          $wslPywtCheckBegin = "[PREPARE_ENV] wsl_pywt_check begin"
+          $pywtCheckPy = 'import pywt; print("pywt_available=1", pywt.__version__)'
+          $wslPywtCheckCmd = "source ~/.bashrc >/dev/null 2>&1; cd '$wslRepoRoot' && '$env:WSL_PYTHON' -c '$pywtCheckPy'"
+          $wslPywtCheckBegin = "[PREPARE_ENV] wsl_pywt_check begin cmd=$wslPywtCheckCmd"
           Add-Content $rp $wslPywtCheckBegin; Write-Host $wslPywtCheckBegin
           wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPywtCheckCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $wslPywtCheckRc = $LASTEXITCODE
