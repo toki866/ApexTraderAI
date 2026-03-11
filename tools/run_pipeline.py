@@ -2430,50 +2430,67 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     continue
                 stage_name = "stepE.run" if step == "E" else ("stepF.run" if step == "F" else f"step{step}.run")
 
-                # --- StepE: per-agent reuse ---
+                # --- StepE: per-agent reuse/resume ---
                 if step == "E" and reuse_output and _run_manifest is not None and not force_rebuild:
                     try:
                         from tools.run_manifest import check_stepe_agent_artifact as _check_agent_art  # noqa: F811
+
                         _raw_e_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
-                        _all_agents: List[str]
-                        if _raw_e_cfgs is not None:
-                            _cfg_list_e = list(_raw_e_cfgs) if isinstance(_raw_e_cfgs, (list, tuple)) else [_raw_e_cfgs]
-                            _all_agents = [getattr(c, "agent", "") for c in _cfg_list_e if getattr(c, "agent", "")]
+                        _cfg_list_e = list(_raw_e_cfgs) if isinstance(_raw_e_cfgs, (list, tuple)) else ([_raw_e_cfgs] if _raw_e_cfgs is not None else [])
+                        _cfg_by_agent = {
+                            getattr(c, "agent", ""): c
+                            for c in _cfg_list_e
+                            if getattr(c, "agent", "")
+                        }
+
+                        if args.stepe_agents:
+                            _all_agents = [a.strip() for a in str(args.stepe_agents).split(",") if a.strip()]
                         else:
                             _all_agents = list(_OFFICIAL_STEPE_AGENTS)
 
                         _run_manifest.ensure_stepe_agents(_all_agents)
 
-                        # Per-agent: reuse if manifest complete AND artifact exists
-                        _done_agents = [
-                            a for a in _all_agents
-                            if _run_manifest.can_reuse_stepe_agent(a)
-                            and _check_agent_art(a, resolved_output_root, symbol, resolved_mode)
-                        ]
-                        _pending_agents = [a for a in _all_agents if a not in _done_agents]
+                        _reusable_agents: List[str] = []
+                        for _agent in _all_agents:
+                            _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
+                            _artifact_ok = _check_agent_art(_agent, resolved_output_root, symbol, resolved_mode)
+                            if _manifest_ok and _artifact_ok:
+                                _reusable_agents.append(_agent)
 
-                        if _done_agents:
-                            for a in _done_agents:
-                                _run_manifest.mark_stepe_agent(a, "reuse")
-                                _run_manifest.mark_stepe_agent_elapsed(a, 0.0)
-                            print(f"[StepE] status=partial_reuse reused={','.join(_done_agents)}")
+                        _pending_agents = [a for a in _all_agents if a not in _reusable_agents]
+
+                        print(f"[STEPE_RESUME] all_agents={len(_all_agents)}")
+                        print(f"[STEPE_RESUME] reusable_agents={len(_reusable_agents)}")
+                        print(f"[STEPE_RESUME] pending_agents={len(_pending_agents)}")
+                        print(f"[STEPE_RESUME] reuse_agent_list={','.join(_reusable_agents)}")
+                        print(f"[STEPE_RESUME] run_agent_list={','.join(_pending_agents)}")
+
+                        for _agent in _reusable_agents:
+                            _run_manifest.mark_stepe_agent(_agent, "reuse")
+                            _run_manifest.mark_stepe_agent_elapsed(_agent, 0.0)
+                            print(f"[STEPE_AGENT] agent={_agent} action=reuse")
+
                         if not _pending_agents:
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                             _mark_step("E", "reuse")
                             _run_manifest.mark_step_elapsed("E", 0.0)
+                            _run_manifest.mark_step_audit("E", "PASS")
                             _emit_step_status("E", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
-                            results["stepE_result"] = {"reused": True, "agents": _done_agents}
+                            results["stepE_result"] = {"reused": True, "agents": _reusable_agents}
                             continue
 
-                        # Filter app_config.stepE to pending agents only
-                        if _raw_e_cfgs is not None:
-                            _cfg_list_e2 = list(_raw_e_cfgs) if isinstance(_raw_e_cfgs, (list, tuple)) else [_raw_e_cfgs]
-                            _pending_cfgs = [c for c in _cfg_list_e2 if getattr(c, "agent", "") in _pending_agents]
-                            if isinstance(app_config, dict):
-                                app_config["stepE"] = _pending_cfgs
-                            else:
-                                setattr(app_config, "stepE", _pending_cfgs)
-                        print(f"[StepE] status=partial_run pending={','.join(_pending_agents)}")
+                        _pending_cfgs = [
+                            _cfg_by_agent[a] for a in _pending_agents if a in _cfg_by_agent
+                        ]
+                        if not _pending_cfgs:
+                            raise RuntimeError(f"StepE pending agent config not found: {','.join(_pending_agents)}")
+                        if isinstance(app_config, dict):
+                            app_config["stepE"] = _pending_cfgs
+                        else:
+                            setattr(app_config, "stepE", _pending_cfgs)
+
+                        for _agent in _pending_agents:
+                            print(f"[STEPE_AGENT] agent={_agent} action=run")
                         _mark_step("E", "running")
                         _t0_e = time.perf_counter()
                         _t0_e_wall = time.time()
@@ -2486,42 +2503,53 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if isinstance(step_result, dict) and step_result.get("skipped"):
                             reason = step_result.get("reason", "unknown")
                             raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
-                        # Mark newly completed agents + immediate per-agent audit
+
                         _audit_root_e = Path(resolved_output_root) / "audit" / resolved_mode
-                        for _a in _pending_agents:
-                            if _check_agent_art(_a, resolved_output_root, symbol, resolved_mode):
-                                _run_manifest.mark_stepe_agent(_a, "complete")
-                                try:
-                                    _ag_audit = audit_stepe_agent_now(
-                                        Path(resolved_output_root), resolved_mode, symbol, _a, _audit_root_e
-                                    )
-                                    _ag_status = _ag_audit.get("status", "FAIL")
-                                except Exception as _ae:
-                                    _ag_status = "FAIL"
-                                    print(f"[StepE] WARN audit agent={_a}: {_ae}", file=sys.stderr)
-                                _run_manifest.mark_stepe_agent_audit(_a, _ag_status)
-                                print(f"[StepE] agent={_a} audit={_ag_status}")
-                        # Mark E complete only if all agents done
-                        _still_missing = [a for a in _all_agents if not _check_agent_art(a, resolved_output_root, symbol, resolved_mode)]
+                        _agent_failures: List[str] = []
+                        for _agent in _pending_agents:
+                            if not _check_agent_art(_agent, resolved_output_root, symbol, resolved_mode):
+                                _agent_failures.append(_agent)
+                                print(f"[STEPE_AGENT] agent={_agent} action=fail reason=artifact_missing")
+                                continue
+                            _run_manifest.mark_stepe_agent(_agent, "complete")
+                            _run_manifest.mark_stepe_agent_elapsed(_agent, _elapsed_e)
+                            try:
+                                _ag_audit = audit_stepe_agent_now(
+                                    Path(resolved_output_root), resolved_mode, symbol, _agent, _audit_root_e
+                                )
+                                _ag_status = _ag_audit.get("status", "FAIL")
+                            except Exception as _ae:
+                                _ag_status = "FAIL"
+                                print(f"[StepE] WARN audit agent={_agent}: {_ae}", file=sys.stderr)
+                            _run_manifest.mark_stepe_agent_audit(_agent, _ag_status)
+                            if _ag_status != "PASS":
+                                _agent_failures.append(_agent)
+                                print(f"[STEPE_AGENT] agent={_agent} action=fail reason=audit_{str(_ag_status).lower()}")
+                            else:
+                                print(f"[STEPE_AGENT] agent={_agent} action=complete elapsed_sec={round(_elapsed_e, 3)}")
+
+                        _still_pending = [a for a in _all_agents if not _check_agent_art(a, resolved_output_root, symbol, resolved_mode)]
                         _run_manifest.mark_step_elapsed("E", _elapsed_e)
-                        _all_agent_audits_e = [_run_manifest.stepe_agent_audit_status(a) for a in _all_agents]
-                        _step_e_audit_status = "PASS" if _all_agent_audits_e and all(s == "PASS" for s in _all_agent_audits_e) else "FAIL"
+
                         _miss_e = []
                         for _ea in _all_agents:
                             _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ea))
+                        _step_e_audit_status = "PASS" if (not _miss_e and not _agent_failures and not _still_pending) else "FAIL"
                         if _miss_e:
-                            _step_e_audit_status = "FAIL"
                             print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
                         _run_manifest.mark_step_audit("E", _step_e_audit_status)
-                        if (not _still_missing) and (_step_e_audit_status == "PASS"):
+
+                        if not _still_pending and _step_e_audit_status == "PASS":
                             _mark_step("E", "complete")
                             _emit_step_status("E", status="run", started_at=_t0_e_wall, ended_at=time.time(), validated=True)
+                            print(f"[StepE] done")
                         else:
-                            _mark_step("E", "failed")
-                            _emit_step_status("E", status="fail", started_at=_t0_e_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
-                            raise RuntimeError("StepE contract/audit failed")
-                        print(f"[StepE] done")
+                            _mark_step("E", "pending")
+                            _emit_step_status("E", status="fail", started_at=_t0_e_wall, ended_at=time.time(), validated=False, detail="partial_or_contract_or_audit")
+                            raise RuntimeError("StepE partial completion; rerun will resume pending agents")
                         continue
+                    except RuntimeError:
+                        raise
                     except Exception as _reuse_e:
                         print(f"[StepE] reuse logic error ({type(_reuse_e).__name__}: {_reuse_e}); running step normally", file=sys.stderr)
 

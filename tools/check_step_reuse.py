@@ -13,6 +13,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.run_manifest import (
+    _OFFICIAL_STEPE_AGENTS,
+    check_stepe_agent_artifact,
     resolve_canonical_output_root,
     load_split_summary,
     required_outputs_for_step,
@@ -21,7 +23,7 @@ from tools.run_manifest import (
 )
 
 
-def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_start: str, train_years: int, test_months: int) -> Dict[str, object]:
+def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_start: str, train_years: int, test_months: int, stepe_agents: str = "") -> Dict[str, object]:
     step = step.upper()
     step_dir_name = 'stepDprime' if step == 'DPRIME' else f'step{step}'
     candidate_step_dir = canonical_root / step_dir_name / mode
@@ -72,6 +74,28 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
             "split_candidate": split_expect,
         }
 
+
+    if step == "E":
+        target_agents = [a.strip() for a in str(stepe_agents or "").split(",") if a.strip()]
+        if not target_agents:
+            target_agents = list(_OFFICIAL_STEPE_AGENTS)
+        missing_agents = [
+            a for a in target_agents
+            if not check_stepe_agent_artifact(a, canonical_root, symbol, mode)
+        ]
+        if missing_agents:
+            print(f"[reuse] step=E partial_agents_missing={','.join(missing_agents)}", file=sys.stderr)
+            return {
+                "status":"run",
+                "reason":"partial_agent_outputs",
+                "final":"execute",
+                "symbol":"pass",
+                "mode":"pass",
+                "split":"pass",
+                "required_outputs":"fail",
+                "validation":"fail",
+            }
+
     print(f"[reuse] step={step} canonical_output_root={canonical_root}", file=sys.stderr)
     for rel in required_outputs_for_step(step, symbol, mode):
         probe = canonical_root / rel
@@ -107,7 +131,7 @@ def main() -> int:
     args = ap.parse_args()
 
     canonical_root = resolve_canonical_output_root(args.mode, args.symbol, args.test_start)
-    d = _decision(args.step, canonical_root, args.symbol, args.mode, args.test_start, args.train_years, args.test_months)
+    d = _decision(args.step, canonical_root, args.symbol, args.mode, args.test_start, args.train_years, args.test_months, args.stepe_agents)
 
     print(
         f"[reuse] step={args.step.upper()} symbol={d['symbol']} mode={d['mode']} split={d['split']} required_outputs={d['required_outputs']} validation={d['validation']}",
