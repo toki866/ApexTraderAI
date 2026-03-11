@@ -378,7 +378,7 @@ class StepFService:
         return phase2
 
     def _load_z_pred(self, out_root: Path, mode: str, symbol: str, profile: str) -> pd.DataFrame:
-        p = out_root / "stepD_prime" / mode / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
+        p = out_root / "stepDprime" / mode / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
         if not p.exists():
             return pd.DataFrame({"Date": []})
         df = pd.read_csv(p)

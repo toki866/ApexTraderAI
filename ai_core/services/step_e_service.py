@@ -867,10 +867,6 @@ class StepEService:
         p_tr = out_root / "stepDprime" / mode / f"stepDprime_state_train_{profile}_{symbol}.csv"
         p_te = out_root / "stepDprime" / mode / f"stepDprime_state_test_{profile}_{symbol}.csv"
         if not (p_tr.exists() and p_te.exists()):
-            legacy_base = out_root / "stepD_prime" / mode
-            p_tr = legacy_base / f"stepDprime_state_{profile}_{symbol}_train.csv"
-            p_te = legacy_base / f"stepDprime_state_{profile}_{symbol}_test.csv"
-        if not (p_tr.exists() and p_te.exists()):
             raise FileNotFoundError(f"Missing StepD' state CSVs: {p_tr} / {p_te}")
 
         df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
@@ -915,11 +911,7 @@ class StepEService:
         Load embeddings with profile-first resolution. If profile is missing, fallback to
         source/horizon style for backward compatibility.
         """
-        base = out_root / "stepD_prime" / mode / "embeddings"
-        if not base.exists():
-            alt_base = out_root / "stepDprime" / mode / "embeddings"
-            if alt_base.exists():
-                base = alt_base
+        base = out_root / "stepDprime" / mode / "embeddings"
 
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         merged: Optional[pd.DataFrame] = None
