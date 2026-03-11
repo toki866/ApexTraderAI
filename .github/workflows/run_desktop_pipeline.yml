@@ -1344,7 +1344,7 @@ jobs:
 
       - name: StepB
         id: step_b
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_a.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1354,6 +1354,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Write-Host "[STEP_STATUS] upstream_step_a_outcome=${{ steps.step_a.outcome }}"
+          Add-Content $rp "[STEP_STATUS] upstream_step_a_outcome=${{ steps.step_a.outcome }}"
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('B' -notin $stepList) { Write-Host "[STEP_STATUS] step=B status=skip reason=not_requested"; exit 0 }
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
@@ -1550,6 +1552,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Write-Host "[STEP_STATUS] upstream_step_b_outcome=${{ steps.step_b.outcome }}"
+          Add-Content $rp "[STEP_STATUS] upstream_step_b_outcome=${{ steps.step_b.outcome }}"
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('C' -notin $stepList) { Write-Host "[STEP_STATUS] step=C status=skip reason=not_requested"; exit 0 }
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
@@ -1623,7 +1627,7 @@ jobs:
 
       - name: StepDPrime
         id: step_dprime
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_c.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1633,6 +1637,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Write-Host "[STEP_STATUS] upstream_step_c_outcome=${{ steps.step_c.outcome }}"
+          Add-Content $rp "[STEP_STATUS] upstream_step_c_outcome=${{ steps.step_c.outcome }}"
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('DPRIME' -notin $stepList) { Write-Host "[STEP_STATUS] step=DPRIME status=skip reason=not_requested"; exit 0 }
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
@@ -1706,7 +1712,7 @@ jobs:
 
       - name: StepE
         id: step_e
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_dprime.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1716,6 +1722,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Write-Host "[STEP_STATUS] upstream_step_dprime_outcome=${{ steps.step_dprime.outcome }}"
+          Add-Content $rp "[STEP_STATUS] upstream_step_dprime_outcome=${{ steps.step_dprime.outcome }}"
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           $skipStepE = '${{ steps.compute_steps.outputs.effective_skip_stepe }}' -eq '1'
           if ('E' -notin $stepList -or $skipStepE) { Write-Host "[STEP_STATUS] step=E status=skip reason=not_requested_or_skip_flag"; exit 0 }
@@ -1827,7 +1835,7 @@ jobs:
 
       - name: StepF
         id: step_f
-        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_e.outcome == 'success' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         env:
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
@@ -1837,6 +1845,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Write-Host "[STEP_STATUS] upstream_step_e_outcome=${{ steps.step_e.outcome }}"
+          Add-Content $rp "[STEP_STATUS] upstream_step_e_outcome=${{ steps.step_e.outcome }}"
           $stepList = ('${{ steps.compute_steps.outputs.computed_steps }}' -split ',') | ForEach-Object { $_.Trim() }
           if ('F' -notin $stepList) { Write-Host "[STEP_STATUS] step=F status=skip reason=not_requested"; exit 0 }
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { $env:EFFECTIVE_WIN_OUTPUT = $env:WIN_OUTPUT_DIR }
