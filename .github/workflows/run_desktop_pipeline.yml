@@ -952,15 +952,10 @@ jobs:
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $wslReqRc
           }
 
-          $wslPywtCheckCmd = @"
-          cd '$wslRepoRoot' && '$env:WSL_PYTHON' - <<'PY'
-          import pywt
-          print('pywt_available=1', pywt.__version__)
-          PY
-          "@
+          $wslPywtCheckCmd = "source ~/.bashrc >/dev/null 2>&1; cd '$wslRepoRoot' && '$env:WSL_PYTHON' -c 'import pywt; print(\"pywt_available=1\", pywt.__version__)'"
           $wslPywtCheckBegin = "[PREPARE_ENV] wsl_pywt_check begin"
           Add-Content $rp $wslPywtCheckBegin; Write-Host $wslPywtCheckBegin
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $wslPywtCheckCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPywtCheckCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $wslPywtCheckRc = $LASTEXITCODE
           Add-Content $rp "[PREPARE_ENV] wsl_pywt_check rc=$wslPywtCheckRc"; Write-Host "[PREPARE_ENV] wsl_pywt_check rc=$wslPywtCheckRc"
           if ($wslPywtCheckRc -ne 0) {
@@ -1409,6 +1404,46 @@ jobs:
             Add-Content $rp "[NG] step_b invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $dataDirWsl = "$env:WSL_DATA_DIR"
+          $priceSoxlWsl = "$dataDirWsl/prices_SOXL.csv"
+          $priceSoxsWsl = "$dataDirWsl/prices_SOXS.csv"
+          $autoPrepareData = 0
+          Write-Host "[DATA_PREP] data_dir=$dataDirWsl"
+          Add-Content $rp "[DATA_PREP] data_dir=$dataDirWsl"
+          $soxlExistsBefore = ((wsl.exe -d $env:WSL_DISTRO -- bash -lc "[ -f '$priceSoxlWsl' ]") -and ($LASTEXITCODE -eq 0))
+          $soxsExistsBefore = ((wsl.exe -d $env:WSL_DISTRO -- bash -lc "[ -f '$priceSoxsWsl' ]") -and ($LASTEXITCODE -eq 0))
+          Write-Host "[DATA_PREP] prices_SOXL exists=$soxlExistsBefore"
+          Write-Host "[DATA_PREP] prices_SOXS exists=$soxsExistsBefore"
+          Add-Content $rp "[DATA_PREP] prices_SOXL exists=$soxlExistsBefore"
+          Add-Content $rp "[DATA_PREP] prices_SOXS exists=$soxsExistsBefore"
+
+          $prepDataStepBRc = 0
+          if (-not ($soxlExistsBefore -and $soxsExistsBefore)) {
+            $prepDataStepBCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols SOXL,SOXS --start '$env:DATA_START' --end '$env:DATA_END' --force --data-dir '$dataDirWsl'"
+            wsl.exe -d $env:WSL_DISTRO -- bash -lc $prepDataStepBCmd 2>&1 | Write-Host
+            $prepDataStepBRc = $LASTEXITCODE
+          }
+          Write-Host "[DATA_PREP] auto_prepare_data=$autoPrepareData"
+          Write-Host "[DATA_PREP] prepare_data rc=$prepDataStepBRc"
+          Add-Content $rp "[DATA_PREP] auto_prepare_data=$autoPrepareData"
+          Add-Content $rp "[DATA_PREP] prepare_data rc=$prepDataStepBRc"
+          if ($prepDataStepBRc -ne 0) {
+            Add-Content $rp "[NG] step_b prepare_data failed rc=$prepDataStepBRc"
+            Write-Error "StepB pre data prepare failed rc=$prepDataStepBRc"; exit $prepDataStepBRc
+          }
+
+          $soxlExistsAfter = ((wsl.exe -d $env:WSL_DISTRO -- bash -lc "[ -f '$priceSoxlWsl' ]") -and ($LASTEXITCODE -eq 0))
+          $soxsExistsAfter = ((wsl.exe -d $env:WSL_DISTRO -- bash -lc "[ -f '$priceSoxsWsl' ]") -and ($LASTEXITCODE -eq 0))
+          Write-Host "[DATA_PREP] prices_SOXL exists=$soxlExistsAfter"
+          Write-Host "[DATA_PREP] prices_SOXS exists=$soxsExistsAfter"
+          Add-Content $rp "[DATA_PREP] prices_SOXL exists=$soxlExistsAfter"
+          Add-Content $rp "[DATA_PREP] prices_SOXS exists=$soxsExistsAfter"
+          if (-not ($soxlExistsAfter -and $soxsExistsAfter)) {
+            Add-Content $rp "[NG] step_b prices_csv_missing_after_prepare data_dir=$dataDirWsl"
+            Write-Error "StepB pre-check failed: required prices CSVs missing in $dataDirWsl"; exit 1
+          }
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
