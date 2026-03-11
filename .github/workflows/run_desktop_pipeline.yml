@@ -953,11 +953,11 @@ jobs:
           }
 
           $wslPywtCheckCmd = @"
-cd '$wslRepoRoot' && '$env:WSL_PYTHON' - <<'PY'
-import pywt
-print('pywt_available=1', pywt.__version__)
-PY
-"@
+          cd '$wslRepoRoot' && '$env:WSL_PYTHON' - <<'PY'
+          import pywt
+          print('pywt_available=1', pywt.__version__)
+          PY
+          "@
           $wslPywtCheckBegin = "[PREPARE_ENV] wsl_pywt_check begin"
           Add-Content $rp $wslPywtCheckBegin; Write-Host $wslPywtCheckBegin
           wsl.exe -d $env:WSL_DISTRO -- bash -c $wslPywtCheckCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
