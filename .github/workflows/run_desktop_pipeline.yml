@@ -1586,6 +1586,30 @@ jobs:
             Add-Content $rp "[NG] step_c invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $stepBRootWin = Join-Path $outRoot ("stepB\\$env:MODE")
+          $stepBRequiredForC = @(
+            ("stepB_pred_time_all_{0}.csv" -f $sym1)
+          )
+
+          Write-Host "[STEPC_PRE] stepB_root=$stepBRootWin"
+          Add-Content $rp "[STEPC_PRE] stepB_root=$stepBRootWin"
+
+          $stepBMissingForC = @()
+          foreach ($name in $stepBRequiredForC) {
+            $p = Join-Path $stepBRootWin $name
+            $exists = Test-Path $p
+            Write-Host ("[STEPC_PRE] required_stepB={0} exists={1}" -f $p, $(if ($exists) { 'pass' } else { 'fail' }))
+            Add-Content $rp ("[STEPC_PRE] required_stepB={0} exists={1}" -f $p, $(if ($exists) { 'pass' } else { 'fail' }))
+            if (-not $exists) { $stepBMissingForC += $p }
+          }
+
+          if ($stepBMissingForC.Count -gt 0) {
+            Add-Content $rp ("[NG] step_c missing_stepB_outputs={0}" -f ($stepBMissingForC -join '; '))
+            Write-Error ("StepC pre-check failed: missing StepB outputs under output_root: {0}" -f ($stepBMissingForC -join '; '))
+            exit 1
+          }
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps C --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
@@ -1645,6 +1669,30 @@ jobs:
             Add-Content $rp "[NG] step_dprime invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $stepBRootWin = Join-Path $outRoot ("stepB\\$env:MODE")
+          $stepBRequiredForDPrime = @(
+            ("stepB_pred_time_all_{0}.csv" -f $sym1)
+          )
+
+          Write-Host "[STEPDPRIME_PRE] stepB_root=$stepBRootWin"
+          Add-Content $rp "[STEPDPRIME_PRE] stepB_root=$stepBRootWin"
+
+          $stepBMissingForDPrime = @()
+          foreach ($name in $stepBRequiredForDPrime) {
+            $p = Join-Path $stepBRootWin $name
+            $exists = Test-Path $p
+            Write-Host ("[STEPDPRIME_PRE] required_stepB={0} exists={1}" -f $p, $(if ($exists) { 'pass' } else { 'fail' }))
+            Add-Content $rp ("[STEPDPRIME_PRE] required_stepB={0} exists={1}" -f $p, $(if ($exists) { 'pass' } else { 'fail' }))
+            if (-not $exists) { $stepBMissingForDPrime += $p }
+          }
+
+          if ($stepBMissingForDPrime.Count -gt 0) {
+            Add-Content $rp ("[NG] step_dprime missing_stepB_outputs={0}" -f ($stepBMissingForDPrime -join '; '))
+            Write-Error ("StepDPrime pre-check failed: missing StepB outputs under output_root: {0}" -f ($stepBMissingForDPrime -join '; '))
+            exit 1
+          }
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps DPRIME --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
@@ -1705,6 +1753,38 @@ jobs:
             Add-Content $rp "[NG] step_e invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $stepDPrimeCandidates = @(
+            (Join-Path $outRoot ("stepDprime\\$env:MODE")),
+            (Join-Path $outRoot ("stepD_prime\\$env:MODE"))
+          )
+          $selectedDPrimeRoot = $null
+          $selectedDPrimeCsvCount = 0
+
+          foreach ($candidate in $stepDPrimeCandidates) {
+            Write-Host "[STEPE_PRE] dprime_root_candidate=$candidate"
+            Add-Content $rp "[STEPE_PRE] dprime_root_candidate=$candidate"
+            if (Test-Path $candidate) {
+              $csvCount = @(Get-ChildItem -Path $candidate -Filter '*.csv' -File -ErrorAction SilentlyContinue).Count
+              if ($csvCount -gt 0) {
+                $selectedDPrimeRoot = $candidate
+                $selectedDPrimeCsvCount = $csvCount
+                break
+              }
+            }
+          }
+
+          Write-Host "[STEPE_PRE] dprime_root_selected=$selectedDPrimeRoot"
+          Write-Host "[STEPE_PRE] dprime_csv_count=$selectedDPrimeCsvCount"
+          Add-Content $rp "[STEPE_PRE] dprime_root_selected=$selectedDPrimeRoot"
+          Add-Content $rp "[STEPE_PRE] dprime_csv_count=$selectedDPrimeCsvCount"
+
+          if ([string]::IsNullOrWhiteSpace($selectedDPrimeRoot) -or $selectedDPrimeCsvCount -lt 1) {
+            Add-Content $rp ("[NG] step_e missing_dprime_outputs={0}" -f ($stepDPrimeCandidates -join '; '))
+            Write-Error ("StepE pre-check failed: no StepDPrime csv outputs found under output_root candidates: {0}" -f ($stepDPrimeCandidates -join '; '))
+            exit 1
+          }
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps E --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
@@ -1793,6 +1873,24 @@ jobs:
             Add-Content $rp "[NG] step_f invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $stepERootWin = Join-Path $outRoot ("stepE\\$env:MODE")
+          $stepEDailyCount = if (Test-Path $stepERootWin) {
+            @(Get-ChildItem -Path $stepERootWin -Filter 'stepE_daily_log_*.csv' -File -ErrorAction SilentlyContinue).Count
+          } else {
+            0
+          }
+          Write-Host "[STEPF_PRE] stepE_root=$stepERootWin"
+          Write-Host "[STEPF_PRE] stepE_daily_log_count=$stepEDailyCount"
+          Add-Content $rp "[STEPF_PRE] stepE_root=$stepERootWin"
+          Add-Content $rp "[STEPF_PRE] stepE_daily_log_count=$stepEDailyCount"
+
+          if ($stepEDailyCount -lt 1) {
+            Add-Content $rp ("[NG] step_f missing_stepE_outputs={0}" -f $stepERootWin)
+            Write-Error ("StepF pre-check failed: no StepE daily logs found under output_root: {0}" -f $stepERootWin)
+            exit 1
+          }
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
