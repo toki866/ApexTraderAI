@@ -940,30 +940,6 @@ jobs:
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipReqRc
           }
 
-          # [E] Ensure WSL runtime env (mamba_cuda) also has PyWavelets
-          $wslReqCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' -m pip install -r requirements.txt"
-          $wslReqBegin = "[PREPARE_ENV] wsl_pip_req begin cmd=$wslReqCmd"
-          Add-Content $rp $wslReqBegin; Write-Host $wslReqBegin
-          wsl.exe -d $env:WSL_DISTRO -- bash -c $wslReqCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          $wslReqRc = $LASTEXITCODE
-          Add-Content $rp "[PREPARE_ENV] wsl_pip_req rc=$wslReqRc"; Write-Host "[PREPARE_ENV] wsl_pip_req rc=$wslReqRc"
-          if ($wslReqRc -ne 0) {
-            $ngMsg = "[NG] prepare_environment wsl_pip_req rc=$wslReqRc"
-            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $wslReqRc
-          }
-
-          $pywtCheckPy = 'import pywt; print("pywt_available=1", pywt.__version__)'
-          $wslPywtCheckCmd = "source ~/.bashrc >/dev/null 2>&1; cd '$wslRepoRoot' && '$env:WSL_PYTHON' -c '$pywtCheckPy'"
-          $wslPywtCheckBegin = "[PREPARE_ENV] wsl_pywt_check begin cmd=$wslPywtCheckCmd"
-          Add-Content $rp $wslPywtCheckBegin; Write-Host $wslPywtCheckBegin
-          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPywtCheckCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          $wslPywtCheckRc = $LASTEXITCODE
-          Add-Content $rp "[PREPARE_ENV] wsl_pywt_check rc=$wslPywtCheckRc"; Write-Host "[PREPARE_ENV] wsl_pywt_check rc=$wslPywtCheckRc"
-          if ($wslPywtCheckRc -ne 0) {
-            $ngMsg = "[NG] prepare_environment wsl_pywt_check rc=$wslPywtCheckRc"
-            Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $wslPywtCheckRc
-          }
-
           # [C][E] prepare_data — try/finally で rc を必ず記録
           $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
           $prepBegin = "[PREPARE_ENV] prepare_data begin prepCmd=$prepCmd"
