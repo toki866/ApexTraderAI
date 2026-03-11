@@ -669,9 +669,15 @@ def _load_prices_dates(
 def _read_split_summary_json(summary_json: Path) -> Dict[str, Any]:
     if not summary_json.exists():
         raise FileNotFoundError(f"missing_split_summary_json={summary_json}")
-    payload = json.loads(summary_json.read_text(encoding="utf-8"))
+    print(f"[SPLIT_SUMMARY] read path={summary_json}")
+    raw_bytes = summary_json.read_bytes()
+    normalized_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
+    raw_text = raw_bytes.decode("utf-8-sig")
+    print(f"[SPLIT_SUMMARY] normalized_bom={'true' if normalized_bom else 'false'}")
+    payload = json.loads(raw_text)
     if not isinstance(payload, dict):
         raise ValueError(f"invalid_split_summary_json={summary_json}")
+    print(f"[SPLIT_SUMMARY] validate=ok path={summary_json}")
     return payload
 
 
@@ -1120,6 +1126,10 @@ def _build_split_payload_from_stepa_summary(
 def _write_split_summary_json_payload(dst: Path, payload: Dict[str, Any], log_prefix: str) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        _read_split_summary_json(dst)
+    except Exception as e:
+        raise RuntimeError(f"[SPLIT_SUMMARY] validate=fail path={dst} reason={type(e).__name__}:{e}") from e
     print(f"[{log_prefix}] split_summary_written={dst}")
 
 
@@ -1168,7 +1178,7 @@ def _check_and_repair_split_summary_before_stepb(
     current: Dict[str, Any] = {}
     if root_split_path.exists():
         try:
-            current = json.loads(root_split_path.read_text(encoding="utf-8"))
+            current = _read_split_summary_json(root_split_path)
         except Exception as e:
             print(f"[SPLIT_CHECK] root_split_summary_read=fail path={root_split_path} reason={type(e).__name__}:{e}")
 
