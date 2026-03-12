@@ -2463,35 +2463,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         }
 
                         if args.stepe_agents:
-                            _all_agents = [a.strip() for a in str(args.stepe_agents).split(",") if a.strip()]
+                            _requested_agents = [a.strip() for a in str(args.stepe_agents).split(",") if a.strip()]
                         else:
-                            _all_agents = list(_OFFICIAL_STEPE_AGENTS)
+                            _requested_agents = list(_OFFICIAL_STEPE_AGENTS)
+                        _all_agents = list(dict.fromkeys(_requested_agents))
 
                         _run_manifest.ensure_stepe_agents(_all_agents)
 
+                        _artifact_complete_agents: List[str] = []
+                        _manifest_complete_agents: List[str] = []
+                        _normalized_reuse_agents: List[str] = []
                         _reusable_agents: List[str] = []
                         for _agent in _all_agents:
+                            _manifest_status = _run_manifest.stepe_agent_status(_agent)
                             _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
                             _artifact_ok = _check_agent_art(_agent, resolved_output_root, symbol, resolved_mode)
+                            print(
+                                f"[STEPE_AGENT] agent={_agent} artifact_complete={'true' if _artifact_ok else 'false'} manifest_status={_manifest_status}"
+                            )
+                            if _artifact_ok:
+                                _artifact_complete_agents.append(_agent)
+                            if _manifest_ok:
+                                _manifest_complete_agents.append(_agent)
+                            if _artifact_ok and not _manifest_ok:
+                                _run_manifest.mark_stepe_agent(_agent, "reuse")
+                                _normalized_reuse_agents.append(_agent)
+                                _manifest_ok = True
                             if _manifest_ok and _artifact_ok:
                                 _reusable_agents.append(_agent)
 
                         _pending_agents = [a for a in _all_agents if a not in _reusable_agents]
 
                         print(f"[STEPE_RESUME] all_agents={len(_all_agents)}")
-                        print(f"[STEPE_RESUME] reusable_agents={len(_reusable_agents)}")
+                        print(f"[STEPE_RESUME] artifact_complete_agents={len(_artifact_complete_agents)}")
+                        print(f"[STEPE_RESUME] manifest_complete_agents={len(_manifest_complete_agents)}")
+                        print(f"[STEPE_RESUME] normalized_reuse_agents={len(_normalized_reuse_agents)}")
                         print(f"[STEPE_RESUME] pending_agents={len(_pending_agents)}")
                         print(f"[STEPE_RESUME] reuse_agent_list={','.join(_reusable_agents)}")
                         print(f"[STEPE_RESUME] run_agent_list={','.join(_pending_agents)}")
 
                         for _agent in _reusable_agents:
                             _run_manifest.mark_stepe_agent(_agent, "reuse")
-                            _run_manifest.mark_stepe_agent_elapsed(_agent, 0.0)
                             print(f"[STEPE_AGENT] agent={_agent} action=reuse")
 
                         if not _pending_agents:
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
-                            _mark_step("E", "reuse")
+                            _mark_step("E", "complete")
                             _run_manifest.mark_step_elapsed("E", 0.0)
                             _run_manifest.mark_step_audit("E", "PASS")
                             _emit_step_status("E", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2547,7 +2564,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             else:
                                 print(f"[STEPE_AGENT] agent={_agent} action=complete elapsed_sec={round(_elapsed_e, 3)}")
 
-                        _still_pending = [a for a in _all_agents if not _check_agent_art(a, resolved_output_root, symbol, resolved_mode)]
+                        _still_pending = [a for a in _all_agents if not (_run_manifest.can_reuse_stepe_agent(a) and _check_agent_art(a, resolved_output_root, symbol, resolved_mode))]
                         _run_manifest.mark_step_elapsed("E", _elapsed_e)
 
                         _miss_e = []

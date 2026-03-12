@@ -79,6 +79,7 @@ def _decision(step: str, canonical_root: Path, symbol: str, mode: str, test_star
         target_agents = [a.strip() for a in str(stepe_agents or "").split(",") if a.strip()]
         if not target_agents:
             target_agents = list(_OFFICIAL_STEPE_AGENTS)
+        target_agents = list(dict.fromkeys(target_agents))
         missing_agents = [
             a for a in target_agents
             if not check_stepe_agent_artifact(a, canonical_root, symbol, mode)
