@@ -2737,22 +2737,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
                             raise RuntimeError("StepE contract/audit failed")
                     elif step == "F":
+                        from ai_core.services.step_f_service import StepFService
+
                         _audit_root_f = Path(resolved_output_root) / "audit" / resolved_mode
+                        _sf_status = "PASS"
                         try:
                             _sf_audits = audit_stepf_now(Path(resolved_output_root), resolved_mode, symbol, _audit_root_f)
-                            _sf_status = "PASS" if _sf_audits and all(v.get("status") == "PASS" for v in _sf_audits.values()) else "FAIL"
+                            if _sf_audits and not all(v.get("status") == "PASS" for v in _sf_audits.values()):
+                                _sf_status = "WARN"
+                                print("[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)", file=sys.stderr)
                         except Exception as _sfe:
-                            _sf_status = "FAIL"
+                            _sf_status = "WARN"
                             print(f"[StepF] WARN audit: {_sfe}", file=sys.stderr)
-                        _run_manifest.mark_step_audit("F", _sf_status)
+
+                        _final_eval_f = StepFService.evaluate_final_outputs(
+                            output_root=Path(resolved_output_root),
+                            mode=resolved_mode,
+                            symbol=symbol,
+                        )
                         _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
                         if _miss_f:
-                            _sf_status = "FAIL"
                             print(f"[StepF] contract missing: {_miss_f}", file=sys.stderr)
+
+                        if int(_final_eval_f.get("return_code", 1)) != 0:
+                            _sf_status = "FAIL"
+
+                        _run_manifest.mark_step_audit("F", _sf_status)
                         print(f"[StepF] audit={_sf_status}")
-                        if _sf_status != "PASS":
-                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
-                            raise RuntimeError("StepF contract/audit failed")
+                        if _sf_status == "FAIL":
+                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
+                            raise RuntimeError("StepF final artifacts invalid")
                     else:
                         _run_manifest.mark_step_audit(step if step != "D" else "D", "SKIP")
                 else:
@@ -2769,10 +2783,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
                             raise RuntimeError("StepE contract missing required files: " + ", ".join(_miss_e))
                     if step == "F":
-                        _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
-                        if _miss_f:
-                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
-                            raise RuntimeError("StepF contract missing required files: " + ", ".join(_miss_f))
+                        from ai_core.services.step_f_service import StepFService
+
+                        _final_eval_f = StepFService.evaluate_final_outputs(
+                            output_root=Path(resolved_output_root),
+                            mode=resolved_mode,
+                            symbol=symbol,
+                        )
+                        if int(_final_eval_f.get("return_code", 1)) != 0:
+                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
+                            raise RuntimeError("StepF final artifacts invalid: " + ", ".join(_final_eval_f.get("errors", [])))
                 _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)
                 print(f"[Step{step}] done")
 

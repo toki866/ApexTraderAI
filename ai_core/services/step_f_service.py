@@ -94,6 +94,80 @@ class StepFService:
         t = getattr(self.app_config, "_timing_logger", None)
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
+    @staticmethod
+    def evaluate_final_outputs(output_root: Path, mode: str, symbol: str) -> Dict[str, object]:
+        """Evaluate StepF final artifact health at end-of-step.
+
+        Fatal only when required artifact/shape is broken.
+        Non-fatal notes (e.g. split missing) are warnings.
+        """
+        base = Path(output_root) / "stepF" / mode
+        equity_path = base / f"stepF_equity_marl_{symbol}.csv"
+        daily_log_router_path = base / f"stepF_daily_log_router_{symbol}.csv"
+        daily_log_marl_path = base / f"stepF_daily_log_marl_{symbol}.csv"
+        summary_path = base / f"stepF_summary_router_{symbol}.json"
+
+        warnings: List[str] = []
+        errors: List[str] = []
+        row_count = 0
+
+        print(f"[STEPF_FINAL] equity_path={equity_path} exists={equity_path.exists()}")
+        print(f"[STEPF_FINAL] daily_log_router_path={daily_log_router_path} exists={daily_log_router_path.exists()}")
+        print(f"[STEPF_FINAL] daily_log_marl_path={daily_log_marl_path} exists={daily_log_marl_path.exists()}")
+        print(f"[STEPF_FINAL] summary_path={summary_path} exists={summary_path.exists()}")
+
+        if not equity_path.exists():
+            errors.append("missing_equity_csv")
+        else:
+            try:
+                eq_df = pd.read_csv(equity_path)
+                row_count = int(len(eq_df))
+                if row_count <= 0:
+                    errors.append("equity_csv_empty")
+                required_cols = ["Date", "ratio", "ret", "equity"]
+                missing_cols = [c for c in required_cols if c not in eq_df.columns]
+                if missing_cols:
+                    errors.append(f"equity_csv_missing_cols:{','.join(missing_cols)}")
+            except Exception as exc:
+                errors.append(f"equity_csv_unreadable:{type(exc).__name__}")
+
+        if not daily_log_router_path.exists():
+            warnings.append("missing_daily_log_router")
+        if not daily_log_marl_path.exists():
+            warnings.append("missing_daily_log_marl")
+        if not summary_path.exists():
+            warnings.append("missing_summary_router")
+        else:
+            try:
+                summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+                note = str(summary_payload.get("note", "")).strip()
+                if note and "split missing" in note.lower():
+                    warnings.append(f"split_warning:{note}")
+            except Exception as exc:
+                warnings.append(f"summary_unreadable:{type(exc).__name__}")
+
+        final_status = "fail" if errors else ("warn" if warnings else "complete")
+        return_code = 1 if errors else 0
+        print(f"[STEPF_FINAL] row_count={row_count}")
+        print(f"[STEPF_FINAL] final_status={final_status}")
+        print(f"[STEPF_FINAL] return_code={return_code}")
+        if warnings:
+            print(f"[STEPF_FINAL] warnings={';'.join(warnings)}")
+        if errors:
+            print(f"[STEPF_FINAL] errors={';'.join(errors)}")
+
+        return {
+            "final_status": final_status,
+            "return_code": return_code,
+            "warnings": warnings,
+            "errors": errors,
+            "row_count": row_count,
+            "equity_path": str(equity_path),
+            "daily_log_router_path": str(daily_log_router_path),
+            "daily_log_marl_path": str(daily_log_marl_path),
+            "summary_path": str(summary_path),
+        }
+
     def run(self, date_range, symbol: str, mode: Optional[str] = None) -> StepFResult:
         cfg: StepFRouterConfig = getattr(self.app_config, "stepF", None)
         if cfg is None:
@@ -262,10 +336,9 @@ class StepFService:
                 print(f"[StepF-router] wrote allowlist={allow_path}")
                 print(f"[StepF-router] wrote daily={log_router_path}")
                 print(f"[StepF-router] wrote summary={summary_router_path}")
-            print(
-                f"[STEPF_FINAL] symbol={symbol} mode={mode} daily_rows={len(daily)} "
-                f"equity_path={eq_marl_path} summary_path={summary_router_path}"
-            )
+            final_eval = self.evaluate_final_outputs(output_root=out_root, mode=mode, symbol=symbol)
+            if int(final_eval.get("return_code", 1)) != 0:
+                raise RuntimeError(f"StepF final artifacts invalid: {final_eval.get('errors', [])}")
 
             return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path), ratio_path=str(ratio_live_path))
 
