@@ -143,6 +143,10 @@ class StepFService:
             input_mode = str(getattr(cfg, "input_mode", "") or mode)
             if mode == "live" and not (out_root / "stepA" / input_mode).exists():
                 input_mode = "sim"
+            print(
+                f"[STEPF_INPUT] symbol={symbol} mode={mode} input_mode={input_mode} "
+                f"output_root={out_root} agents={','.join(agents)}"
+            )
             with timing.stage("stepF.load_prices_logs"):
                 prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
                 prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
@@ -258,17 +262,84 @@ class StepFService:
                 print(f"[StepF-router] wrote allowlist={allow_path}")
                 print(f"[StepF-router] wrote daily={log_router_path}")
                 print(f"[StepF-router] wrote summary={summary_router_path}")
+            print(
+                f"[STEPF_FINAL] symbol={symbol} mode={mode} daily_rows={len(daily)} "
+                f"equity_path={eq_marl_path} summary_path={summary_router_path}"
+            )
 
             return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path), ratio_path=str(ratio_live_path))
 
+    def _candidate_data_roots(self, out_root: Path) -> List[Path]:
+        roots: List[Path] = []
+        for attr in ("data_dir", "data_root"):
+            raw = getattr(self.app_config, attr, None)
+            if raw:
+                roots.append(Path(str(raw)))
+        nested = getattr(self.app_config, "data", None)
+        if nested is not None:
+            for attr in ("data_dir", "data_root"):
+                raw = getattr(nested, attr, None)
+                if raw:
+                    roots.append(Path(str(raw)))
+        roots.append(out_root.parent / "data")
+        roots.append(Path("data"))
+
+        out: List[Path] = []
+        seen = set()
+        for r in roots:
+            rr = r.expanduser().resolve()
+            key = str(rr)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(rr)
+        return out
+
+    def _log_price_probe(self, symbol: str, source: str, path: Path) -> None:
+        print(f"[STEPF_PRICE] symbol={symbol} source={source} path={path} exists={path.exists()}")
+
     def _load_stepa_price_tech(self, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
         base = out_root / "stepA" / mode
-        p_tr = pd.read_csv(base / f"stepA_prices_train_{symbol}.csv")
-        p_te = pd.read_csv(base / f"stepA_prices_test_{symbol}.csv")
-        t_tr = pd.read_csv(base / f"stepA_tech_train_{symbol}.csv")
-        t_te = pd.read_csv(base / f"stepA_tech_test_{symbol}.csv")
-        prices = pd.concat([p_tr, p_te], ignore_index=True)
-        tech = pd.concat([t_tr, t_te], ignore_index=True)
+        stepa_prices_train = base / f"stepA_prices_train_{symbol}.csv"
+        stepa_prices_test = base / f"stepA_prices_test_{symbol}.csv"
+        stepa_tech_train = base / f"stepA_tech_train_{symbol}.csv"
+        stepa_tech_test = base / f"stepA_tech_test_{symbol}.csv"
+
+        self._log_price_probe(symbol, "stepA", stepa_prices_train)
+        self._log_price_probe(symbol, "stepA", stepa_prices_test)
+
+        if stepa_prices_train.exists() and stepa_prices_test.exists():
+            p_tr = pd.read_csv(stepa_prices_train)
+            p_te = pd.read_csv(stepa_prices_test)
+            prices = pd.concat([p_tr, p_te], ignore_index=True)
+            source = "stepA"
+            if stepa_tech_train.exists() and stepa_tech_test.exists():
+                t_tr = pd.read_csv(stepa_tech_train)
+                t_te = pd.read_csv(stepa_tech_test)
+                tech = pd.concat([t_tr, t_te], ignore_index=True)
+            else:
+                self._log_price_probe(symbol, "stepA", stepa_tech_train)
+                self._log_price_probe(symbol, "stepA", stepa_tech_test)
+                tech = pd.DataFrame(columns=["Date"])
+        else:
+            raw_candidates = [r / f"prices_{symbol}.csv" for r in self._candidate_data_roots(out_root)]
+            raw_hit = None
+            for raw_path in raw_candidates:
+                self._log_price_probe(symbol, "raw", raw_path)
+                if raw_path.exists() and raw_hit is None:
+                    raw_hit = raw_path
+            if raw_hit is None:
+                raise FileNotFoundError(
+                    "StepF price load failed for "
+                    f"{symbol}: stepA_path_train={stepa_prices_train} missing, "
+                    f"stepA_path_test={stepa_prices_test} missing, "
+                    f"raw_paths={','.join(str(p) for p in raw_candidates)} missing"
+                )
+            prices = pd.read_csv(raw_hit)
+            source = "raw"
+            tech = pd.DataFrame(columns=["Date"])
+
+        print(f"[STEPF_PRICE] symbol={symbol} selected_source={source}")
         for df in (prices, tech):
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
         price_col = next((c for c in ["P_eff", "Close_eff", "price_eff", "close_eff", "Close"] if c in prices.columns), None)
