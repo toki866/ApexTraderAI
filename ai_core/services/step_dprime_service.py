@@ -9,6 +9,10 @@ import numpy as np
 import pandas as pd
 
 from ai_core.utils.timing_logger import TimingLogger
+from ai_core.services.dprime_cluster_components import (
+    ClusterRuntimeConfig,
+    DPrimeClusterService,
+)
 
 _PROFILES: Tuple[str, ...] = (
     "dprime_bnf_h01",
@@ -50,6 +54,11 @@ class StepDPrimeConfig:
     cluster_k_eff_min: int = 12
     cluster_small_share_threshold: float = 0.01
     cluster_small_mean_run_threshold: float = 3.0
+    cluster_short_window_days: int = 20
+    cluster_mid_window_weeks: int = 8
+    cluster_long_window_months: int = 6
+    cluster_enable_8y_context: bool = True
+    cluster_rare_flag_enabled: bool = True
     timing_logger: Optional[TimingLogger] = None
 
 
@@ -221,95 +230,6 @@ def _infer_family(profile: str) -> str:
         return "mix"
     return "bnf"
 
-
-class DPrimeClusterService:
-    """Build cluster-only state and assignments from StepA-derived features.
-
-    Notes
-    -----
-    - This service intentionally avoids StepB/StepC predictions to prevent
-      prediction leakage into cluster construction.
-    - Current implementation is a lightweight scaffold (placeholder) that
-      emulates raw20/stable outputs and monthly rare-flag handling.
-      Backend `ticc` is planned but not yet wired.
-    """
-
-    def run(self, cfg: StepDPrimeConfig, data: pd.DataFrame, periodic: pd.DataFrame, stepd_dir: Path) -> Dict[str, object]:
-        base_cols = [c for c in ["ret_1", "ret_5", "ret_20", "Gap", "ATR_norm", "gap_atr", "bnf_score"] if c in data.columns]
-        cdf = data[["Date"] + base_cols].copy()
-
-        if "Date" not in periodic.columns:
-            periodic = periodic.reset_index().rename(columns={periodic.index.name or "index": "Date"})
-        per = periodic.copy()
-        per["Date"] = pd.to_datetime(per["Date"], errors="coerce").dt.normalize()
-        cdf["Date"] = pd.to_datetime(cdf["Date"], errors="coerce").dt.normalize()
-
-        # Multi-timeframe scaffold（日足/週足/月足/長期背景）
-        cdf = cdf.merge(per, on="Date", how="left", suffixes=("", "_periodic"))
-        num_cols = [c for c in cdf.columns if c != "Date" and pd.api.types.is_numeric_dtype(cdf[c])]
-        for c in num_cols:
-            cdf[c] = pd.to_numeric(cdf[c], errors="coerce").fillna(0.0)
-
-        raw_k = int(getattr(cfg, "cluster_raw_k", 20) or 20)
-        k_eff_min = int(getattr(cfg, "cluster_k_eff_min", 12) or 12)
-        th_share = float(getattr(cfg, "cluster_small_share_threshold", 0.01) or 0.01)
-        th_run = float(getattr(cfg, "cluster_small_mean_run_threshold", 3.0) or 3.0)
-
-        score = cdf["bnf_score"] if "bnf_score" in cdf.columns else pd.Series(0.0, index=cdf.index)
-        # Placeholder cluster backend: quantile bins (TICC backend planned)
-        try:
-            bins = pd.qcut(score.rank(method="first"), q=max(2, raw_k), labels=False, duplicates="drop")
-            cdf["cluster_id_raw20"] = pd.to_numeric(bins, errors="coerce").fillna(0).astype(int)
-        except Exception:
-            cdf["cluster_id_raw20"] = 0
-
-        run_id = (cdf["cluster_id_raw20"] != cdf["cluster_id_raw20"].shift(1)).cumsum()
-        runs = cdf.groupby(["cluster_id_raw20", run_id], as_index=False).size().rename(columns={"size": "run_len"})
-        mean_run = runs.groupby("cluster_id_raw20")["run_len"].mean()
-        share = cdf["cluster_id_raw20"].value_counts(normalize=True).sort_index()
-
-        small_clusters = [
-            int(cid)
-            for cid in share.index
-            if float(share.loc[cid]) < th_share and float(mean_run.get(cid, 0.0)) < th_run
-        ]
-        cdf["cluster_id_stable"] = cdf["cluster_id_raw20"].astype(int)
-
-        valid_clusters = [int(cid) for cid in sorted(cdf["cluster_id_raw20"].unique().tolist()) if int(cid) not in set(small_clusters)]
-        if not valid_clusters:
-            valid_clusters = [0]
-        stable_map = {cid: i % max(k_eff_min, len(valid_clusters)) for i, cid in enumerate(valid_clusters)}
-        fallback_id = stable_map[valid_clusters[0]]
-        cdf["cluster_id_stable"] = cdf["cluster_id_raw20"].map(lambda x: stable_map.get(int(x), fallback_id)).astype(int)
-
-        # monthly rare set scaffold (small clusters are treated as rare)
-        cdf["year_month"] = cdf["Date"].dt.to_period("M").astype(str)
-        cdf["rare_flag_raw20"] = cdf["cluster_id_raw20"].isin(set(small_clusters)).astype(int)
-
-        assign_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
-        summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
-        cdf[["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20", "year_month"]].to_csv(assign_path, index=False)
-
-        cluster_summary = {
-            "symbol": cfg.symbol,
-            "mode": cfg.mode,
-            "cluster_backend": str(getattr(cfg, "cluster_backend", "ticc")),
-            "status": "placeholder",
-            "note": "DPrimeCluster is scaffolded; TICC monthly refit/daily assign backend is planned and not yet wired.",
-            "cluster_raw_k": raw_k,
-            "cluster_k_eff_min": k_eff_min,
-            "cluster_small_share_threshold": th_share,
-            "cluster_small_mean_run_threshold": th_run,
-            "k_valid": int(len(valid_clusters)),
-            "k_eff": int(max(k_eff_min, len(valid_clusters))),
-            "small_clusters": small_clusters,
-            "outputs": {
-                "daily_assign": str(assign_path),
-            },
-        }
-        summary_path.write_text(json.dumps(cluster_summary, indent=2, ensure_ascii=False), encoding="utf-8")
-        cluster_summary["outputs"]["summary"] = str(summary_path)
-        return {"daily": cdf, "summary": cluster_summary}
 
 
 class DPrimeRLService:
@@ -514,8 +434,22 @@ class StepDPrimeService:
             all_df["Close_anchor"] = _safe(prices, "Close")
 
         cluster_service = DPrimeClusterService()
+        cluster_runtime_cfg = ClusterRuntimeConfig(
+            symbol=cfg.symbol,
+            mode=cfg.mode,
+            cluster_backend=cfg.cluster_backend,
+            cluster_raw_k=cfg.cluster_raw_k,
+            cluster_k_eff_min=cfg.cluster_k_eff_min,
+            cluster_small_share_threshold=cfg.cluster_small_share_threshold,
+            cluster_small_mean_run_threshold=cfg.cluster_small_mean_run_threshold,
+            cluster_short_window_days=cfg.cluster_short_window_days,
+            cluster_mid_window_weeks=cfg.cluster_mid_window_weeks,
+            cluster_long_window_months=cfg.cluster_long_window_months,
+            cluster_enable_8y_context=cfg.cluster_enable_8y_context,
+            cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
+        )
         with timing.stage("stepDPrimeCluster.run"):
-            cluster_out = cluster_service.run(cfg, all_df.copy(), periodic.copy(), stepd_dir)
+            cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
 
         rl_service = DPrimeRLService()
         with timing.stage("stepDPrimeRL.run"):

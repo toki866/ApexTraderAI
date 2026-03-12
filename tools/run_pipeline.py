@@ -1512,6 +1512,11 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
         "cluster_k_eff_min": int(getattr(cluster_cfg, "cluster_k_eff_min", 12)),
         "cluster_small_share_threshold": float(getattr(cluster_cfg, "cluster_small_share_threshold", 0.01)),
         "cluster_small_mean_run_threshold": float(getattr(cluster_cfg, "cluster_small_mean_run_threshold", 3.0)),
+        "cluster_short_window_days": int(getattr(cluster_cfg, "cluster_short_window_days", 20)),
+        "cluster_mid_window_weeks": int(getattr(cluster_cfg, "cluster_mid_window_weeks", 8)),
+        "cluster_long_window_months": int(getattr(cluster_cfg, "cluster_long_window_months", 6)),
+        "cluster_enable_8y_context": bool(getattr(cluster_cfg, "cluster_enable_8y_context", True)),
+        "cluster_rare_flag_enabled": bool(getattr(cluster_cfg, "cluster_rare_flag_enabled", True)),
         "timing_logger": _get_timing_logger(app_config),
     }
     cfg = StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **raw_cfg))
