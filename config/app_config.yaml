@@ -17,3 +17,11 @@ cluster_regime:
   cluster_k_eff_min: 12
   cluster_small_share_threshold: 0.01
   cluster_small_mean_run_threshold: 3
+  # 多時間軸連続窓（短期/中期/長期）
+  cluster_short_window_days: 20
+  cluster_mid_window_weeks: 8
+  cluster_long_window_months: 6
+  # 8年背景スカラー（軽量文脈）を有効化
+  cluster_enable_8y_context: true
+  # raw20 rare監視フラグ（small/rare membership）
+  cluster_rare_flag_enabled: true

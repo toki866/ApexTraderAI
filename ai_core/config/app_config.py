@@ -37,6 +37,11 @@ class ClusterRegimeConfig:
     cluster_k_eff_min: int = 12
     cluster_small_share_threshold: float = 0.01
     cluster_small_mean_run_threshold: float = 3.0
+    cluster_short_window_days: int = 20
+    cluster_mid_window_weeks: int = 8
+    cluster_long_window_months: int = 6
+    cluster_enable_8y_context: bool = True
+    cluster_rare_flag_enabled: bool = True
 
 @dataclass
 class AppConfig:
@@ -77,6 +82,11 @@ class AppConfig:
             cluster_k_eff_min=int(cluster_raw.get("cluster_k_eff_min", 12)),
             cluster_small_share_threshold=float(cluster_raw.get("cluster_small_share_threshold", 0.01)),
             cluster_small_mean_run_threshold=float(cluster_raw.get("cluster_small_mean_run_threshold", 3.0)),
+            cluster_short_window_days=int(cluster_raw.get("cluster_short_window_days", 20)),
+            cluster_mid_window_weeks=int(cluster_raw.get("cluster_mid_window_weeks", 8)),
+            cluster_long_window_months=int(cluster_raw.get("cluster_long_window_months", 6)),
+            cluster_enable_8y_context=bool(cluster_raw.get("cluster_enable_8y_context", True)),
+            cluster_rare_flag_enabled=bool(cluster_raw.get("cluster_rare_flag_enabled", True)),
         )
         default_symbol = raw.get("default_symbol")
         default_date_range = None
