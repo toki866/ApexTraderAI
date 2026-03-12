@@ -40,7 +40,7 @@ on:
         default: true
         type: boolean
       steps:
-        description: "Pipeline steps to run (comma-separated). Standard flow is A,B,C,DPRIME,E,F. StepD is deprecated and D' (DPRIME) is used instead."
+        description: "Pipeline steps to run (comma-separated). Standard flow is A,B,C,DPRIME,E,F. StepD is deprecated and D' (DPRIME) is used instead. Note: DPRIME external name is kept for compatibility while internal responsibilities are being split into DPrimeCluster + DPrimeRL."
         required: false
         default: ""
         type: string
@@ -60,7 +60,7 @@ on:
         default: true
         type: boolean
       run_stepDPRIME:
-        description: "Run StepDPRIME"
+        description: "Run StepDPRIME (external interface unchanged; internally evolving toward DPrimeCluster + DPrimeRL responsibility split)"
         required: true
         default: true
         type: boolean

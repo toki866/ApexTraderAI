@@ -1496,12 +1496,22 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
     from ai_core.services.step_dprime_service import StepDPrimeService, StepDPrimeConfig
 
     out_root = str(getattr(app_config, "output_root", "output"))
+    cluster_cfg = getattr(app_config, "cluster_regime", None)
     raw_cfg = {
         "symbol": symbol,
         "mode": (mode or "sim"),
         "output_root": out_root,
         "seed": 42,
         "device": "auto",
+        "enable_cluster_regime": bool(getattr(cluster_cfg, "enable_cluster_regime", True)),
+        "enable_cluster_monthly_refit": bool(getattr(cluster_cfg, "enable_cluster_monthly_refit", True)),
+        "enable_cluster_daily_assign": bool(getattr(cluster_cfg, "enable_cluster_daily_assign", True)),
+        "enable_cluster_in_rl_state": bool(getattr(cluster_cfg, "enable_cluster_in_rl_state", True)),
+        "cluster_backend": str(getattr(cluster_cfg, "cluster_backend", "ticc")),
+        "cluster_raw_k": int(getattr(cluster_cfg, "cluster_raw_k", 20)),
+        "cluster_k_eff_min": int(getattr(cluster_cfg, "cluster_k_eff_min", 12)),
+        "cluster_small_share_threshold": float(getattr(cluster_cfg, "cluster_small_share_threshold", 0.01)),
+        "cluster_small_mean_run_threshold": float(getattr(cluster_cfg, "cluster_small_mean_run_threshold", 3.0)),
         "timing_logger": _get_timing_logger(app_config),
     }
     cfg = StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **raw_cfg))
@@ -2429,6 +2439,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if step not in steps:
                     continue
                 stage_name = "stepE.run" if step == "E" else ("stepF.run" if step == "F" else f"step{step}.run")
+                if step == "E":
+                    print("[StepE expert evaluation] candidate generation layer")
+                if step == "F":
+                    print("[StepF router / MARL final selection] candidate integration layer")
 
                 # --- StepE: per-agent reuse/resume ---
                 if step == "E" and reuse_output and _run_manifest is not None and not force_rebuild:

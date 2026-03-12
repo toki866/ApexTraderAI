@@ -3,3 +3,17 @@ data:
   output_root: output
   symbols:
     - SOXL
+
+# Cluster regime scaffold (StepDPRIME internal責務分離向け)。
+# 現時点で一部は placeholder / not yet wired だが、
+# schemaとして定義し将来拡張時の互換を保つ。
+cluster_regime:
+  enable_cluster_regime: true
+  enable_cluster_monthly_refit: true
+  enable_cluster_daily_assign: true
+  enable_cluster_in_rl_state: true
+  cluster_backend: ticc
+  cluster_raw_k: 20
+  cluster_k_eff_min: 12
+  cluster_small_share_threshold: 0.01
+  cluster_small_mean_run_threshold: 3
