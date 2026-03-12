@@ -24,6 +24,20 @@ class DataConfig:
     def data_dir(self, value: str | Path) -> None:
         self.data_root = resolve_repo_path(Path(value).expanduser())
 
+
+@dataclass
+class ClusterRegimeConfig:
+    """Cluster regime settings scaffold (may be partially not yet wired)."""
+    enable_cluster_regime: bool = True
+    enable_cluster_monthly_refit: bool = True
+    enable_cluster_daily_assign: bool = True
+    enable_cluster_in_rl_state: bool = True
+    cluster_backend: str = "ticc"
+    cluster_raw_k: int = 20
+    cluster_k_eff_min: int = 12
+    cluster_small_share_threshold: float = 0.01
+    cluster_small_mean_run_threshold: float = 3.0
+
 @dataclass
 class AppConfig:
     """Root class for application-wide settings."""
@@ -31,6 +45,7 @@ class AppConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     rl_single: RLSingleConfig = field(default_factory=RLSingleConfig)
     rl_marl: RLMARLConfig = field(default_factory=RLMARLConfig)
+    cluster_regime: ClusterRegimeConfig = field(default_factory=ClusterRegimeConfig)
     default_symbol: Optional[str] = None
     default_date_range: Optional[DateRange] = None
 
@@ -51,6 +66,18 @@ class AppConfig:
         rl_marl_raw = raw.get("rl_marl", {}) or {}
         rl_single_cfg = RLSingleConfig.from_dict(rl_single_raw) if isinstance(rl_single_raw, dict) else RLSingleConfig()
         rl_marl_cfg = RLMARLConfig.from_dict(rl_marl_raw) if isinstance(rl_marl_raw, dict) else RLMARLConfig()
+        cluster_raw = raw.get("cluster_regime", {}) or {}
+        cluster_cfg = ClusterRegimeConfig(
+            enable_cluster_regime=bool(cluster_raw.get("enable_cluster_regime", True)),
+            enable_cluster_monthly_refit=bool(cluster_raw.get("enable_cluster_monthly_refit", True)),
+            enable_cluster_daily_assign=bool(cluster_raw.get("enable_cluster_daily_assign", True)),
+            enable_cluster_in_rl_state=bool(cluster_raw.get("enable_cluster_in_rl_state", True)),
+            cluster_backend=str(cluster_raw.get("cluster_backend", "ticc")),
+            cluster_raw_k=int(cluster_raw.get("cluster_raw_k", 20)),
+            cluster_k_eff_min=int(cluster_raw.get("cluster_k_eff_min", 12)),
+            cluster_small_share_threshold=float(cluster_raw.get("cluster_small_share_threshold", 0.01)),
+            cluster_small_mean_run_threshold=float(cluster_raw.get("cluster_small_mean_run_threshold", 3.0)),
+        )
         default_symbol = raw.get("default_symbol")
         default_date_range = None
         if isinstance(raw.get("default_date_range", None), dict):
@@ -63,6 +90,7 @@ class AppConfig:
             env=env_cfg,
             rl_single=rl_single_cfg,
             rl_marl=rl_marl_cfg,
+            cluster_regime=cluster_cfg,
             default_symbol=default_symbol,
             default_date_range=default_date_range,
         )

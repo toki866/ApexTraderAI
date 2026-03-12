@@ -4,6 +4,10 @@
 StepE Service (Independent RL agents)
 
 This version is designed to run multiple StepE agents independently (10 agents etc.)
+
+Role boundary note:
+- StepE is the expert evaluation / candidate-generation layer.
+- Final candidate selection/integration is StepF responsibility.
 using StepD' embeddings as the primary observation stream.
 
 What changed vs "pos=0" issue

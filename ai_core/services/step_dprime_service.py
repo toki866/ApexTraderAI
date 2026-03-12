@@ -40,6 +40,16 @@ class StepDPrimeConfig:
     z_past_dim: int = 32
     z_pred_dim: int = 32
     verbose: bool = True
+    # cluster regime scaffold (some options are placeholders / not yet wired)
+    enable_cluster_regime: bool = True
+    enable_cluster_monthly_refit: bool = True
+    enable_cluster_daily_assign: bool = True
+    enable_cluster_in_rl_state: bool = True
+    cluster_backend: str = "ticc"
+    cluster_raw_k: int = 20
+    cluster_k_eff_min: int = 12
+    cluster_small_share_threshold: float = 0.01
+    cluster_small_mean_run_threshold: float = 3.0
     timing_logger: Optional[TimingLogger] = None
 
 
@@ -193,6 +203,7 @@ def _load_pred_time_priority(stepc_dir: Path, stepb_dir: Path, symbol: str) -> T
         df["Date"] = pd.to_datetime(df[dcol], errors="coerce").dt.normalize()
         return df, str(p.as_posix())
     return None, ""
+
 def _infer_pred_type(profile: str) -> str:
     if profile.endswith("_h01"):
         return "h01"
@@ -211,47 +222,121 @@ def _infer_family(profile: str) -> str:
     return "bnf"
 
 
-class StepDPrimeService:
-    def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
-        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
-        mode = _normalize_mode(cfg.mode)
-        out_root = Path(cfg.output_root)
-        stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
-        stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
-        stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
-        emb_dir = stepd_dir / "embeddings"
-        stepd_dir.mkdir(parents=True, exist_ok=True)
-        emb_dir.mkdir(parents=True, exist_ok=True)
+class DPrimeClusterService:
+    """Build cluster-only state and assignments from StepA-derived features.
 
-        with timing.stage("stepDPrime.load_inputs"):
-            split = _read_split_summary(stepa_dir, cfg.symbol)
-            tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
-            te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
+    Notes
+    -----
+    - This service intentionally avoids StepB/StepC predictions to prevent
+      prediction leakage into cluster construction.
+    - Current implementation is a lightweight scaffold (placeholder) that
+      emulates raw20/stable outputs and monthly rare-flag handling.
+      Backend `ticc` is planned but not yet wired.
+    """
 
-            pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
-            tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
-            pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+    def run(self, cfg: StepDPrimeConfig, data: pd.DataFrame, periodic: pd.DataFrame, stepd_dir: Path) -> Dict[str, object]:
+        base_cols = [c for c in ["ret_1", "ret_5", "ret_20", "Gap", "ATR_norm", "gap_atr", "bnf_score"] if c in data.columns]
+        cdf = data[["Date"] + base_cols].copy()
 
-        prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        with timing.stage("stepDPrime.build_features"):
-            base = _compute_base_features(prices, tech)
-            all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+        if "Date" not in periodic.columns:
+            periodic = periodic.reset_index().rename(columns={periodic.index.name or "index": "Date"})
+        per = periodic.copy()
+        per["Date"] = pd.to_datetime(per["Date"], errors="coerce").dt.normalize()
+        cdf["Date"] = pd.to_datetime(cdf["Date"], errors="coerce").dt.normalize()
 
-        num_cols = [c for c in all_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(all_df[c])]
+        # Multi-timeframe scaffold（日足/週足/月足/長期背景）
+        cdf = cdf.merge(per, on="Date", how="left", suffixes=("", "_periodic"))
+        num_cols = [c for c in cdf.columns if c != "Date" and pd.api.types.is_numeric_dtype(cdf[c])]
         for c in num_cols:
-            all_df[c] = pd.to_numeric(all_df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            cdf[c] = pd.to_numeric(cdf[c], errors="coerce").fillna(0.0)
 
-        stepc_dir = Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode
+        raw_k = int(getattr(cfg, "cluster_raw_k", 20) or 20)
+        k_eff_min = int(getattr(cfg, "cluster_k_eff_min", 12) or 12)
+        th_share = float(getattr(cfg, "cluster_small_share_threshold", 0.01) or 0.01)
+        th_run = float(getattr(cfg, "cluster_small_mean_run_threshold", 3.0) or 3.0)
+
+        score = cdf["bnf_score"] if "bnf_score" in cdf.columns else pd.Series(0.0, index=cdf.index)
+        # Placeholder cluster backend: quantile bins (TICC backend planned)
+        try:
+            bins = pd.qcut(score.rank(method="first"), q=max(2, raw_k), labels=False, duplicates="drop")
+            cdf["cluster_id_raw20"] = pd.to_numeric(bins, errors="coerce").fillna(0).astype(int)
+        except Exception:
+            cdf["cluster_id_raw20"] = 0
+
+        run_id = (cdf["cluster_id_raw20"] != cdf["cluster_id_raw20"].shift(1)).cumsum()
+        runs = cdf.groupby(["cluster_id_raw20", run_id], as_index=False).size().rename(columns={"size": "run_len"})
+        mean_run = runs.groupby("cluster_id_raw20")["run_len"].mean()
+        share = cdf["cluster_id_raw20"].value_counts(normalize=True).sort_index()
+
+        small_clusters = [
+            int(cid)
+            for cid in share.index
+            if float(share.loc[cid]) < th_share and float(mean_run.get(cid, 0.0)) < th_run
+        ]
+        cdf["cluster_id_stable"] = cdf["cluster_id_raw20"].astype(int)
+
+        valid_clusters = [int(cid) for cid in sorted(cdf["cluster_id_raw20"].unique().tolist()) if int(cid) not in set(small_clusters)]
+        if not valid_clusters:
+            valid_clusters = [0]
+        stable_map = {cid: i % max(k_eff_min, len(valid_clusters)) for i, cid in enumerate(valid_clusters)}
+        fallback_id = stable_map[valid_clusters[0]]
+        cdf["cluster_id_stable"] = cdf["cluster_id_raw20"].map(lambda x: stable_map.get(int(x), fallback_id)).astype(int)
+
+        # monthly rare set scaffold (small clusters are treated as rare)
+        cdf["year_month"] = cdf["Date"].dt.to_period("M").astype(str)
+        cdf["rare_flag_raw20"] = cdf["cluster_id_raw20"].isin(set(small_clusters)).astype(int)
+
+        assign_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
+        summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
+        cdf[["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20", "year_month"]].to_csv(assign_path, index=False)
+
+        cluster_summary = {
+            "symbol": cfg.symbol,
+            "mode": cfg.mode,
+            "cluster_backend": str(getattr(cfg, "cluster_backend", "ticc")),
+            "status": "placeholder",
+            "note": "DPrimeCluster is scaffolded; TICC monthly refit/daily assign backend is planned and not yet wired.",
+            "cluster_raw_k": raw_k,
+            "cluster_k_eff_min": k_eff_min,
+            "cluster_small_share_threshold": th_share,
+            "cluster_small_mean_run_threshold": th_run,
+            "k_valid": int(len(valid_clusters)),
+            "k_eff": int(max(k_eff_min, len(valid_clusters))),
+            "small_clusters": small_clusters,
+            "outputs": {
+                "daily_assign": str(assign_path),
+            },
+        }
+        summary_path.write_text(json.dumps(cluster_summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        cluster_summary["outputs"]["summary"] = str(summary_path)
+        return {"daily": cdf, "summary": cluster_summary}
+
+
+class DPrimeRLService:
+    """Build RL state by integrating past features, cluster IDs, and prediction summaries."""
+
+    def run(
+        self,
+        cfg: StepDPrimeConfig,
+        *,
+        timing: TimingLogger,
+        data: pd.DataFrame,
+        split: Dict[str, str],
+        stepb_dir: Path,
+        stepc_dir: Path,
+        stepd_dir: Path,
+        cluster_daily: pd.DataFrame,
+    ) -> Dict[str, object]:
+        tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
+        te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
+
         pred_df, pred_src = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
         pred_time_df, pred_time_src = _load_pred_time_priority(stepc_dir, stepb_dir, cfg.symbol)
         pred_cols = [f"Pred_Close_t_plus_{i:02d}" for i in range(1, cfg.pred_k + 1)]
         for c in pred_cols:
             if c not in pred_df.columns:
                 pred_df[c] = np.nan
-        data = all_df.merge(pred_df[["Date"] + pred_cols], on="Date", how="left")
-        data["Close_anchor"] = _safe(prices, "Close")
+        data = data.merge(pred_df[["Date"] + pred_cols], on="Date", how="left")
 
         if pred_time_df is not None:
             for h in (1, 5, 10, 20):
@@ -262,11 +347,18 @@ class StepDPrimeService:
                     data = data.drop(columns=[f"Pred_Close_t_plus_{h:02d}"], errors="ignore").merge(sub, on="Date", how="left")
             if pred_time_src:
                 pred_src = pred_time_src + "|" + pred_src
+
+        data = data.merge(cluster_daily[["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"]], on="Date", how="left")
+        data["cluster_id_raw20"] = pd.to_numeric(data.get("cluster_id_raw20"), errors="coerce").fillna(0).astype(int)
+        data["cluster_id_stable"] = pd.to_numeric(data.get("cluster_id_stable"), errors="coerce").fillna(0).astype(int)
+        data["rare_flag_raw20"] = pd.to_numeric(data.get("rare_flag_raw20"), errors="coerce").fillna(0).astype(int)
+
         for i in range(1, cfg.pred_k + 1):
             c = f"Pred_Close_t_plus_{i:02d}"
             data[f"pred_ret_{i:02d}"] = pd.to_numeric(data[c], errors="coerce") / data["Close_anchor"].replace(0, np.nan) - 1.0
             data[f"pred_ret_{i:02d}"] = data[f"pred_ret_{i:02d}"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+        num_cols = [c for c in data.columns if c != "Date" and pd.api.types.is_numeric_dtype(data[c])]
         bnf_cols = [
             "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
             "Gap", "ATR_norm", "gap_atr", "vol_log_ratio_20", "vol_chg", "dev_z_25", "bnf_score",
@@ -274,16 +366,16 @@ class StepDPrimeService:
         mix_cols = bnf_cols + ["RSI", "MACD_hist", "macd_hist_delta", "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20"]
         all_cols = [c for c in num_cols if c not in {"Open", "High", "Low", "Close", "Volume", "Close_anchor"}]
 
-        results: Dict[str, object] = {"mode": mode, "symbol": cfg.symbol, "profiles": {}, "output_dir": str(stepd_dir)}
+        results: Dict[str, object] = {"mode": cfg.mode, "symbol": cfg.symbol, "profiles": {}, "output_dir": str(stepd_dir)}
         date_list = data["Date"].tolist()
         idx_train = [i for i, d in enumerate(date_list) if tr_s <= d <= tr_e]
         idx_test = [i for i, d in enumerate(date_list) if te_s <= d <= te_e]
         if min(idx_test) < cfg.l_past - 1:
             raise RuntimeError("insufficient history before test_start for L_past window")
 
-        with timing.stage("stepDPrime.total"):
+        with timing.stage("stepDPrimeRL.total"):
             for profile in cfg.profiles:
-                with timing.stage("stepDPrime.profile.loop", agent_id=str(profile)):
+                with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile)):
                     fam = _infer_family(profile)
                     pred_type = _infer_pred_type(profile)
                     past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
@@ -297,8 +389,8 @@ class StepDPrimeService:
                         for i in indices:
                             if i < cfg.l_past - 1:
                                 continue
-                            hist = data.iloc[i - cfg.l_past + 1 : i + 1]
-                            xp.append(hist[past_cols].to_numpy(dtype=float).reshape(-1))
+                            hist = data.iloc[i - cfg.l_past + 1 : i + 1][past_cols].to_numpy(dtype=float)
+                            xp.append(hist.reshape(-1))
                             ds.append(data.iloc[i]["Date"])
                             if pred_type == "3scale":
                                 p = data.iloc[i][[f"pred_ret_{k:02d}" for k in range(1, cfg.pred_k + 1)]].to_numpy(dtype=float)
@@ -320,15 +412,19 @@ class StepDPrimeService:
                     Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
                     Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
 
+                    ref = data.set_index("Date")
+
                     def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
                         out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
                         for j in range(zp.shape[1]):
                             out[f"zp_{j:03d}"] = zp[:, j]
                         for j in range(zf.shape[1]):
                             out[f"zf_{j:03d}"] = zf[:, j]
-                        ref = data.set_index("Date")
                         out["gap_atr"] = [float(ref.loc[pd.to_datetime(d), "gap_atr"]) for d in pd.to_datetime(ds)]
                         out["ATR_norm"] = [float(ref.loc[pd.to_datetime(d), "ATR_norm"]) for d in pd.to_datetime(ds)]
+                        out["cluster_id_raw20"] = [int(ref.loc[pd.to_datetime(d), "cluster_id_raw20"]) for d in pd.to_datetime(ds)]
+                        out["cluster_id_stable"] = [int(ref.loc[pd.to_datetime(d), "cluster_id_stable"]) for d in pd.to_datetime(ds)]
+                        out["rare_flag_raw20"] = [int(ref.loc[pd.to_datetime(d), "rare_flag_raw20"]) for d in pd.to_datetime(ds)]
                         out["pos_prev"] = 0.0
                         out["action_prev"] = 0.0
                         out["time_in_trade"] = 0.0
@@ -341,7 +437,7 @@ class StepDPrimeService:
                     df_tr.to_csv(p_tr, index=False)
                     df_te.to_csv(p_te, index=False)
                     pd.DataFrame([
-                        {"key": "mode", "value": mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
+                        {"key": "mode", "value": cfg.mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
                         {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
                         {"key": "test_start", "value": str(te_s.date())}, {"key": "test_end", "value": str(te_e.date())},
                         {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
@@ -349,6 +445,8 @@ class StepDPrimeService:
                         {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
                         {"key": "past_feature_channels", "value": "|".join(past_cols)},
                         {"key": "pred_source_file", "value": pred_src},
+                        {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
+                        {"key": "dprime_cluster_status", "value": "placeholder_or_live"},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
                         {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
                     ]).to_csv(s_path, index=False)
@@ -373,6 +471,8 @@ class StepDPrimeService:
                     )
                     df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
 
+                    emb_dir = stepd_dir / "embeddings"
+                    emb_dir.mkdir(parents=True, exist_ok=True)
                     ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
                     ep_te = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_test.csv"
                     ep_all = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
@@ -385,5 +485,70 @@ class StepDPrimeService:
 
                     results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
-        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         return results
+
+
+class StepDPrimeService:
+    def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
+        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
+        mode = _normalize_mode(cfg.mode)
+        out_root = Path(cfg.output_root)
+        stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
+        stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
+        stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
+        stepd_dir.mkdir(parents=True, exist_ok=True)
+
+        with timing.stage("stepDPrime.load_inputs"):
+            split = _read_split_summary(stepa_dir, cfg.symbol)
+            pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+            tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+            pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+
+        prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+
+        with timing.stage("stepDPrime.build_features"):
+            base = _compute_base_features(prices, tech)
+            all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+            all_df["Close_anchor"] = _safe(prices, "Close")
+
+        cluster_service = DPrimeClusterService()
+        with timing.stage("stepDPrimeCluster.run"):
+            cluster_out = cluster_service.run(cfg, all_df.copy(), periodic.copy(), stepd_dir)
+
+        rl_service = DPrimeRLService()
+        with timing.stage("stepDPrimeRL.run"):
+            rl_out = rl_service.run(
+                cfg,
+                timing=timing,
+                data=all_df.copy(),
+                split=split,
+                stepb_dir=stepb_dir,
+                stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
+                stepd_dir=stepd_dir,
+                cluster_daily=cluster_out["daily"],
+            )
+
+        rl_out["dprime_cluster"] = cluster_out.get("summary", {})
+        rl_out["stepDPrime_internal_flow"] = [
+            "StepA",
+            "DPrimeCluster",
+            "cluster_id_raw20/stable",
+            "StepB",
+            "StepC",
+            "DPrimeRL",
+            "StepE",
+            "StepF",
+        ]
+        rl_out["notes"] = [
+            "DPrimeCluster uses StepA-derived inputs only (no StepB prediction leakage).",
+            "cluster backend ticc is planned; current raw20/stable assignment is placeholder scaffold.",
+            "Workflow/CLI compatibility is preserved with external step name DPRIME.",
+        ]
+
+        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(rl_out, indent=2, ensure_ascii=False), encoding="utf-8")
+        print("[StepDPrime] DPrimeCluster complete (cluster_id_raw20/cluster_id_stable/rare_flag_raw20)")
+        print("[StepDPrime] DPrimeRL complete (RL state with cluster integration)")
+        return rl_out
+

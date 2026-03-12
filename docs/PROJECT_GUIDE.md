@@ -148,6 +148,7 @@ The tree below was generated from the current repository state (depth-limited).
 - Standard pipeline steps are **A,B,C,DPRIME,E,F**.
 - **Step D is retired** in standard operation and should not be selected for routine runs.
 - `DPRIME` is the **StepD superior version** and independently performs chart-compression (Phase2) plus RL state generation.
+- Internal responsibility separation for DPRIME is tracked in `specs/stepA_stepF_responsibility_reorg_ja.md` as **DPrimeCluster (cluster-only state)** and **DPrimeRL (RL input state)** while keeping external workflow/CLI compatibility on the single `DPRIME` step name.
 - `StepE` consumes `DPRIME` state as its primary observation input (plus embeddings when required by the selected policy/model mode).
 - There are two distinct "3-month" windows:
   1. Fixed-length compression window in `DPRIME`/Phase2

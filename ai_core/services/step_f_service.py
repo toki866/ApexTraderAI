@@ -1,3 +1,10 @@
+"""StepF router/MARL integration layer.
+
+Role boundary note:
+- StepE generates candidate expert actions/ratios.
+- StepF performs router / MARL final selection and integration for final decisions.
+"""
+
 from __future__ import annotations
 
 import json
