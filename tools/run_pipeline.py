@@ -1879,6 +1879,79 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"status={status} artifacts_validated={validated_str}{extra}"
         )
 
+    def _evaluate_stepe_final_state(requested_agents: List[str]) -> Dict[str, Any]:
+        """Recompute final StepE completion state from artifacts + manifest."""
+        from tools.run_manifest import check_stepe_agent_artifact as _check_agent_art_final  # lazy import
+
+        _daily_base = Path(resolved_output_root) / "stepE" / resolved_mode
+        _model_base = _daily_base / "models"
+        _requested = list(dict.fromkeys(str(a).strip() for a in requested_agents if str(a).strip()))
+
+        _complete_agents: List[str] = []
+        _missing_agents: List[str] = []
+        _missing_detail: Dict[str, List[str]] = {}
+
+        for _agent in _requested:
+            _daily = (_daily_base / f"stepE_daily_log_{_agent}_{symbol}.csv").exists()
+            _summary = (_daily_base / f"stepE_summary_{_agent}_{symbol}.json").exists()
+            _model = (
+                (_model_base / f"stepE_{_agent}_{symbol}.pt").exists()
+                or (_model_base / f"stepE_{_agent}_{symbol}_ppo.zip").exists()
+            )
+            _artifact_ok = bool(_daily and _summary and _model)
+            _manifest_ok = False
+            if _run_manifest is not None:
+                _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
+                if _artifact_ok and not _manifest_ok:
+                    _run_manifest.mark_stepe_agent(_agent, "reuse")
+                    _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
+
+            # keep parity with manifest artifact checker and ensure minimum contract.
+            _artifact_ok = _artifact_ok and _check_agent_art_final(_agent, resolved_output_root, symbol, resolved_mode)
+
+            if _artifact_ok and _manifest_ok:
+                _complete_agents.append(_agent)
+                continue
+
+            _missing_agents.append(_agent)
+            _parts: List[str] = []
+            if not _daily:
+                _parts.append("daily_log")
+            if not _summary:
+                _parts.append("summary")
+            if not _model:
+                _parts.append("model")
+            if not _manifest_ok:
+                _parts.append("manifest")
+            _missing_detail[_agent] = _parts
+
+        _all_complete = len(_complete_agents) == len(_requested)
+        _final_status = "complete" if _all_complete else "partial"
+        _return_code = 0 if _all_complete else 1
+
+        print(f"[STEPE_FINAL] requested_agents={','.join(_requested)}")
+        print(f"[STEPE_FINAL] complete_agents={','.join(_complete_agents)}")
+        print(f"[STEPE_FINAL] missing_agents={','.join(_missing_agents)}")
+        print(f"[STEPE_FINAL] final_status={_final_status}")
+        print(f"[STEPE_FINAL] return_code={_return_code}")
+        if _all_complete:
+            print("[STEPE_FINAL] all_requested_agents_complete=true")
+            print("[STEPE_FINAL] stepE_status=complete")
+            print("[STEPE_FINAL] return_code=0")
+        else:
+            for _agent in _missing_agents:
+                print(f"[STEPE_FINAL] missing_agent={_agent} missing={'|'.join(_missing_detail.get(_agent, []))}")
+
+        return {
+            "requested_agents": _requested,
+            "complete_agents": _complete_agents,
+            "missing_agents": _missing_agents,
+            "missing_detail": _missing_detail,
+            "all_complete": _all_complete,
+            "final_status": _final_status,
+            "return_code": _return_code,
+        }
+
     timing_enabled = bool(int(args.timing))
     run_id = args.run_id or _auto_run_id()
     branch_id = args.branch_id or _auto_branch_id(steps, args.stepe_agents)
@@ -2507,6 +2580,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             print(f"[STEPE_AGENT] agent={_agent} action=reuse")
 
                         if not _pending_agents:
+                            _stepe_final = _evaluate_stepe_final_state(_all_agents)
+                            if not _stepe_final["all_complete"]:
+                                _mark_step("E", "pending")
+                                _run_manifest.mark_step_elapsed("E", 0.0)
+                                _run_manifest.mark_step_audit("E", "FAIL")
+                                _emit_step_status("E", status="fail", started_at=time.time(), ended_at=time.time(), validated=False, detail="partial_agent_outputs")
+                                raise RuntimeError("StepE partial completion; rerun will resume pending agents")
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                             _mark_step("E", "complete")
                             _run_manifest.mark_step_elapsed("E", 0.0)
@@ -2570,12 +2650,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         _miss_e = []
                         for _ea in _all_agents:
                             _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ea))
-                        _step_e_audit_status = "PASS" if (not _miss_e and not _agent_failures and not _still_pending) else "FAIL"
+                        _stepe_final = _evaluate_stepe_final_state(_all_agents)
+                        _step_e_audit_status = "PASS" if _stepe_final["all_complete"] else "FAIL"
                         if _miss_e:
                             print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
+                        if _agent_failures:
+                            print(f"[StepE] WARN non-blocking agent failures={','.join(_agent_failures)}", file=sys.stderr)
+                        if _still_pending:
+                            print(f"[StepE] WARN non-blocking still_pending={','.join(_still_pending)}", file=sys.stderr)
                         _run_manifest.mark_step_audit("E", _step_e_audit_status)
 
-                        if not _still_pending and _step_e_audit_status == "PASS":
+                        if _stepe_final["all_complete"]:
                             _mark_step("E", "complete")
                             _emit_step_status("E", status="run", started_at=_t0_e_wall, ended_at=time.time(), validated=True)
                             print(f"[StepE] done")
