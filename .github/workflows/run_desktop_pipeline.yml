@@ -1928,33 +1928,81 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] finalize'
+
+          $finalizeEffectiveRc = 0
+          $robocopyRawRc = $null
+          $robocopyNormalizedStatus = 'success'
+          $robocopyEffectiveRc = 0
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-          if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
-          if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
-          # DONE.txt → correct artifact dir
-          @("run_id=$env:APEX_RUN_ID",
-            "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
-            "commit=$env:GITHUB_SHA",
-            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
-          Write-Host "[OK] DONE.txt written to $outRoot"
-          Write-Host "[OK] run_id=$env:APEX_RUN_ID"
-          Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
-          Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-          Write-Host "[OK] output_root=$outRoot"
-          # robocopy to OneDrive
-          if ($env:COPY_TO_ONEDRIVE -eq '1') {
-            $oneDest = $null
-            if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
-            elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
-            if ($oneDest) {
-              New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force | Out-Null
-              robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
-              $rrc = $LASTEXITCODE
-              if ($rrc -ge 8) { Write-Warning "robocopy failed rc=$rrc" }
-              else { Write-Host "[OK] robocopy to OneDrive rc=$rrc" }
-            } else { Write-Warning "OneDrive path not found; skip copy" }
+
+          try {
+            if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
+            if (-not $outRoot) { throw 'finalize output root is empty' }
+            if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+
+            # DONE.txt → correct artifact dir
+            @("run_id=$env:APEX_RUN_ID",
+              "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+              "commit=$env:GITHUB_SHA",
+              "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8 -ErrorAction Stop
+            Write-Host "[OK] DONE.txt written to $outRoot"
+            Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+            Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
+            Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
+            Write-Host "[OK] output_root=$outRoot"
+
+            # robocopy to OneDrive
+            if ($env:COPY_TO_ONEDRIVE -eq '1') {
+              $oneDest = $null
+              if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
+              elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+
+              if ($oneDest) {
+                New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
+                $robocopyRawRc = $LASTEXITCODE
+
+                if ($robocopyRawRc -ge 8) {
+                  $robocopyNormalizedStatus = 'fail'
+                  $robocopyEffectiveRc = 1
+                  $finalizeEffectiveRc = 1
+                  Write-Warning "robocopy failed rc=$robocopyRawRc"
+                } elseif ($robocopyRawRc -eq 0) {
+                  $robocopyNormalizedStatus = 'success'
+                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
+                } else {
+                  $robocopyNormalizedStatus = 'warn'
+                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
+                }
+              } else {
+                $robocopyNormalizedStatus = 'warn'
+                Write-Warning "OneDrive path not found; skip copy"
+              }
+            }
+
+            if ($finalizeEffectiveRc -eq 0) {
+              Add-Content $rp "[OK] finalize output_root=$outRoot"
+            }
           }
-          Add-Content $rp "[OK] finalize output_root=$outRoot"
+          catch {
+            $finalizeEffectiveRc = 1
+            if ($robocopyNormalizedStatus -ne 'fail') { $robocopyNormalizedStatus = 'fail' }
+            Write-Error "finalize failed: $_"
+            Add-Content $rp ("[NG] finalize exception={0}" -f $_)
+          }
+
+          $rawRcText = if ($null -eq $robocopyRawRc) { 'n/a' } else { [string]$robocopyRawRc }
+          $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
+          Write-Host "[FINALIZE] robocopy_raw_rc=$rawRcText"
+          Write-Host "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
+          Write-Host "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
+          Add-Content $rp "[FINALIZE] robocopy_raw_rc=$rawRcText"
+          Add-Content $rp "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
+          Add-Content $rp "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
+
+          exit $finalizeEffectiveRc
 
       - name: Stage console log in workspace
         if: always()
@@ -5315,33 +5363,81 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
           Add-Content $rp '[STEP] finalize'
+
+          $finalizeEffectiveRc = 0
+          $robocopyRawRc = $null
+          $robocopyNormalizedStatus = 'success'
+          $robocopyEffectiveRc = 0
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-          if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
-          if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force | Out-Null }
-          # DONE.txt → correct artifact dir
-          @("run_id=$env:APEX_RUN_ID",
-            "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
-            "commit=$env:GITHUB_SHA",
-            "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8
-          Write-Host "[OK] DONE.txt written to $outRoot"
-          Write-Host "[OK] run_id=$env:APEX_RUN_ID"
-          Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
-          Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-          Write-Host "[OK] output_root=$outRoot"
-          # robocopy to OneDrive
-          if ($env:COPY_TO_ONEDRIVE -eq '1') {
-            $oneDest = $null
-            if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
-            elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
-            if ($oneDest) {
-              New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force | Out-Null
-              robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
-              $rrc = $LASTEXITCODE
-              if ($rrc -ge 8) { Write-Warning "robocopy failed rc=$rrc" }
-              else { Write-Host "[OK] robocopy to OneDrive rc=$rrc" }
-            } else { Write-Warning "OneDrive path not found; skip copy" }
+
+          try {
+            if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
+            if (-not $outRoot) { throw 'finalize output root is empty' }
+            if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+
+            # DONE.txt → correct artifact dir
+            @("run_id=$env:APEX_RUN_ID",
+              "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+              "commit=$env:GITHUB_SHA",
+              "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8 -ErrorAction Stop
+            Write-Host "[OK] DONE.txt written to $outRoot"
+            Write-Host "[OK] run_id=$env:APEX_RUN_ID"
+            Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
+            Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
+            Write-Host "[OK] output_root=$outRoot"
+
+            # robocopy to OneDrive
+            if ($env:COPY_TO_ONEDRIVE -eq '1') {
+              $oneDest = $null
+              if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
+              elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+
+              if ($oneDest) {
+                New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
+                $robocopyRawRc = $LASTEXITCODE
+
+                if ($robocopyRawRc -ge 8) {
+                  $robocopyNormalizedStatus = 'fail'
+                  $robocopyEffectiveRc = 1
+                  $finalizeEffectiveRc = 1
+                  Write-Warning "robocopy failed rc=$robocopyRawRc"
+                } elseif ($robocopyRawRc -eq 0) {
+                  $robocopyNormalizedStatus = 'success'
+                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
+                } else {
+                  $robocopyNormalizedStatus = 'warn'
+                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
+                }
+              } else {
+                $robocopyNormalizedStatus = 'warn'
+                Write-Warning "OneDrive path not found; skip copy"
+              }
+            }
+
+            if ($finalizeEffectiveRc -eq 0) {
+              Add-Content $rp "[OK] finalize output_root=$outRoot"
+            }
           }
-          Add-Content $rp "[OK] finalize output_root=$outRoot"
+          catch {
+            $finalizeEffectiveRc = 1
+            if ($robocopyNormalizedStatus -ne 'fail') { $robocopyNormalizedStatus = 'fail' }
+            Write-Error "finalize failed: $_"
+            Add-Content $rp ("[NG] finalize exception={0}" -f $_)
+          }
+
+          $rawRcText = if ($null -eq $robocopyRawRc) { 'n/a' } else { [string]$robocopyRawRc }
+          $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
+          Write-Host "[FINALIZE] robocopy_raw_rc=$rawRcText"
+          Write-Host "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
+          Write-Host "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
+          Add-Content $rp "[FINALIZE] robocopy_raw_rc=$rawRcText"
+          Add-Content $rp "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
+          Add-Content $rp "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
+
+          exit $finalizeEffectiveRc
 
       - name: Stage console log in workspace
         if: always()
