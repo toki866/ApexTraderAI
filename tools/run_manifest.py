@@ -865,16 +865,27 @@ class RunManifest:
         self.save()
 
     def ensure_stepe_agents(self, all_agents: List[str]) -> None:
-        """Ensure all_agents are represented in the manifest E.agents dict."""
+        """Ensure all_agents are represented in the manifest E.agents dict with stable order."""
+        ordered_agents = list(dict.fromkeys(str(a).strip() for a in all_agents if str(a).strip()))
         agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
-        for a in all_agents:
-            if a not in agents:
-                agents[a] = {
-                    "status": "pending",
-                    "completed_at": None,
-                    "elapsed_sec": None,
-                    "audit_status": None,
-                }
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for a in ordered_agents:
+            normalized[a] = dict(agents.get(a) or {
+                "status": "pending",
+                "completed_at": None,
+                "elapsed_sec": None,
+                "audit_status": None,
+            })
+            normalized[a].setdefault("status", "pending")
+            normalized[a].setdefault("completed_at", None)
+            normalized[a].setdefault("elapsed_sec", None)
+            normalized[a].setdefault("audit_status", None)
+
+        for a, payload in agents.items():
+            if a not in normalized:
+                normalized[a] = payload
+
+        self._data["steps"].setdefault("E", {})["agents"] = normalized
         self.save()
 
     def pending_stepe_agents(self, all_agents: List[str]) -> List[str]:
