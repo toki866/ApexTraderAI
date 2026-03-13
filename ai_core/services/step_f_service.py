@@ -306,7 +306,7 @@ class StepFService:
             with timing.stage("stepF.persist_outputs"):
                 daily.to_csv(log_router_path, index=False)
                 daily.to_csv(log_marl_path, index=False)
-                eq_df = daily[daily["Split"] == "test"][["Date", "ratio", "ret", "equity"]].copy()
+                eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 eq_df.to_csv(eq_marl_path, index=False)
                 daily[["Date", "ratio"]].to_csv(ratio_live_path, index=False)
 
