@@ -53,6 +53,7 @@ class AppConfig:
     cluster_regime: ClusterRegimeConfig = field(default_factory=ClusterRegimeConfig)
     default_symbol: Optional[str] = None
     default_date_range: Optional[DateRange] = None
+    stepF: Optional[Any] = None
 
     @classmethod
     def load_from_yaml(cls, path: str | Path) -> "AppConfig":
@@ -90,6 +91,15 @@ class AppConfig:
         )
         default_symbol = raw.get("default_symbol")
         default_date_range = None
+        stepf_cfg = None
+        stepf_raw = raw.get("stepF", {}) or {}
+        if isinstance(stepf_raw, dict):
+            try:
+                from ai_core.services.step_f_service import StepFRouterConfig
+
+                stepf_cfg = StepFRouterConfig(**stepf_raw)
+            except Exception:
+                stepf_cfg = stepf_raw
         if isinstance(raw.get("default_date_range", None), dict):
             try:
                 default_date_range = DateRange.from_dict(raw["default_date_range"])
@@ -103,4 +113,5 @@ class AppConfig:
             cluster_regime=cluster_cfg,
             default_symbol=default_symbol,
             default_date_range=default_date_range,
+            stepF=stepf_cfg,
         )

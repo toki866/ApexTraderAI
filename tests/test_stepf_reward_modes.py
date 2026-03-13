@@ -64,6 +64,13 @@ def test_profit_regret_oracle_used_for_reward_only_not_state() -> None:
     assert "ret_best_expert" in out.columns
 
 
+
+def test_resolve_reward_modes_defaults_for_compare() -> None:
+    cfg = StepFRouterConfig(stepf_compare_reward_modes=True, stepf_reward_modes="")
+    enabled, modes = StepFService._resolve_reward_modes(cfg)
+    assert enabled is True
+    assert modes == ["legacy", "profit_basic", "profit_regret", "profit_light_risk"]
+
 def test_reward_mode_outputs_are_separated(tmp_path) -> None:
     cfg = StepFRouterConfig(output_root=str(tmp_path / "out"), agents="a1,a2", reward_mode="profit_basic")
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
@@ -88,3 +95,38 @@ def test_reward_mode_outputs_are_separated(tmp_path) -> None:
     reward_base = tmp_path / "out" / "stepF" / "sim" / "reward_profit_basic"
     assert (reward_base / "stepF_equity_marl_SOXL.csv").exists()
     assert (reward_base / "stepF_daily_log_router_SOXL.csv").exists()
+
+
+def test_compare_mode_runs_all_reward_modes(tmp_path) -> None:
+    cfg = StepFRouterConfig(
+        output_root=str(tmp_path / "out"),
+        agents="a1,a2",
+        reward_mode="legacy",
+        stepf_compare_reward_modes=True,
+    )
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+
+    sf_mod.hdbscan = object()
+    sf_mod.hdbscan_prediction = object()
+
+    svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+        "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
+        "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
+    }
+    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}, {"regime_id": 1, "agent": "a2", "IR": 0.0}])  # type: ignore[assignment]
+    svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1|a2"}])  # type: ignore[assignment]
+    svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim", train_start="2023-01-01", train_end="2023-12-31", test_start="2024-01-01", test_end="2024-12-31")
+    svc.run(date_range, symbol="SOXL", mode="sim")
+
+    base = tmp_path / "out" / "stepF" / "sim"
+    for mode_name in ["legacy", "profit_basic", "profit_regret", "profit_light_risk"]:
+        reward_base = base / f"reward_{mode_name}"
+        assert (reward_base / "stepF_equity_marl_SOXL.csv").exists()
+        assert (reward_base / "stepF_daily_log_router_SOXL.csv").exists()
+        assert (reward_base / "stepF_daily_log_marl_SOXL.csv").exists()
+        assert (reward_base / "stepF_summary_router_SOXL.json").exists()

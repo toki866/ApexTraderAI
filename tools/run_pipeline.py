@@ -1748,6 +1748,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     help="If 1, reuse artifacts from prior runs with matching signature (skip complete steps).")
     ap.add_argument("--force-rebuild", dest="force_rebuild", type=int, default=0, choices=[0, 1],
                     help="If 1, ignore existing artifacts and rebuild all steps even if reuse-output=1.")
+    ap.add_argument("--stepf-compare-reward-modes", dest="stepf_compare_reward_modes", type=int, default=1, choices=[0, 1],
+                    help="If 1, StepF compare path runs multiple reward modes (legacy, profit_basic, profit_regret, profit_light_risk).")
+    ap.add_argument("--stepf-reward-modes", dest="stepf_reward_modes", default="",
+                    help="Optional CSV override for StepF reward modes (e.g. legacy,profit_basic,profit_regret,profit_light_risk).")
     args = ap.parse_args(argv)
 
     repo_root = _repo_root()
@@ -1849,14 +1853,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pass
             _run_manifest = None
 
+    def _stepf_required_reward_modes() -> Tuple[str, ...]:
+        cfg = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
+        if cfg is None:
+            return tuple()
+        compare_enabled = bool(getattr(cfg, "stepf_compare_reward_modes", False))
+        raw_modes = str(getattr(cfg, "stepf_reward_modes", "") or "").strip()
+        if raw_modes:
+            return tuple(dict.fromkeys([m.strip().lower() for m in raw_modes.split(",") if m.strip()]))
+        if compare_enabled:
+            return ("legacy", "profit_basic", "profit_regret", "profit_light_risk")
+        mode_name = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
+        return (mode_name,) if mode_name else ("legacy",)
+
     def _can_reuse_step(step_key: str) -> bool:
         """Return True iff step can be skipped due to reuse."""
         if not reuse_output or force_rebuild or _run_manifest is None:
             return False
         try:
+            required_reward_modes = _stepf_required_reward_modes() if str(step_key).upper() == "F" else tuple()
             return (
                 _run_manifest.can_reuse_step(step_key)
-                and check_step_artifacts(step_key, resolved_output_root, symbol, resolved_mode)
+                and check_step_artifacts(
+                    step_key,
+                    resolved_output_root,
+                    symbol,
+                    resolved_mode,
+                    required_stepf_reward_modes=required_reward_modes,
+                )
             )
         except Exception:
             return False
@@ -2169,6 +2193,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepF config: {type(e).__name__}: {e}")
 
+        step_f_cfg = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
+        if step_f_cfg is not None:
+            _compare_enabled = bool(int(args.stepf_compare_reward_modes))
+            _raw_modes = str(args.stepf_reward_modes or "").strip()
+            if _raw_modes:
+                _modes = ",".join([m.strip().lower() for m in _raw_modes.split(",") if m.strip()])
+            elif _compare_enabled:
+                _modes = "legacy,profit_basic,profit_regret,profit_light_risk"
+            else:
+                _modes = str(getattr(step_f_cfg, "reward_mode", "legacy") or "legacy").strip().lower()
+            setattr(step_f_cfg, "stepf_compare_reward_modes", _compare_enabled)
+            setattr(step_f_cfg, "stepf_reward_modes", _modes)
+            print(f"[headless] StepF reward compare enabled={int(_compare_enabled)} modes={_modes}")
+
 
     print(f"[headless] repo_root={repo_root}")
     data_prepare_symbols = _symbols_for_data_prep(symbol)
@@ -2205,7 +2243,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"[REUSE] stepC_reuse_key={_base_reuse_key}")
     print(f"[REUSE] stepDPrime_reuse_key={_base_reuse_key}|profile_set={_stepe_agents_key}")
     print(f"[REUSE] stepE_reuse_key={_base_reuse_key}|stepe_agents={_stepe_agents_key}")
-    print(f"[REUSE] stepF_reuse_key={_base_reuse_key}|stepe_agents={_stepe_agents_key}|router_signature=minimal")
+    print(f"[REUSE] stepF_reuse_key={_base_reuse_key}|stepe_agents={_stepe_agents_key}|router_signature=minimal|reward_modes={','.join(_stepf_required_reward_modes())}")
 
     try:
         with timing.stage("branch.total"):
