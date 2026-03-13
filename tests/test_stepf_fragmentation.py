@@ -37,6 +37,17 @@ class _FakeHdbscanModule:
     HDBSCAN = _FakeClusterer
 
 
+class _FakeTICCClusterer:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def fit_predict_train(self, x_train):
+        return np.full((x_train.shape[0],), 2, dtype=int)
+
+    def predict_test(self, x_test):
+        return np.full((x_test.shape[0],), 3, dtype=int), np.full((x_test.shape[0],), 0.8, dtype=float)
+
+
 def test_build_phase2_state_uses_concat_and_logs_frame_stats(monkeypatch, capsys) -> None:
     svc = StepFService(app_config=SimpleNamespace())
     monkeypatch.setattr(sf_mod, "hdbscan", _FakeHdbscanModule)
@@ -139,3 +150,65 @@ def test_run_still_fails_on_real_exception(monkeypatch, tmp_path) -> None:
     date_range = SimpleNamespace(mode="sim", train_start="2024-01-01", train_end="2024-01-01", test_start="2024-01-02", test_end="2024-01-02")
     with pytest.raises(RuntimeError, match="failed for all modes"):
         svc.run(date_range, symbol="SOXL", mode="sim")
+
+
+def test_cluster_phase2_uses_real_ticc_route(monkeypatch) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    monkeypatch.setattr(sf_mod, "TICCClusterer", _FakeTICCClusterer)
+    cfg = StepFRouterConfig(clusterer_type="ticc", clusterer_fallback_type="none", ticc_num_clusters=3)
+
+    x_train = np.ones((5, 2), dtype=float)
+    x_test = np.ones((3, 2), dtype=float)
+    train_labels, test_labels, strengths, diag = svc._cluster_phase2(cfg=cfg, x_train=x_train, x_test=x_test)
+
+    assert diag["clusterer_type_requested"] == "ticc"
+    assert diag["clusterer_type_used"] == "ticc"
+    assert diag["fallback_used"] is False
+    assert train_labels.tolist() == [2] * 5
+    assert test_labels.tolist() == [3] * 3
+    assert strengths.tolist() == [0.8] * 3
+
+
+def test_cluster_phase2_ticc_unavailable_falls_back_to_none(monkeypatch) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+
+    class _BrokenTICC:
+        def __init__(self, **kwargs):
+            raise RuntimeError("ticc backend missing")
+
+    monkeypatch.setattr(sf_mod, "TICCClusterer", _BrokenTICC)
+    cfg = StepFRouterConfig(clusterer_type="ticc", clusterer_fallback_type="none")
+
+    train_labels, test_labels, strengths, diag = svc._cluster_phase2(
+        cfg=cfg,
+        x_train=np.ones((4, 2), dtype=float),
+        x_test=np.ones((2, 2), dtype=float),
+    )
+
+    assert diag["clusterer_type_requested"] == "ticc"
+    assert diag["clusterer_type_used"] == "none"
+    assert diag["fallback_used"] is True
+    assert train_labels.tolist() == [0, 0, 0, 0]
+    assert test_labels.tolist() == [0, 0]
+    assert strengths.tolist() == [1.0, 1.0]
+
+
+def test_cluster_phase2_none_returns_single_regime() -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    cfg = StepFRouterConfig(clusterer_type="none")
+
+    train_labels, test_labels, strengths, diag = svc._cluster_phase2(
+        cfg=cfg,
+        x_train=np.ones((3, 2), dtype=float),
+        x_test=np.ones((1, 2), dtype=float),
+    )
+
+    assert diag["clusterer_type_used"] == "none"
+    assert train_labels.tolist() == [0, 0, 0]
+    assert test_labels.tolist() == [0]
+    assert strengths.tolist() == [1.0]
+
+
+def test_stepf_service_source_has_no_kmeans_placeholder() -> None:
+    src = Path(sf_mod.__file__).read_text(encoding="utf-8")
+    assert "KMeans" not in src
