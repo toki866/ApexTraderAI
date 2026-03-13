@@ -41,14 +41,6 @@ except Exception:  # pragma: no cover
         def stage(self, _name: str):
             yield
 
-try:
-    import hdbscan
-    from hdbscan import prediction as hdbscan_prediction
-except Exception:  # pragma: no cover
-    hdbscan = None
-    hdbscan_prediction = None
-
-
 @dataclass
 class StepFRouterConfig:
     output_root: str = "output"
@@ -59,10 +51,7 @@ class StepFRouterConfig:
     z_pred_source: str = "dprime_mix_h02"
     robust_scaler: bool = True
     pca_n_components: int = 30
-    hdbscan_min_cluster_size: int = 30
-    hdbscan_min_samples: int = 10
     clusterer_type: str = "ticc_raw20_stable"
-    clusterer_fallback_type: str = "none"
     ticc_num_clusters: int = 8
     raw20_num_clusters: int = 20
     k_eff_min: int = 12
@@ -706,8 +695,6 @@ class StepFService:
                         "fallback_type": cluster_diag.get("fallback_type", ""),
                         "fallback_used": bool(cluster_diag.get("fallback_used", False)),
                         "fallback_reason": cluster_diag.get("fallback_reason", ""),
-                        "hdbscan_defined_cluster_count": int(cluster_diag.get("hdbscan_defined_cluster_count", -1) or -1),
-                        "hdbscan_all_noise": bool(cluster_diag.get("hdbscan_all_noise", False)),
                         "raw20_num_clusters_requested": int(cluster_diag.get("raw20_num_clusters_requested", 0) or 0),
                         "raw20_regime_count": int(cluster_diag.get("raw20_regime_count", 0) or 0),
                         "k_valid": int(cluster_diag.get("k_valid", 0) or 0),
@@ -953,8 +940,6 @@ class StepFService:
         print(f"[STEPF_CLUSTER] fallback_type={diag['fallback_type']}")
         print(f"[STEPF_CLUSTER] fallback_triggered={str(diag['fallback_used']).lower()}")
         print(f"[STEPF_CLUSTER] fallback_reason={diag.get('fallback_reason', '')}")
-        print(f"[STEPF_CLUSTER] hdbscan_defined_cluster_count={diag.get('hdbscan_defined_cluster_count', -1)}")
-        print(f"[STEPF_CLUSTER] hdbscan_all_noise={str(bool(diag.get('hdbscan_all_noise', False))).lower()}")
         print(f"[STEPF_CLUSTER] raw20_num_clusters_requested={diag.get('raw20_num_clusters_requested', 0)}")
         print(f"[STEPF_CLUSTER] raw20_regime_count={diag.get('raw20_regime_count', 0)}")
         print(f"[STEPF_CLUSTER] k_valid={diag.get('k_valid', 0)}")
@@ -970,12 +955,10 @@ class StepFService:
 
     def _cluster_phase2(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
         requested = str(getattr(cfg, "clusterer_type", "ticc_raw20_stable") or "ticc_raw20_stable").strip().lower()
-        fallback = str(getattr(cfg, "clusterer_fallback_type", "none") or "none").strip().lower()
+        fallback = "none"
         used = requested
         fallback_used = False
         fallback_reason = ""
-        hdbscan_defined_cluster_count = -1
-        hdbscan_all_noise = False
 
         if requested in {"ticc_raw20_stable", "ticc"}:
             try:
@@ -1026,30 +1009,15 @@ class StepFService:
             except Exception as exc:
                 print(f"[STEPF_CLUSTER] ticc_raw20_stable_unavailable={type(exc).__name__}: {exc}")
                 fallback_used = True
-                out, used, fallback_reason, hdbscan_diag = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
-                hdbscan_defined_cluster_count = int(hdbscan_diag.get("defined_cluster_count", -1))
-                hdbscan_all_noise = bool(hdbscan_diag.get("all_noise", False))
+                out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=f"ticc_failure:{type(exc).__name__}")
                 raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
                 valid_clusters = []
                 rare_clusters = []
                 k_valid = 0
                 k_eff_min = int(getattr(cfg, "k_eff_min", 12))
                 k_eff = k_eff_min
-        elif requested == "hdbscan":
-            out, used, fallback_reason, hdbscan_diag = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback="hdbscan")
-            hdbscan_defined_cluster_count = int(hdbscan_diag.get("defined_cluster_count", -1))
-            hdbscan_all_noise = bool(hdbscan_diag.get("all_noise", False))
-            fallback_used = used != "stable_only"
-            raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
-            valid_clusters = []
-            rare_clusters = []
-            k_valid = 0
-            k_eff_min = int(getattr(cfg, "k_eff_min", 12))
-            k_eff = k_eff_min
         elif requested == "none":
-            out, used, fallback_reason, hdbscan_diag = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback="none")
-            hdbscan_defined_cluster_count = int(hdbscan_diag.get("defined_cluster_count", -1))
-            hdbscan_all_noise = bool(hdbscan_diag.get("all_noise", False))
+            out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test)
             raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
             valid_clusters = []
             rare_clusters = []
@@ -1058,9 +1026,7 @@ class StepFService:
             k_eff = k_eff_min
         else:
             fallback_used = True
-            out, used, fallback_reason, hdbscan_diag = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
-            hdbscan_defined_cluster_count = int(hdbscan_diag.get("defined_cluster_count", -1))
-            hdbscan_all_noise = bool(hdbscan_diag.get("all_noise", False))
+            out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason="ticc_unavailable")
             raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
             valid_clusters = []
             rare_clusters = []
@@ -1077,8 +1043,6 @@ class StepFService:
             "fallback_type": fallback,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
-            "hdbscan_defined_cluster_count": int(hdbscan_defined_cluster_count),
-            "hdbscan_all_noise": bool(hdbscan_all_noise),
             "raw20_num_clusters_requested": int(getattr(cfg, "raw20_num_clusters", 20)),
             "raw20_regime_count": int(len(pd.unique(out["train_raw20"]))),
             "k_valid": int(k_valid),
@@ -1092,35 +1056,12 @@ class StepFService:
         }
         return out, diag
 
-    def _run_cluster_fallback(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, fallback: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if fallback == "hdbscan":
-            return self._run_hdbscan_clusterer(cfg=cfg, x_train=x_train, x_test=x_test)
+    def _run_cluster_fallback(self, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self._run_none_clusterer(x_train=x_train, x_test=x_test)
 
-    def _run_cluster_fallback_dual(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, fallback: str) -> Tuple[Dict[str, np.ndarray], str, str, Dict[str, object]]:
+    def _run_cluster_fallback_dual(self, x_train: np.ndarray, x_test: np.ndarray, fallback_reason: str = "") -> Tuple[Dict[str, np.ndarray], str, str]:
         used = "none"
-        fallback_reason = ""
-        hdbscan_diag: Dict[str, object] = {"defined_cluster_count": -1, "all_noise": False}
-
-        if fallback == "hdbscan":
-            try:
-                train, test, conf = self._run_hdbscan_clusterer(cfg=cfg, x_train=x_train, x_test=x_test)
-                hdbscan_diag = dict(getattr(self, "_last_hdbscan_diag", {}) or hdbscan_diag)
-                used = "stable_only"
-            except Exception as exc:
-                train, test, conf = self._run_none_clusterer(x_train=x_train, x_test=x_test)
-                hdbscan_diag = dict(getattr(self, "_last_hdbscan_diag", {}) or hdbscan_diag)
-                used = "none"
-                if isinstance(exc, RuntimeError) and str(exc) == "hdbscan_no_defined_clusters":
-                    fallback_reason = "hdbscan_no_defined_clusters"
-                elif isinstance(exc, ImportError):
-                    fallback_reason = "hdbscan_unavailable"
-                else:
-                    fallback_reason = f"hdbscan_failed:{type(exc).__name__}"
-        else:
-            train, test, conf = self._run_none_clusterer(x_train=x_train, x_test=x_test)
-            if fallback not in {"none", ""}:
-                fallback_reason = f"unsupported_fallback:{fallback}"
+        train, test, conf = self._run_none_clusterer(x_train=x_train, x_test=x_test)
 
         out = {
             "train_main": train.astype(int),
@@ -1136,7 +1077,7 @@ class StepFService:
             "train_rare_raw20": np.zeros((x_train.shape[0],), dtype=int),
             "test_rare_raw20": np.zeros((x_test.shape[0],), dtype=int),
         }
-        return out, used, fallback_reason, hdbscan_diag
+        return out, used, fallback_reason
 
     def _run_ticc_clusterer_with_k(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, num_clusters: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         clusterer = TICCClusterer(
@@ -1163,30 +1104,6 @@ class StepFService:
         train_labels = clusterer.fit_predict_train(x_train)
         test_labels, strengths = clusterer.predict_test(x_test)
         return train_labels.astype(int), test_labels.astype(int), strengths.astype(float)
-
-    def _run_hdbscan_clusterer(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if hdbscan is None or hdbscan_prediction is None:
-            raise ImportError("hdbscan is not available")
-        setattr(self, "_last_hdbscan_diag", {"defined_cluster_count": -1, "all_noise": False})
-        clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=int(cfg.hdbscan_min_cluster_size),
-            min_samples=int(cfg.hdbscan_min_samples),
-            prediction_data=True,
-        )
-        clusterer.fit(x_train)
-        train_labels = clusterer.labels_.astype(int)
-        defined_clusters = np.unique(train_labels[train_labels >= 0]) if train_labels.size else np.array([], dtype=int)
-        defined_cluster_count = int(len(defined_clusters))
-        all_noise = bool(train_labels.size > 0 and np.all(train_labels < 0))
-        setattr(self, "_last_hdbscan_diag", {"defined_cluster_count": defined_cluster_count, "all_noise": all_noise})
-        if defined_cluster_count == 0:
-            raise RuntimeError("hdbscan_no_defined_clusters")
-        if len(x_test):
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*defined clusters.*", category=UserWarning)
-                test_labels, strengths = hdbscan_prediction.approximate_predict(clusterer, x_test)
-            return train_labels, test_labels.astype(int), strengths.astype(float)
-        return train_labels, np.zeros((0,), dtype=int), np.zeros((0,), dtype=float)
 
     @staticmethod
     def _run_none_clusterer(x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
