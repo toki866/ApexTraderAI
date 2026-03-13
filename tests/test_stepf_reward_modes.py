@@ -443,7 +443,7 @@ def test_stepf_resolve_agents_logs_resolved_zero_when_no_request_and_no_logs(tmp
     assert "[STEPF_AGENTS] resolved_agents_count=0" in out
 
 
-def test_stepf_resolve_agents_prefers_output_root_over_repo_relative_output_path(tmp_path, capsys) -> None:
+def test_stepf_resolve_agents_prefers_effective_output_root_and_avoids_repo_relative_default_output(tmp_path, capsys) -> None:
     symbol = "SOXL"
     output_root = tmp_path / "run_123" / "output"
     stepe_root = output_root / "stepE" / "sim"
@@ -467,6 +467,8 @@ def test_stepf_resolve_agents_prefers_output_root_over_repo_relative_output_path
 
     out = capsys.readouterr().out
     assert f"[STEPF_AGENTS] selected_stepE_root={stepe_root.resolve()}" in out
-    assert f"[STEPF_AGENTS] candidate_stepE_roots={stepe_root.resolve()},{repo_relative_candidate}" in out
+    assert "[STEPF_AGENTS] selected_stepE_root_exists=true" in out
+    assert f"[STEPF_AGENTS] candidate_stepE_roots={stepe_root.resolve()}" in out
+    assert str(repo_relative_candidate) not in out
     assert "[STEPF_AGENTS] discovered_daily_logs_count=10" in out
     assert "[STEPF_AGENTS] resolved_agents_count=10" in out
