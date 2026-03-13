@@ -134,6 +134,11 @@ def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
             os.path.join(out_dir, "EVAL_TABLE_stepF_compare.csv"), index=False
         )
 
+    reward_cmp_rows = stepf_compare.get("stepF_reward_compare", {}).get("rows", []) if isinstance(stepf_compare.get("stepF_reward_compare", {}), dict) else []
+    pd.DataFrame(reward_cmp_rows if reward_cmp_rows else [{"status": stepf_compare.get("stepF_reward_compare", {}).get("status", "WARN"), "summary": stepf_compare.get("stepF_reward_compare", {}).get("summary", "reward comparison unavailable")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepF_reward_compare.csv"), index=False
+    )
+
     cluster_rows = stepf_compare.get("cluster", {}).get("rows", []) if isinstance(stepf_compare.get("cluster", {}), dict) else []
     pd.DataFrame(cluster_rows if cluster_rows else [{"status": stepf_compare.get("cluster", {}).get("status", "PENDING"), "reason": stepf_compare.get("cluster", {}).get("reason", "cluster comparison pending")}]).to_csv(
         os.path.join(out_dir, "EVAL_TABLE_stepF_compare_cluster.csv"), index=False
@@ -478,6 +483,46 @@ def _build_test_ret_frame(df: pd.DataFrame, output_root: str, *, date_col: str =
     return test_df[cols].dropna(subset=["Date", "ret"]).sort_values("Date").reset_index(drop=True)
 
 
+def _load_stepf_mode_artifacts(output_root: str, mode: str, symbol: str, reward_mode: str) -> tuple[str, str] | None:
+    base = os.path.join(output_root, "stepF", mode, f"reward_{reward_mode}")
+    eq = os.path.join(base, f"stepF_equity_marl_{symbol}.csv")
+    router = os.path.join(base, f"stepF_daily_log_router_{symbol}.csv")
+    if os.path.exists(eq) and os.path.exists(router):
+        return eq, router
+    return None
+
+
+def _mode_compare_row(name: str, test_df: pd.DataFrame, fixed_by_date: dict[Any, float], oracle_df: pd.DataFrame, pick_match_rate: float | None) -> dict[str, Any]:
+    metrics = _metrics_from_ret_series(test_df["ret"] if "ret" in test_df.columns else pd.Series(dtype=float))
+    cur_by_date = {d: float(r) for d, r in zip(test_df.get("Date", pd.Series(dtype='datetime64[ns]')), test_df.get("ret", pd.Series(dtype=float))) if np.isfinite(r)}
+    win_days = 0
+    common_days = 0
+    for d, fxd in fixed_by_date.items():
+        cur = cur_by_date.get(d)
+        if cur is None:
+            continue
+        common_days += 1
+        if cur > fxd:
+            win_days += 1
+    fixed_eq = _metrics_from_ret_series(pd.Series(list(fixed_by_date.values()), dtype=float)).get("equity_multiple")
+    oracle_map = {d: float(r) for d, r in zip(oracle_df["Date"], oracle_df["oracle_ret"]) if np.isfinite(r)}
+    cur_eq = metrics.get("equity_multiple")
+    oracle_eq = _metrics_from_ret_series(oracle_df["oracle_ret"]).get("equity_multiple")
+    return {
+        "name": name,
+        "equity_multiple": _to_float(cur_eq),
+        "sharpe": _to_float(metrics.get("sharpe")),
+        "max_dd": _to_float(metrics.get("max_dd")),
+        "mean_ret": _to_float(metrics.get("mean_ret")),
+        "std_ret": _to_float(metrics.get("std_ret")),
+        "regret_vs_fixed_best": _to_float((fixed_eq - cur_eq) if fixed_eq is not None and cur_eq is not None else None),
+        "regret_vs_oracle": _to_float((oracle_eq - cur_eq) if oracle_eq is not None and cur_eq is not None else None),
+        "win_days_vs_fixed_best": _to_int(win_days),
+        "pick_match_rate_vs_oracle": _to_float(pick_match_rate),
+        "common_days_vs_fixed_best": _to_int(common_days),
+    }
+
+
 def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dict[str, Any]) -> dict[str, Any]:
     stepf_rows = report.get("stepF", {}).get("rows", []) if isinstance(report.get("stepF", {}), dict) else []
     stepe_rows = report.get("stepE", {}).get("rows", []) if isinstance(report.get("stepE", {}), dict) else []
@@ -656,6 +701,73 @@ def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dic
                     }
                 )
 
+    reward_compare_rows: list[dict[str, Any]] = []
+    reward_modes = ["profit_basic", "profit_regret", "profit_light_risk"]
+    reward_rows_by_mode: dict[str, dict[str, Any]] = {}
+    current_test_df = stepf_test.copy()
+    reward_rows_by_mode["current_stepf"] = _mode_compare_row("current_stepf", current_test_df, fixed_by_date, oracle_df, pick_match_rate)
+
+    for rm in reward_modes:
+        pair = _load_stepf_mode_artifacts(output_root, mode, symbol, rm)
+        if pair is None:
+            continue
+        eq_path, router_path = pair
+        try:
+            rm_eq = _build_test_ret_frame(_read_csv(eq_path), output_root)
+            rm_pick = None
+            rdf = _read_csv(router_path)
+            wcols = [c for c in rdf.columns if c.startswith("w_")]
+            if wcols:
+                rwork = rdf.copy()
+                split_col = _pick_col(rwork, ["Split"])
+                split_values, _, _ = _resolve_split_series(rwork, split_col, output_root=output_root, date_col="Date")
+                rwork = rwork[split_values == "test"].copy()
+                rwork["Date"] = pd.to_datetime(rwork["Date"], errors="coerce").dt.normalize()
+                for c in wcols:
+                    rwork[c] = pd.to_numeric(rwork[c], errors="coerce")
+                rwork = rwork.dropna(subset=["Date"])
+                if not rwork.empty:
+                    rwork["stepf_expert"] = rwork[wcols].idxmax(axis=1).str.replace("w_", "", regex=False)
+                    merged_pick = oracle_df[["Date", "oracle_expert"]].merge(rwork[["Date", "stepf_expert"]], on="Date", how="inner")
+                    if not merged_pick.empty:
+                        rm_pick = float((merged_pick["oracle_expert"] == merged_pick["stepf_expert"]).mean())
+            reward_rows_by_mode[f"reward_{rm}"] = _mode_compare_row(f"reward_{rm}", rm_eq, fixed_by_date, oracle_df, rm_pick)
+        except Exception:
+            continue
+
+    fixed_mode_row = {
+        "name": "fixed_best",
+        "equity_multiple": _to_float(fixed_best.get("equity_multiple")),
+        "sharpe": _to_float(fixed_best.get("sharpe")),
+        "max_dd": _to_float(fixed_best.get("max_dd")),
+        "mean_ret": _to_float(fixed_best.get("mean_ret")),
+        "std_ret": _to_float(fixed_best.get("std_ret")),
+        "regret_vs_fixed_best": _to_float(0.0),
+        "regret_vs_oracle": _to_float((oracle_metrics.get("equity_multiple") or np.nan) - (fixed_best.get("equity_multiple") or np.nan)),
+        "win_days_vs_fixed_best": None,
+        "pick_match_rate_vs_oracle": None,
+        "common_days_vs_fixed_best": None,
+    }
+    oracle_mode_row = {
+        "name": "daily_oracle",
+        "equity_multiple": _to_float(oracle_metrics.get("equity_multiple")),
+        "sharpe": _to_float(oracle_metrics.get("sharpe")),
+        "max_dd": _to_float(oracle_metrics.get("max_dd")),
+        "mean_ret": _to_float(oracle_metrics.get("mean_ret")),
+        "std_ret": _to_float(oracle_metrics.get("std_ret")),
+        "regret_vs_fixed_best": _to_float((fixed_best.get("equity_multiple") or np.nan) - (oracle_metrics.get("equity_multiple") or np.nan)),
+        "regret_vs_oracle": _to_float(0.0),
+        "win_days_vs_fixed_best": None,
+        "pick_match_rate_vs_oracle": None,
+        "common_days_vs_fixed_best": None,
+    }
+
+    ordered_names = ["current_stepf", "reward_profit_basic", "reward_profit_regret", "reward_profit_light_risk"]
+    for n in ordered_names:
+        if n in reward_rows_by_mode:
+            reward_compare_rows.append(reward_rows_by_mode[n])
+    reward_compare_rows.extend([fixed_mode_row, oracle_mode_row])
+
     current_em = float(current_row.get("equity_multiple") or np.nan)
     fixed_em = float(fixed_best.get("equity_multiple") or np.nan)
     oracle_em = float(oracle_metrics.get("equity_multiple") or np.nan)
@@ -694,6 +806,11 @@ def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dic
         "cluster": {"status": cluster_status, "reason": cluster_reason, "rows": cluster_rows},
         "series": by_date_rows,
         "stepf_selected_expert_count_by_name": stepf_selected_by_name,
+        "stepF_reward_compare": {
+            "status": "OK" if len(reward_compare_rows) >= 3 else "WARN",
+            "summary": "reward mode comparison across current/baseline/oracle",
+            "rows": reward_compare_rows,
+        },
     }
 
 
@@ -925,6 +1042,38 @@ def _generate_plots(output_root: str, mode: str, symbol: str, report: dict[str, 
             ax.grid(True, axis="y", alpha=0.3)
             fig.tight_layout()
             fig.savefig(path2, dpi=120)
+            plt.close(fig)
+
+        reward_cmp = cmp.get("stepF_reward_compare", {}) if isinstance(cmp.get("stepF_reward_compare", {}), dict) else {}
+        rrows = reward_cmp.get("rows", []) if isinstance(reward_cmp.get("rows", []), list) else []
+        path3 = record_plot("equity_stepF_reward_modes.png")
+        if not rrows:
+            _save_empty_plot_notice(path3, "StepF reward modes", "reward compare rows unavailable")
+        else:
+            names = [str(r.get("name")) for r in rrows]
+            eqs = [0.0 if r.get("equity_multiple") is None else float(r.get("equity_multiple")) for r in rrows]
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(names, eqs, marker="o", linewidth=1.5)
+            ax.set_title("StepF reward modes equity multiple")
+            ax.set_ylabel("equity_multiple")
+            ax.grid(True, axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(path3, dpi=120)
+            plt.close(fig)
+
+        path4 = record_plot("bar_stepF_reward_mode_regret.png")
+        mode_rows = [r for r in rrows if str(r.get("name", "")).startswith("reward_") or str(r.get("name")) == "current_stepf"]
+        if not mode_rows:
+            _save_empty_plot_notice(path4, "StepF reward mode regret", "reward-mode regrets unavailable")
+        else:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.bar([str(r.get("name")) for r in mode_rows], [0.0 if r.get("regret_vs_fixed_best") is None else float(r.get("regret_vs_fixed_best")) for r in mode_rows], color="tab:green")
+            ax.axhline(0.0, color="black", linewidth=1.0)
+            ax.set_title("StepF reward modes regret vs fixed best")
+            ax.set_ylabel("regret_vs_fixed_best")
+            ax.grid(True, axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(path4, dpi=120)
             plt.close(fig)
     except Exception as exc:
         notes.append(f"PLOT StepF compare exception: {exc}")
@@ -1449,6 +1598,19 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- stepf_win_days_vs_fixed_best: {_fmt(cmp_row.get('stepf_win_days_vs_fixed_best'))}",
             f"- stepf_pick_match_rate_vs_oracle: {_fmt(cmp_row.get('stepf_pick_match_rate_vs_oracle'))}",
         ])
+    reward_cmp = stepf_cmp.get("stepF_reward_compare", {}) if isinstance(stepf_cmp.get("stepF_reward_compare", {}), dict) else {}
+    lines.append(f"- StepFRewardCompare status: {reward_cmp.get('status', 'WARN')} ({reward_cmp.get('summary', 'NA')})")
+    rrows = reward_cmp.get("rows", []) if isinstance(reward_cmp.get("rows", []), list) else []
+    if rrows:
+        lines.append("")
+        lines.append("### StepFRewardCompare")
+        lines.append("| name | equity_multiple | sharpe | max_dd | mean_ret | std_ret | regret_vs_fixed_best | regret_vs_oracle | win_days_vs_fixed_best | pick_match_rate_vs_oracle |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for r in rrows:
+            lines.append(
+                f"| {r.get('name', 'NA')} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('sharpe'))} | {_fmt(r.get('max_dd'))} | {_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('regret_vs_fixed_best'))} | {_fmt(r.get('regret_vs_oracle'))} | {_fmt(r.get('win_days_vs_fixed_best'))} | {_fmt(r.get('pick_match_rate_vs_oracle'))} |"
+            )
+
     cl = stepf_cmp.get("cluster", {}) if isinstance(stepf_cmp.get("cluster", {}), dict) else {}
     lines.append(f"- cluster_status: {cl.get('status', 'PENDING')} ({cl.get('reason', 'cluster comparison pending')})")
 
@@ -1585,6 +1747,12 @@ def render_summary(report: dict[str, Any]) -> str:
         lines.append(f"  regret_vs_oracle={_fmt(cmp_row.get('regret_vs_oracle'))}")
         lines.append(f"  stepf_win_days_vs_fixed_best={_fmt(cmp_row.get('stepf_win_days_vs_fixed_best'))}")
         lines.append(f"  stepf_pick_match_rate_vs_oracle={_fmt(cmp_row.get('stepf_pick_match_rate_vs_oracle'))}")
+    reward_cmp = stepf_cmp.get("stepF_reward_compare", {}) if isinstance(stepf_cmp.get("stepF_reward_compare", {}), dict) else {}
+    lines.append(f"  StepFRewardCompare status={reward_cmp.get('status', 'WARN')} summary={reward_cmp.get('summary', 'NA')}")
+    for r in (reward_cmp.get("rows", [])[:8] if isinstance(reward_cmp.get("rows", []), list) else []):
+        lines.append(
+            f"    {r.get('name')} equity_multiple={_fmt(r.get('equity_multiple'))} regret_vs_fixed_best={_fmt(r.get('regret_vs_fixed_best'))} pick_match_rate_vs_oracle={_fmt(r.get('pick_match_rate_vs_oracle'))}"
+        )
 
     div = report.get("diversity", {})
     lines.append("Diversity:")
