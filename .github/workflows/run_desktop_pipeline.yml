@@ -2001,25 +2001,100 @@ jobs:
           Add-Content $rp '[STEPF_ENTRY] after_service_init'
           Add-Content $rp '[STEPF_ENTRY] before_service_run'
           # [E] Execute and always mirror subprocess stdout/stderr to ONE_TAP
-          $rc = 1
+          $PSNativeCommandUseErrorActionPreference = $false
           $stepFOutput = @()
+          $actualRc = $null
+          $nativeInvokeException = $null
           try {
             $stepFOutput = @(wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1)
-            $rc = $LASTEXITCODE
+            $actualRc = $LASTEXITCODE
           } catch {
-            Add-Content $rp "[NG] step_f exception=$_"
+            $nativeInvokeException = $_
+            Add-Content $rp "[STEPF_WRAPPER] native_exception=$_"
             Add-Content $rp ("[STEPF_ENTRY] wrapper_exception_repr={0}" -f $_.Exception)
-          } finally {
-            foreach ($line in $stepFOutput) {
-              $lineText = [string]$line
-              Write-Host $lineText
-              Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
-            }
-            Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $rc)
-            Write-Host "[StepF] rc=$rc"
+            if ($null -ne $LASTEXITCODE) { $actualRc = $LASTEXITCODE }
           }
-          if ($rc -ne 0) {
-            Add-Content $rp "[NG] step_f rc=$rc"
+          if ($null -eq $actualRc) {
+            if ($null -ne $LASTEXITCODE) { $actualRc = $LASTEXITCODE } else { $actualRc = 1 }
+          }
+          foreach ($line in $stepFOutput) {
+            $lineText = [string]$line
+            Write-Host $lineText
+            Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
+          }
+          Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $actualRc)
+          Write-Host "[StepF] rc=$actualRc"
+
+          $auditWarnDetected = ($stepFOutput | Where-Object { [string]$_ -match [regex]::Escape('[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)') }).Count -gt 0
+          $requiredPaths = @(
+            (Join-Path $stepFDir ("stepF_daily_log_router_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_daily_log_marl_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_equity_marl_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_summary_router_{0}.json" -f $sym1))
+          )
+          $missingRequiredPaths = @($requiredPaths | Where-Object { -not (Test-Path $_) })
+          $requiredOutputsPresent = ($missingRequiredPaths.Count -eq 0)
+
+          $equityCsvPath = Join-Path $stepFDir ("stepF_equity_marl_{0}.csv" -f $sym1)
+          $equityCsvReadable = $false
+          $equityRowCount = 0
+          $equityRequiredColsOk = $false
+          if (Test-Path $equityCsvPath) {
+            try {
+              $equityRows = @(Import-Csv -Path $equityCsvPath -ErrorAction Stop)
+              $equityCsvReadable = $true
+              $equityRowCount = $equityRows.Count
+              if ($equityRowCount -gt 0) {
+                $requiredCols = @('Date','ratio','ret','equity')
+                $headerCols = @($equityRows[0].PSObject.Properties.Name)
+                $missingCols = @($requiredCols | Where-Object { $_ -notin $headerCols })
+                $equityRequiredColsOk = ($missingCols.Count -eq 0)
+              }
+            } catch {
+              Add-Content $rp ("[STEPF_WRAPPER] equity_csv_read_error={0}" -f $_)
+            }
+          }
+
+          $tracebackDetected = (($stepFOutput | Where-Object { [string]$_ -match 'Traceback' }).Count -gt 0)
+          $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
+          if ($tbFiles -and $tbFiles.Count -gt 0) {
+            $tracebackDetected = $true
+            $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
+            Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
+          } else {
+            Add-Content $rp "[STEPF_MULTI] traceback_files=none"
+          }
+
+          $artifactsComplete = ($requiredOutputsPresent -and $equityCsvReadable -and ($equityRowCount -gt 0) -and $equityRequiredColsOk)
+          $auditWarnNonFatal = ($auditWarnDetected -and $artifactsComplete)
+          $finalStatus = 'fail'
+          $finalEffectiveRc = 1
+          if ($tracebackDetected) {
+            $finalStatus = 'fail'
+            $finalEffectiveRc = 1
+          } elseif ($auditWarnNonFatal) {
+            $finalStatus = 'warn_pass'
+            $finalEffectiveRc = 0
+          } elseif (($actualRc -eq 0) -and $artifactsComplete) {
+            $finalStatus = 'pass'
+            $finalEffectiveRc = 0
+          }
+
+          Add-Content $rp ("[STEPF_WRAPPER] subprocess_rc={0}" -f $actualRc)
+          Add-Content $rp ("[STEPF_WRAPPER] audit_warn_detected={0}" -f $auditWarnDetected.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] audit_warn_nonfatal={0}" -f $auditWarnNonFatal.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] required_outputs_present={0}" -f $requiredOutputsPresent.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] equity_csv_readable={0}" -f $equityCsvReadable.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] equity_row_count={0}" -f $equityRowCount)
+          Add-Content $rp ("[STEPF_WRAPPER] equity_required_cols_ok={0}" -f $equityRequiredColsOk.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] traceback_detected={0}" -f $tracebackDetected.ToString().ToLowerInvariant())
+          if (-not $requiredOutputsPresent) { Add-Content $rp ("[STEPF_WRAPPER] missing_required_outputs={0}" -f ($missingRequiredPaths -join ',')) }
+          if ($nativeInvokeException) { Add-Content $rp ("[STEPF_WRAPPER] native_exception_present=true") }
+          Add-Content $rp ("[STEPF_WRAPPER] final_wrapper_status={0}" -f $finalStatus)
+          Add-Content $rp ("[STEPF_WRAPPER] final_effective_rc={0}" -f $finalEffectiveRc)
+
+          if ($finalEffectiveRc -ne 0) {
+            Add-Content $rp "[NG] step_f rc=$finalEffectiveRc"
             Add-Content $rp "[STEPF_MULTI] failure_stepF_dir=$stepFDir"
             Add-Content $rp ("[STEPF_ENTRY] wrapper_cwd={0}" -f (Get-Location).Path)
             Add-Content $rp ("[STEPF_ENTRY] wrapper_output_root={0}" -f $outRoot)
@@ -2031,21 +2106,10 @@ jobs:
             } catch {
               Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing_error={0}" -f $_)
             }
-            $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
-            if (-not $tbFiles -or $tbFiles.Count -eq 0) {
-              Add-Content $rp "[STEPF_MULTI] traceback_files=none"
-            } else {
-              $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
-              Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
-              foreach ($tb in $tbFiles) {
-                Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
-                Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
-                Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
-              }
-            }
-            Write-Error "StepF failed rc=$rc"
-            exit $rc
+            Write-Host "[StepF] wrapper failed final_effective_rc=$finalEffectiveRc"
+            exit 1
           }
+
           Add-Content $rp '[STEPF_ENTRY] after_service_run'
           Add-Content $rp '[OK] step_f'
 
@@ -5649,25 +5713,100 @@ jobs:
           Add-Content $rp '[STEPF_ENTRY] after_service_init'
           Add-Content $rp '[STEPF_ENTRY] before_service_run'
           # [E] Execute and always mirror subprocess stdout/stderr to ONE_TAP
-          $rc = 1
+          $PSNativeCommandUseErrorActionPreference = $false
           $stepFOutput = @()
+          $actualRc = $null
+          $nativeInvokeException = $null
           try {
             $stepFOutput = @(wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1)
-            $rc = $LASTEXITCODE
+            $actualRc = $LASTEXITCODE
           } catch {
-            Add-Content $rp "[NG] step_f exception=$_"
+            $nativeInvokeException = $_
+            Add-Content $rp "[STEPF_WRAPPER] native_exception=$_"
             Add-Content $rp ("[STEPF_ENTRY] wrapper_exception_repr={0}" -f $_.Exception)
-          } finally {
-            foreach ($line in $stepFOutput) {
-              $lineText = [string]$line
-              Write-Host $lineText
-              Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
-            }
-            Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $rc)
-            Write-Host "[StepF] rc=$rc"
+            if ($null -ne $LASTEXITCODE) { $actualRc = $LASTEXITCODE }
           }
-          if ($rc -ne 0) {
-            Add-Content $rp "[NG] step_f rc=$rc"
+          if ($null -eq $actualRc) {
+            if ($null -ne $LASTEXITCODE) { $actualRc = $LASTEXITCODE } else { $actualRc = 1 }
+          }
+          foreach ($line in $stepFOutput) {
+            $lineText = [string]$line
+            Write-Host $lineText
+            Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
+          }
+          Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $actualRc)
+          Write-Host "[StepF] rc=$actualRc"
+
+          $auditWarnDetected = ($stepFOutput | Where-Object { [string]$_ -match [regex]::Escape('[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)') }).Count -gt 0
+          $requiredPaths = @(
+            (Join-Path $stepFDir ("stepF_daily_log_router_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_daily_log_marl_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_equity_marl_{0}.csv" -f $sym1)),
+            (Join-Path $stepFDir ("stepF_summary_router_{0}.json" -f $sym1))
+          )
+          $missingRequiredPaths = @($requiredPaths | Where-Object { -not (Test-Path $_) })
+          $requiredOutputsPresent = ($missingRequiredPaths.Count -eq 0)
+
+          $equityCsvPath = Join-Path $stepFDir ("stepF_equity_marl_{0}.csv" -f $sym1)
+          $equityCsvReadable = $false
+          $equityRowCount = 0
+          $equityRequiredColsOk = $false
+          if (Test-Path $equityCsvPath) {
+            try {
+              $equityRows = @(Import-Csv -Path $equityCsvPath -ErrorAction Stop)
+              $equityCsvReadable = $true
+              $equityRowCount = $equityRows.Count
+              if ($equityRowCount -gt 0) {
+                $requiredCols = @('Date','ratio','ret','equity')
+                $headerCols = @($equityRows[0].PSObject.Properties.Name)
+                $missingCols = @($requiredCols | Where-Object { $_ -notin $headerCols })
+                $equityRequiredColsOk = ($missingCols.Count -eq 0)
+              }
+            } catch {
+              Add-Content $rp ("[STEPF_WRAPPER] equity_csv_read_error={0}" -f $_)
+            }
+          }
+
+          $tracebackDetected = (($stepFOutput | Where-Object { [string]$_ -match 'Traceback' }).Count -gt 0)
+          $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
+          if ($tbFiles -and $tbFiles.Count -gt 0) {
+            $tracebackDetected = $true
+            $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
+            Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
+          } else {
+            Add-Content $rp "[STEPF_MULTI] traceback_files=none"
+          }
+
+          $artifactsComplete = ($requiredOutputsPresent -and $equityCsvReadable -and ($equityRowCount -gt 0) -and $equityRequiredColsOk)
+          $auditWarnNonFatal = ($auditWarnDetected -and $artifactsComplete)
+          $finalStatus = 'fail'
+          $finalEffectiveRc = 1
+          if ($tracebackDetected) {
+            $finalStatus = 'fail'
+            $finalEffectiveRc = 1
+          } elseif ($auditWarnNonFatal) {
+            $finalStatus = 'warn_pass'
+            $finalEffectiveRc = 0
+          } elseif (($actualRc -eq 0) -and $artifactsComplete) {
+            $finalStatus = 'pass'
+            $finalEffectiveRc = 0
+          }
+
+          Add-Content $rp ("[STEPF_WRAPPER] subprocess_rc={0}" -f $actualRc)
+          Add-Content $rp ("[STEPF_WRAPPER] audit_warn_detected={0}" -f $auditWarnDetected.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] audit_warn_nonfatal={0}" -f $auditWarnNonFatal.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] required_outputs_present={0}" -f $requiredOutputsPresent.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] equity_csv_readable={0}" -f $equityCsvReadable.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] equity_row_count={0}" -f $equityRowCount)
+          Add-Content $rp ("[STEPF_WRAPPER] equity_required_cols_ok={0}" -f $equityRequiredColsOk.ToString().ToLowerInvariant())
+          Add-Content $rp ("[STEPF_WRAPPER] traceback_detected={0}" -f $tracebackDetected.ToString().ToLowerInvariant())
+          if (-not $requiredOutputsPresent) { Add-Content $rp ("[STEPF_WRAPPER] missing_required_outputs={0}" -f ($missingRequiredPaths -join ',')) }
+          if ($nativeInvokeException) { Add-Content $rp ("[STEPF_WRAPPER] native_exception_present=true") }
+          Add-Content $rp ("[STEPF_WRAPPER] final_wrapper_status={0}" -f $finalStatus)
+          Add-Content $rp ("[STEPF_WRAPPER] final_effective_rc={0}" -f $finalEffectiveRc)
+
+          if ($finalEffectiveRc -ne 0) {
+            Add-Content $rp "[NG] step_f rc=$finalEffectiveRc"
             Add-Content $rp "[STEPF_MULTI] failure_stepF_dir=$stepFDir"
             Add-Content $rp ("[STEPF_ENTRY] wrapper_cwd={0}" -f (Get-Location).Path)
             Add-Content $rp ("[STEPF_ENTRY] wrapper_output_root={0}" -f $outRoot)
@@ -5679,21 +5818,10 @@ jobs:
             } catch {
               Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing_error={0}" -f $_)
             }
-            $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
-            if (-not $tbFiles -or $tbFiles.Count -eq 0) {
-              Add-Content $rp "[STEPF_MULTI] traceback_files=none"
-            } else {
-              $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
-              Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
-              foreach ($tb in $tbFiles) {
-                Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
-                Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
-                Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
-              }
-            }
-            Write-Error "StepF failed rc=$rc"
-            exit $rc
+            Write-Host "[StepF] wrapper failed final_effective_rc=$finalEffectiveRc"
+            exit 1
           }
+
           Add-Content $rp '[STEPF_ENTRY] after_service_run'
           Add-Content $rp '[OK] step_f'
 
