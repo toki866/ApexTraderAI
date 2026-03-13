@@ -76,9 +76,6 @@ def test_reward_mode_outputs_are_separated(tmp_path) -> None:
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
 
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
-
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
     svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
@@ -106,9 +103,6 @@ def test_compare_mode_runs_all_reward_modes(tmp_path) -> None:
     )
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
-
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
     svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
@@ -141,9 +135,6 @@ def test_compare_mode_continues_on_single_mode_failure_and_writes_traceback(tmp_
     )
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
-
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
     svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
@@ -191,9 +182,6 @@ def test_compare_mode_all_fail_raises_and_records_summary(tmp_path) -> None:
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
 
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
-
     def _always_fail(*args, **kwargs):
         raise ValueError("all modes failed")
 
@@ -227,9 +215,6 @@ def test_compare_mode_first_failure_still_persists_primary_outputs_on_first_succ
     )
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
-
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
     svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
@@ -287,8 +272,6 @@ def test_stepf_wrapper_exception_logs_traceback_to_one_tap(tmp_path, capsys) -> 
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
 
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
     svc._run_router = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[assignment]
 
     date_range = SimpleNamespace(mode="sim")
@@ -409,9 +392,6 @@ def test_stepf_regression_empty_config_but_stepe_logs_exist_no_agents_empty_erro
     cfg = StepFRouterConfig(output_root=str(out_root), agents="", reward_mode="legacy")
     app_config = SimpleNamespace(stepF=cfg, output_root=str(out_root))
     svc = StepFService(app_config=app_config)
-
-    sf_mod.hdbscan = object()
-    sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
     svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
