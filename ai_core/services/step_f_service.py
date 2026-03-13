@@ -429,8 +429,19 @@ class StepFService:
     def _resolve_output_root(self, cfg_output_root: object) -> Path:
         cfg_raw = str(cfg_output_root or "").strip()
         app_raw = str(getattr(self.app_config, "output_root", "") or "").strip()
+        effective_raw = ""
+        for attr in ("effective_output_root", "_effective_output_root", "resolved_output_root", "canonical_output_root"):
+            candidate = str(getattr(self.app_config, attr, "") or "").strip()
+            if candidate:
+                effective_raw = candidate
+                break
+
         if cfg_raw and cfg_raw.lower() != "output":
             chosen = cfg_raw
+        elif effective_raw:
+            chosen = effective_raw
+        elif app_raw and app_raw.lower() != "output":
+            chosen = app_raw
         elif app_raw:
             chosen = app_raw
         else:
@@ -439,9 +450,13 @@ class StepFService:
 
     def _resolve_step_e_root_candidates(self, out_root: Path, input_mode: str) -> List[Path]:
         candidates: List[Path] = [self._normalize_absolute_path(out_root / "stepE" / input_mode)]
-        app_output_root = str(getattr(self.app_config, "output_root", "") or "").strip()
-        if app_output_root and app_output_root.lower() != "output":
-            candidates.append(self._normalize_absolute_path(Path(app_output_root) / "stepE" / input_mode))
+        if str(input_mode).strip().lower() == "sim":
+            candidates.append(self._normalize_absolute_path(out_root / "stepE" / "sim"))
+
+        for attr in ("effective_output_root", "_effective_output_root", "resolved_output_root", "canonical_output_root"):
+            raw = str(getattr(self.app_config, attr, "") or "").strip()
+            if raw:
+                candidates.append(self._normalize_absolute_path(Path(raw) / "stepE" / input_mode))
 
         unique_candidates: List[Path] = []
         for c in candidates:
@@ -462,16 +477,14 @@ class StepFService:
         selected_step_e_root = candidate_roots[0]
         discovered_daily_logs: List[Path] = []
         for candidate_root in candidate_roots:
-            logs = sorted(
-                p.resolve(strict=False)
-                for p in candidate_root.glob("stepE_daily_log_*.csv")
-            )
+            logs = sorted(p.resolve(strict=False) for p in candidate_root.glob("stepE_daily_log_*.csv"))
             if logs:
                 selected_step_e_root = candidate_root
-                discovered_daily_logs = logs
                 break
             if candidate_root.exists():
                 selected_step_e_root = candidate_root
+
+        discovered_daily_logs = sorted(p.resolve(strict=False) for p in selected_step_e_root.glob("stepE_daily_log_*.csv"))
 
         requested_agents = self._normalize_agent_names(requested_agents_raw)
 
@@ -506,6 +519,9 @@ class StepFService:
                 raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
 
             out_root = self._resolve_output_root(cfg.output_root)
+            print(f"[STEPF_ROOT] wrapper_cfg_output_root={cfg.output_root}")
+            print(f"[STEPF_ROOT] service_app_output_root={getattr(self.app_config, 'output_root', '')}")
+            print(f"[STEPF_ROOT] effective_output_root={out_root}")
             retrain = "on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off"
             reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
             out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
@@ -552,7 +568,7 @@ class StepFService:
             with timing.stage("stepF.load_prices_logs"):
                 prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
                 prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
-                logs_map = self._load_stepe_logs(out_root, input_mode, symbol, agents)
+                logs_map = self._load_stepe_logs(selected_step_e_root, symbol, agents)
             if not logs_map:
                 raise RuntimeError("StepF dependency missing: no StepE daily logs available for any configured agent")
             agents = [a for a in agents if a in logs_map]
@@ -764,10 +780,11 @@ class StepFService:
         merged = merged.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
         return merged
 
-    def _load_stepe_logs(self, out_root: Path, mode: str, symbol: str, agents: List[str]) -> Dict[str, pd.DataFrame]:
+    def _load_stepe_logs(self, step_e_root: Path, symbol: str, agents: List[str]) -> Dict[str, pd.DataFrame]:
         out: Dict[str, pd.DataFrame] = {}
+        selected_root = Path(step_e_root).resolve(strict=False)
         for agent in agents:
-            p = out_root / "stepE" / mode / f"stepE_daily_log_{agent}_{symbol}.csv"
+            p = selected_root / f"stepE_daily_log_{agent}_{symbol}.csv"
             if not p.exists():
                 print(f"[StepF-router] WARN: missing StepE log (skip agent): {p}")
                 continue

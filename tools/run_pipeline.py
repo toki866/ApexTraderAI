@@ -2402,9 +2402,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             if "B" in steps:
                 app_config = _apply_config_output_root(app_config, Path(canonical_output_root))
+                try:
+                    setattr(app_config, "effective_output_root", str(resolved_output_root))
+                    setattr(app_config, "_effective_output_root", str(resolved_output_root))
+                    setattr(app_config, "resolved_output_root", str(resolved_output_root))
+                    setattr(app_config, "canonical_output_root", str(canonical_output_root))
+                except Exception:
+                    pass
                 print(f"[PIPELINE] args_output_root={args.output_root}")
                 print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
                 print(f"[PIPELINE] cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}")
+                print(f"[PIPELINE] effective_output_root={getattr(app_config, 'effective_output_root', None)}")
+                print(f"[PIPELINE] canonical_output_root={getattr(app_config, 'canonical_output_root', None)}")
                 _check_and_repair_split_summary_before_stepb(
                     resolved_output_root=Path(resolved_output_root),
                     canonical_output_root=Path(canonical_output_root),
