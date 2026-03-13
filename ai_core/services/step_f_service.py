@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import traceback
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.errors import PerformanceWarning
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
@@ -590,14 +592,16 @@ class StepFService:
                 phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
             else:
                 with timing.stage("stepF.build_phase2_state"):
-                    phase2 = self._build_phase2_state(
-                        cfg=cfg,
-                        date_range=date_range,
-                        symbol=symbol,
-                        mode=input_mode,
-                        out_root=out_root,
-                        price_tech=prices_soxl,
-                    )
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=PerformanceWarning)
+                        phase2 = self._build_phase2_state(
+                            cfg=cfg,
+                            date_range=date_range,
+                            symbol=symbol,
+                            mode=input_mode,
+                            out_root=out_root,
+                            price_tech=prices_soxl,
+                        )
 
             phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
             phase2.to_csv(phase2_path, index=False)
@@ -835,10 +839,18 @@ class StepFService:
             z_past_rows.append(vec)
             z_dates.append(base_feat.loc[i, "Date"])
         z_past = pd.DataFrame({"Date": z_dates})
+        applied_copy_defragment = False
         if z_past_rows:
             z_arr = np.asarray(z_past_rows, dtype=float)
-            for i in range(z_arr.shape[1]):
-                z_past[f"zp_{i:04d}"] = z_arr[:, i]
+            print(f"[STEPF_FRAME] before_feature_concat base_cols={len(z_past.columns)}")
+            zp_cols = [f"zp_{i:04d}" for i in range(z_arr.shape[1])]
+            print(f"[STEPF_FRAME] new_feature_cols={len(zp_cols)}")
+            zp_df = pd.DataFrame(z_arr, columns=zp_cols)
+            z_past = pd.concat([z_past, zp_df], axis=1)
+            print(f"[STEPF_FRAME] after_feature_concat total_cols={len(z_past.columns)}")
+            z_past = z_past.copy()
+            applied_copy_defragment = True
+        print(f"[STEPF_FRAME] applied_copy_defragment={str(applied_copy_defragment).lower()}")
 
         X_df = z_past.merge(base_feat, on="Date", how="left")
         if cfg.use_z_pred:
