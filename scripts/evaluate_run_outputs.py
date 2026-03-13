@@ -125,6 +125,26 @@ def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
         os.path.join(out_dir, "EVAL_TABLE_stepF.csv"), index=False
     )
 
+    dprime = report.get("dprime", {}) if isinstance(report.get("dprime", {}), dict) else {}
+    ddet = dprime.get("details", {}) if isinstance(dprime.get("details", {}), dict) else {}
+    pd.DataFrame(
+        [
+            {
+                "dprime_status": dprime.get("status", "SKIP"),
+                "dprime_summary": dprime.get("summary", "NA"),
+                "dprime_cluster_status": ddet.get("cluster_status"),
+                "dprime_cluster_summary": ddet.get("cluster_summary"),
+                "dprime_cluster_embeddings_count": ddet.get("cluster_embeddings_count", 0),
+                "dprime_cluster_state_count": ddet.get("cluster_state_count", 0),
+                "dprime_cluster_input_count": ddet.get("cluster_input_count", 0),
+                "dprime_rl_status": ddet.get("rl_status"),
+                "dprime_rl_summary": ddet.get("rl_summary"),
+                "dprime_rl_state_count": ddet.get("rl_state_count", 0),
+                "dprime_rl_profiles_count": ddet.get("rl_profiles_count", 0),
+            }
+        ]
+    ).to_csv(os.path.join(out_dir, "EVAL_TABLE_dprime.csv"), index=False)
+
 
 def _status_level(s: str) -> int:
     return {"OK": 0, "WARN": 1, "BAD": 2}.get(s, 1)
@@ -488,44 +508,109 @@ def _generate_plots(output_root: str, mode: str, symbol: str, report: dict[str, 
 
 
 def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
-    base = os.path.join(output_root, "stepDprime", mode)
-    state_patterns = [
-        os.path.join(base, f"stepDprime_state_*_{symbol}_train.csv"),
-        os.path.join(base, f"stepDprime_state_*_{symbol}_test.csv"),
-    ]
-    emb_patterns = [
-        os.path.join(base, "embeddings", f"stepDprime_*_{symbol}_embeddings*.csv"),
-    ]
+    bases = [os.path.join(output_root, "stepDprime", mode), os.path.join(output_root, "stepDPrime", mode)]
 
-    state_files: list[str] = []
-    emb_files: list[str] = []
-    for pat in state_patterns:
-        state_files.extend(sorted(glob.glob(pat)))
-    for pat in emb_patterns:
-        emb_files.extend(sorted(glob.glob(pat)))
+    rl_state_patterns: list[str] = []
+    cluster_embeddings_patterns: list[str] = []
+    cluster_state_patterns: list[str] = []
+    cluster_input_patterns: list[str] = []
+    for base in bases:
+        rl_state_patterns.extend(
+            [
+                os.path.join(base, "stepDprime_state_test_*.csv"),
+                os.path.join(base, f"stepDprime_state_*_{symbol}_test.csv"),
+                os.path.join(base, f"stepDprime_state_test_*_{symbol}.csv"),
+                os.path.join(base, f"stepDprime_state_*_{symbol}.csv"),
+            ]
+        )
+        cluster_embeddings_patterns.extend(
+            [
+                os.path.join(base, "embeddings", f"stepDprime_*_{symbol}_embeddings*.csv"),
+                os.path.join(base, "embeddings", "*.csv"),
+            ]
+        )
+        cluster_state_patterns.extend(
+            [
+                os.path.join(base, "*cluster*state*.csv"),
+                os.path.join(base, "*cluster_id*.csv"),
+                os.path.join(base, "*rare_flag*.csv"),
+                os.path.join(base, "*raw20*.csv"),
+                os.path.join(base, "*stable*.csv"),
+            ]
+        )
+        cluster_input_patterns.extend(
+            [
+                os.path.join(base, "*cluster*input*.csv"),
+                os.path.join(base, "*cluster_features*.csv"),
+            ]
+        )
 
-    state_files = sorted(set(state_files))
-    emb_files = sorted(set(emb_files))
+    def _collect(patterns: list[str]) -> list[str]:
+        files: list[str] = []
+        for pat in patterns:
+            files.extend(glob.glob(pat))
+        return sorted(set(files))
 
-    has_state = len(state_files) > 0
-    has_embeddings = len(emb_files) > 0
-    status = "OK" if has_state and has_embeddings else "WARN"
-    missing = []
-    if not has_state:
-        missing.append("state")
-    if not has_embeddings:
-        missing.append("embeddings")
-    summary = "D' state/embeddings found" if not missing else f"D' missing: {', '.join(missing)}"
+    rl_state_files = _collect(rl_state_patterns)
+    cluster_embeddings_files = _collect(cluster_embeddings_patterns)
+    cluster_state_files = _collect(cluster_state_patterns)
+    cluster_input_files = _collect(cluster_input_patterns)
+
+    rl_profiles = {
+        m.group(1)
+        for f in rl_state_files
+        for m in [re.match(r"^stepDprime_state_test_(.+?)_[^_]+\.csv$", os.path.basename(f))]
+        if m
+    }
+
+    rl_status = "OK" if rl_state_files else "WARN"
+    cluster_status = "OK" if (cluster_embeddings_files or cluster_state_files or cluster_input_files) else "WARN"
+
+    rl_summary = "RL state files found under stepDprime/sim" if rl_state_files else "missing RL state files"
+    cluster_parts = []
+    if cluster_embeddings_files:
+        cluster_parts.append("embeddings found")
+    if cluster_state_files:
+        cluster_parts.append("cluster state files found")
+    if cluster_input_files:
+        cluster_parts.append("cluster input files found")
+    cluster_summary = ", ".join(cluster_parts) if cluster_parts else "missing cluster embeddings/state/input"
+
+    print(f"[DPRIME_DIAG] cluster_embeddings_count={len(cluster_embeddings_files)}")
+    print(f"[DPRIME_DIAG] cluster_state_count={len(cluster_state_files)}")
+    print(f"[DPRIME_DIAG] rl_state_count={len(rl_state_files)}")
+    print(f"[DPRIME_DIAG] rl_state_glob={rl_state_patterns[0] if rl_state_patterns else 'NA'}")
+    print(f"[DPRIME_DIAG] cluster_glob={cluster_embeddings_patterns[0] if cluster_embeddings_patterns else 'NA'}")
+    print(f"[DPRIME_DIAG] final_cluster_status={cluster_status}")
+    print(f"[DPRIME_DIAG] final_rl_status={rl_status}")
+
+    status = "OK" if rl_status == "OK" and cluster_status == "OK" else "WARN"
+    summary = f"DPrimeCluster={cluster_status} ({cluster_summary}); DPrimeRL={rl_status} ({rl_summary})"
 
     return {
         "status": status,
         "summary": summary,
         "details": {
-            "state_count": len(state_files),
-            "embeddings_count": len(emb_files),
-            "state_files": [os.path.basename(x) for x in state_files],
-            "embeddings_files": [os.path.basename(x) for x in emb_files],
-            "searched": state_patterns + emb_patterns,
+            "state_count": len(rl_state_files),
+            "embeddings_count": len(cluster_embeddings_files),
+            "cluster_status": cluster_status,
+            "cluster_summary": cluster_summary,
+            "cluster_embeddings_count": len(cluster_embeddings_files),
+            "cluster_state_count": len(cluster_state_files),
+            "cluster_input_count": len(cluster_input_files),
+            "cluster_embeddings_files": [os.path.basename(x) for x in cluster_embeddings_files],
+            "cluster_state_files": [os.path.basename(x) for x in cluster_state_files],
+            "cluster_input_files": [os.path.basename(x) for x in cluster_input_files],
+            "rl_status": rl_status,
+            "rl_summary": rl_summary,
+            "rl_state_count": len(rl_state_files),
+            "rl_profiles_count": len(rl_profiles),
+            "rl_state_files": [os.path.basename(x) for x in rl_state_files],
+            "state_files": [os.path.basename(x) for x in rl_state_files],
+            "embeddings_files": [os.path.basename(x) for x in cluster_embeddings_files],
+            "searched": rl_state_patterns + cluster_embeddings_patterns + cluster_state_patterns + cluster_input_patterns,
+            "rl_state_glob": rl_state_patterns,
+            "cluster_glob": cluster_embeddings_patterns + cluster_state_patterns + cluster_input_patterns,
         },
     }
 
@@ -821,15 +906,26 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- symbol: `{report.get('symbol')}`",
         f"- overall_status: **{report.get('overall_status')}**",
         "",
-        "## D' (stepDprime) artifacts",
+        "## DPrime diagnostics",
     ]
     dprime = report.get("dprime", {})
     ddet = dprime.get("details", {})
     lines.extend([
         f"- status: **{dprime.get('status', 'SKIP')}**",
         f"- summary: {dprime.get('summary', 'NA')}",
-        f"- state_count: {_fmt(ddet.get('state_count'))}",
-        f"- embeddings_count: {_fmt(ddet.get('embeddings_count'))}",
+        "",
+        "### DPrimeCluster",
+        f"- status: **{_fmt(ddet.get('cluster_status'))}**",
+        f"- summary: {_fmt(ddet.get('cluster_summary'))}",
+        f"- cluster_embeddings_count: {_fmt(ddet.get('cluster_embeddings_count'))}",
+        f"- cluster_state_count: {_fmt(ddet.get('cluster_state_count'))}",
+        f"- cluster_input_count: {_fmt(ddet.get('cluster_input_count'))}",
+        "",
+        "### DPrimeRL",
+        f"- status: **{_fmt(ddet.get('rl_status'))}**",
+        f"- summary: {_fmt(ddet.get('rl_summary'))}",
+        f"- rl_state_count: {_fmt(ddet.get('rl_state_count'))}",
+        f"- rl_profiles_count: {_fmt(ddet.get('rl_profiles_count'))}",
     ])
 
     stepa = report.get("stepA", {})
@@ -973,9 +1069,19 @@ def render_summary(report: dict[str, Any]) -> str:
 
     dprime = report.get("dprime", {})
     ddet = dprime.get("details", {})
-    lines.append("DPrime:")
-    lines.append(f"  status={dprime.get('status', 'SKIP')} summary={dprime.get('summary', 'NA')}")
-    lines.append(f"  state_count={_fmt(ddet.get('state_count'))} embeddings_count={_fmt(ddet.get('embeddings_count'))}")
+    lines.append("DPrimeCluster:")
+    lines.append(f"  status={_fmt(ddet.get('cluster_status'))} summary={_fmt(ddet.get('cluster_summary'))}")
+    lines.append(
+        f"  cluster_embeddings_count={_fmt(ddet.get('cluster_embeddings_count'))} "
+        f"cluster_state_count={_fmt(ddet.get('cluster_state_count'))} "
+        f"cluster_input_count={_fmt(ddet.get('cluster_input_count'))}"
+    )
+    lines.append("DPrimeRL:")
+    lines.append(f"  status={_fmt(ddet.get('rl_status'))} summary={_fmt(ddet.get('rl_summary'))}")
+    lines.append(
+        f"  rl_state_count={_fmt(ddet.get('rl_state_count'))} "
+        f"rl_profiles_count={_fmt(ddet.get('rl_profiles_count'))}"
+    )
 
     stepe = report.get("stepE", {})
     lines.append("StepE:")
