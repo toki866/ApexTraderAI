@@ -119,3 +119,42 @@ def test_stepf_compare_warn_when_stepe_missing(tmp_path: Path):
     cmp = rep["stepF_compare"]
     assert cmp["status"] == "WARN"
     assert "skipped" in str(cmp.get("summary", "")).lower()
+
+
+def test_stepf_reward_compare_works_with_partial_mode_outputs(tmp_path: Path):
+    mod = _load_module()
+    out = tmp_path / "output"
+    stepe = out / "stepE" / "sim"
+    stepf = out / "stepF" / "sim"
+    stepe.mkdir(parents=True, exist_ok=True)
+    stepf.mkdir(parents=True, exist_ok=True)
+
+    dates = pd.date_range("2024-01-01", periods=4, freq="D")
+
+    def mk_rows(ret: float):
+        eq = 1.0
+        rows = []
+        for d in dates:
+            eq *= 1.0 + ret
+            rows.append({"Date": d.strftime("%Y-%m-%d"), "Split": "test", "pos": 1.0, "ratio": 1.0, "ret": ret, "equity": eq})
+        return rows
+
+    _write_step_e(stepe / "stepE_daily_log_dprime_bnf_h01_SOXL.csv", mk_rows(0.01))
+    _write_step_e(stepe / "stepE_daily_log_dprime_mid_h01_SOXL.csv", mk_rows(0.005))
+
+    pd.DataFrame(mk_rows(0.008)).to_csv(stepf / "stepF_equity_marl_SOXL.csv", index=False)
+    pd.DataFrame([{**r, "w_dprime_bnf_h01": 0.8, "w_dprime_mid_h01": 0.2} for r in mk_rows(0.008)]).to_csv(stepf / "stepF_daily_log_router_SOXL.csv", index=False)
+
+    reward_basic = stepf / "reward_profit_basic"
+    reward_basic.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(mk_rows(0.009)).to_csv(reward_basic / "stepF_equity_marl_SOXL.csv", index=False)
+    pd.DataFrame([{**r, "w_dprime_bnf_h01": 0.7, "w_dprime_mid_h01": 0.3} for r in mk_rows(0.009)]).to_csv(reward_basic / "stepF_daily_log_router_SOXL.csv", index=False)
+
+    rep = mod.evaluate(str(out), "sim", "SOXL")
+    cmp = rep["stepF_compare"]
+    assert cmp["status"] == "OK"
+    reward_cmp = cmp["stepF_reward_compare"]
+    assert reward_cmp["status"] == "OK"
+    names = [r["name"] for r in reward_cmp["rows"]]
+    assert "reward_profit_basic" in names
+    assert "reward_profit_regret" not in names

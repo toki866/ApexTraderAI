@@ -130,3 +130,84 @@ def test_compare_mode_runs_all_reward_modes(tmp_path) -> None:
         assert (reward_base / "stepF_daily_log_router_SOXL.csv").exists()
         assert (reward_base / "stepF_daily_log_marl_SOXL.csv").exists()
         assert (reward_base / "stepF_summary_router_SOXL.json").exists()
+
+
+def test_compare_mode_continues_on_single_mode_failure_and_writes_traceback(tmp_path, capsys) -> None:
+    cfg = StepFRouterConfig(
+        output_root=str(tmp_path / "out"),
+        agents="a1,a2",
+        reward_mode="legacy",
+        stepf_compare_reward_modes=True,
+    )
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+
+    sf_mod.hdbscan = object()
+    sf_mod.hdbscan_prediction = object()
+
+    svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+        "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
+        "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
+    }
+    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}, {"regime_id": 1, "agent": "a2", "IR": 0.0}])  # type: ignore[assignment]
+    svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1|a2"}])  # type: ignore[assignment]
+    svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
+
+    original_run_router = svc._run_router
+
+    def _run_router_with_one_failure(cfg, date_range, symbol, mode, persist_primary_outputs=True, data_cutoff=""):
+        if cfg.reward_mode == "profit_regret":
+            raise RuntimeError("intentional mode failure")
+        return original_run_router(cfg, date_range, symbol, mode, persist_primary_outputs=persist_primary_outputs, data_cutoff=data_cutoff)
+
+    svc._run_router = _run_router_with_one_failure  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim", train_start="2023-01-01", train_end="2023-12-31", test_start="2024-01-01", test_end="2024-12-31")
+    svc.run(date_range, symbol="SOXL", mode="sim")
+
+    out = capsys.readouterr().out
+    assert "[STEPF_MULTI] mode_start=legacy" in out
+    assert "[STEPF_MULTI] mode_success=legacy" in out
+    assert "[STEPF_MULTI] mode_fail=profit_regret" in out
+    assert "Traceback (most recent call last)" in out
+
+    base = tmp_path / "out" / "stepF" / "sim"
+    assert (base / "reward_legacy" / "stepF_equity_marl_SOXL.csv").exists()
+    assert (base / "reward_profit_basic" / "stepF_equity_marl_SOXL.csv").exists()
+    assert (base / "reward_profit_regret" / "stepF_traceback_SOXL.log").exists()
+    assert (base / "stepF_multi_mode_summary_SOXL.json").exists()
+
+
+def test_compare_mode_all_fail_raises_and_records_summary(tmp_path) -> None:
+    cfg = StepFRouterConfig(
+        output_root=str(tmp_path / "out"),
+        agents="a1,a2",
+        reward_mode="legacy",
+        stepf_compare_reward_modes=True,
+    )
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+
+    sf_mod.hdbscan = object()
+    sf_mod.hdbscan_prediction = object()
+
+    def _always_fail(*args, **kwargs):
+        raise ValueError("all modes failed")
+
+    svc._run_router = _always_fail  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim", train_start="2023-01-01", train_end="2023-12-31", test_start="2024-01-01", test_end="2024-12-31")
+    try:
+        svc.run(date_range, symbol="SOXL", mode="sim")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "failed for all modes" in str(exc)
+
+    base = tmp_path / "out" / "stepF" / "sim"
+    summary_path = base / "stepF_multi_mode_summary_SOXL.json"
+    assert summary_path.exists()
+    summary = __import__('json').loads(summary_path.read_text(encoding='utf-8'))
+    assert len(summary.get("records", [])) == 4
+    assert all(r.get("status") == "FAIL" for r in summary.get("records", []))
