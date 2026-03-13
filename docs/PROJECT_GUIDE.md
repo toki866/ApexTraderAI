@@ -221,6 +221,9 @@ Snapshot zip naming:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`
   - `run_<run_id>.zip`
+- Additional publication branch for evaluation snapshots: `output-latest`
+  - stores only the latest snapshot payload (`output_latest.zip`, checksum, run metadata, and lightweight eval/index/report files)
+  - branch is force-pushed as latest-only distribution and is intentionally separated from `main` source history
 
 ---
 
