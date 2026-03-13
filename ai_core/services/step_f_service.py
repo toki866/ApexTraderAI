@@ -406,6 +406,54 @@ class StepFService:
         out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
         return out_dir / f"reward_{reward_mode}"
 
+    @staticmethod
+    def _normalize_agent_names(raw: object) -> List[str]:
+        names = [a.strip() for a in str(raw or "").split(",") if a and a.strip()]
+        out: List[str] = []
+        for name in names:
+            if name not in out:
+                out.append(name)
+        return out
+
+    @staticmethod
+    def _extract_agent_name_from_daily_log(path: Path, symbol: str) -> Optional[str]:
+        stem = path.stem
+        prefix = "stepE_daily_log_"
+        if not stem.startswith(prefix):
+            return None
+        body = stem[len(prefix) :]
+        symbol_suffix = f"_{symbol}"
+        if body.endswith(symbol_suffix):
+            body = body[: -len(symbol_suffix)]
+        body = body.strip("_")
+        return body or None
+
+    def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str]]:
+        step_e_root = out_root / "stepE" / input_mode
+        discovered_daily_logs = sorted(step_e_root.glob("stepE_daily_log_*.csv"))
+        requested_agents = self._normalize_agent_names(requested_agents_raw)
+
+        discovered_agents: List[str] = []
+        for daily_log_path in discovered_daily_logs:
+            agent_name = self._extract_agent_name_from_daily_log(daily_log_path, symbol)
+            if agent_name and agent_name not in discovered_agents:
+                discovered_agents.append(agent_name)
+
+        resolved_agents = list(requested_agents) if requested_agents else list(discovered_agents)
+
+        discovered_logs_text = ",".join(str(p) for p in discovered_daily_logs) if discovered_daily_logs else "(none)"
+        resolved_agents_text = ",".join(resolved_agents) if resolved_agents else "(none)"
+        print("[STEPF_AGENTS] begin")
+        print(f"[STEPF_AGENTS] input_stepE_root={step_e_root}")
+        print(f"[STEPF_AGENTS] requested_agents_raw={requested_agents_raw}")
+        print(f"[STEPF_AGENTS] requested_agents_normalized={','.join(requested_agents) if requested_agents else '(none)'}")
+        print(f"[STEPF_AGENTS] discovered_daily_logs_count={len(discovered_daily_logs)}")
+        print(f"[STEPF_AGENTS] discovered_daily_logs={discovered_logs_text}")
+        print(f"[STEPF_AGENTS] resolved_agents_count={len(resolved_agents)}")
+        print(f"[STEPF_AGENTS] resolved_agents={resolved_agents_text}")
+
+        return resolved_agents, discovered_daily_logs, requested_agents
+
     def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "", persist_primary_outputs: bool = True) -> StepFResult:
         timing = self._timing()
         with timing.stage("stepF.total"):
@@ -423,9 +471,23 @@ class StepFService:
             phase2_dir.mkdir(parents=True, exist_ok=True)
             reward_dir.mkdir(parents=True, exist_ok=True)
 
-            agents = [a.strip() for a in str(cfg.agents or "").split(",") if a.strip()]
+            input_mode = str(getattr(cfg, "input_mode", "") or mode)
+            if mode == "live" and not (out_root / "stepA" / input_mode).exists():
+                input_mode = "sim"
+
+            agents, discovered_daily_logs, requested_agents = self._resolve_agents(
+                out_root=out_root,
+                input_mode=input_mode,
+                symbol=symbol,
+                requested_agents_raw=getattr(cfg, "agents", ""),
+            )
             if not agents:
-                raise ValueError("StepF agents is empty")
+                raise ValueError(
+                    "StepF agents is empty "
+                    f"(input_stepE_root={out_root / 'stepE' / input_mode}, "
+                    f"discovered_daily_logs_count={len(discovered_daily_logs)}, "
+                    f"requested_agents={','.join(requested_agents) if requested_agents else '(none)'})"
+                )
 
             safe_set = [a.strip() for a in str(cfg.safe_set or "").split(",") if a.strip()]
             safe_set = [a for a in safe_set if a in agents]
@@ -438,9 +500,6 @@ class StepFService:
                     if len(safe_set) >= min(2, len(agents)):
                         break
 
-            input_mode = str(getattr(cfg, "input_mode", "") or mode)
-            if mode == "live" and not (out_root / "stepA" / input_mode).exists():
-                input_mode = "sim"
             print(
                 f"[STEPF_INPUT] symbol={symbol} mode={mode} input_mode={input_mode} "
                 f"output_root={out_root} agents={','.join(agents)}"
