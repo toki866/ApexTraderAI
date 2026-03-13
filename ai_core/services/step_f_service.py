@@ -13,6 +13,7 @@ import traceback
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -211,7 +212,7 @@ class StepFService:
         stepf_dir: Optional[Path] = None
         try:
             self._log_stepf_entry("[STEPF_ENTRY] begin")
-            pre_output_root = Path(getattr(self.app_config, "output_root", "output") or "output")
+            pre_output_root = self._resolve_output_root(getattr(self.app_config, "output_root", "output"))
             pre_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
             if pre_mode in {"ops", "prod", "production", "real"}:
                 pre_mode = "live"
@@ -228,7 +229,7 @@ class StepFService:
             resolved_mode = str(mode or getattr(date_range, "mode", None) or cfg.mode or "sim").strip().lower()
             if resolved_mode in {"ops", "prod", "production", "real"}:
                 resolved_mode = "live"
-            out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
+            out_root = self._resolve_output_root(cfg.output_root)
             stepf_root = out_root / "stepF"
             stepf_dir = stepf_root / resolved_mode
             stepf_root.mkdir(parents=True, exist_ok=True)
@@ -416,6 +417,39 @@ class StepFService:
         return out
 
     @staticmethod
+    def _normalize_absolute_path(raw_path: object) -> Path:
+        s = str(raw_path or "").strip()
+        if re.match(r"^[A-Za-z]:[\\/]", s):
+            return Path(s)
+        p = Path(s).expanduser() if s else Path.cwd()
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        return p.resolve(strict=False)
+
+    def _resolve_output_root(self, cfg_output_root: object) -> Path:
+        cfg_raw = str(cfg_output_root or "").strip()
+        app_raw = str(getattr(self.app_config, "output_root", "") or "").strip()
+        if cfg_raw and cfg_raw.lower() != "output":
+            chosen = cfg_raw
+        elif app_raw:
+            chosen = app_raw
+        else:
+            chosen = cfg_raw or "output"
+        return self._normalize_absolute_path(chosen)
+
+    def _resolve_step_e_root_candidates(self, out_root: Path, input_mode: str) -> List[Path]:
+        candidates: List[Path] = [self._normalize_absolute_path(out_root / "stepE" / input_mode)]
+        app_output_root = str(getattr(self.app_config, "output_root", "") or "").strip()
+        if app_output_root:
+            candidates.append(self._normalize_absolute_path(Path(app_output_root) / "stepE" / input_mode))
+
+        unique_candidates: List[Path] = []
+        for c in candidates:
+            if c not in unique_candidates:
+                unique_candidates.append(c)
+        return unique_candidates
+
+    @staticmethod
     def _extract_agent_name_from_daily_log(path: Path, symbol: str) -> Optional[str]:
         stem = path.stem
         prefix = "stepE_daily_log_"
@@ -428,9 +462,19 @@ class StepFService:
         body = body.strip("_")
         return body or None
 
-    def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str]]:
-        step_e_root = out_root / "stepE" / input_mode
-        discovered_daily_logs = sorted(step_e_root.glob("stepE_daily_log_*.csv"))
+    def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str], Path]:
+        candidate_roots = self._resolve_step_e_root_candidates(out_root=out_root, input_mode=input_mode)
+        selected_step_e_root = candidate_roots[0]
+        discovered_daily_logs: List[Path] = []
+        for candidate_root in candidate_roots:
+            logs = sorted(candidate_root.glob("stepE_daily_log_*.csv"))
+            if logs:
+                selected_step_e_root = candidate_root
+                discovered_daily_logs = logs
+                break
+            if candidate_root.exists():
+                selected_step_e_root = candidate_root
+
         requested_agents = self._normalize_agent_names(requested_agents_raw)
 
         discovered_agents: List[str] = []
@@ -444,7 +488,9 @@ class StepFService:
         discovered_logs_text = ",".join(str(p) for p in discovered_daily_logs) if discovered_daily_logs else "(none)"
         resolved_agents_text = ",".join(resolved_agents) if resolved_agents else "(none)"
         print("[STEPF_AGENTS] begin")
-        print(f"[STEPF_AGENTS] input_stepE_root={step_e_root}")
+        print(f"[STEPF_AGENTS] candidate_stepE_roots={','.join(str(p) for p in candidate_roots)}")
+        print(f"[STEPF_AGENTS] selected_stepE_root={selected_step_e_root}")
+        print(f"[STEPF_AGENTS] input_stepE_root={selected_step_e_root}")
         print(f"[STEPF_AGENTS] requested_agents_raw={requested_agents_raw}")
         print(f"[STEPF_AGENTS] requested_agents_normalized={','.join(requested_agents) if requested_agents else '(none)'}")
         print(f"[STEPF_AGENTS] discovered_daily_logs_count={len(discovered_daily_logs)}")
@@ -452,7 +498,7 @@ class StepFService:
         print(f"[STEPF_AGENTS] resolved_agents_count={len(resolved_agents)}")
         print(f"[STEPF_AGENTS] resolved_agents={resolved_agents_text}")
 
-        return resolved_agents, discovered_daily_logs, requested_agents
+        return resolved_agents, discovered_daily_logs, requested_agents, selected_step_e_root
 
     def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "", persist_primary_outputs: bool = True) -> StepFResult:
         timing = self._timing()
@@ -460,7 +506,7 @@ class StepFService:
             if hdbscan is None or hdbscan_prediction is None:
                 raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
 
-            out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
+            out_root = self._resolve_output_root(cfg.output_root)
             retrain = "on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off"
             reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
             out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
@@ -475,7 +521,7 @@ class StepFService:
             if mode == "live" and not (out_root / "stepA" / input_mode).exists():
                 input_mode = "sim"
 
-            agents, discovered_daily_logs, requested_agents = self._resolve_agents(
+            agents, discovered_daily_logs, requested_agents, selected_step_e_root = self._resolve_agents(
                 out_root=out_root,
                 input_mode=input_mode,
                 symbol=symbol,
@@ -484,7 +530,7 @@ class StepFService:
             if not agents:
                 raise ValueError(
                     "StepF agents is empty "
-                    f"(input_stepE_root={out_root / 'stepE' / input_mode}, "
+                    f"(input_stepE_root={selected_step_e_root}, "
                     f"discovered_daily_logs_count={len(discovered_daily_logs)}, "
                     f"requested_agents={','.join(requested_agents) if requested_agents else '(none)'})"
                 )

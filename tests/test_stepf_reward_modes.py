@@ -336,7 +336,7 @@ def test_stepf_resolve_agents_from_stepe_daily_logs_10_agents(tmp_path, capsys) 
         _write_stepe_daily_log(stepe_root / f"stepE_daily_log_{agent}_{symbol}.csv")
 
     svc = StepFService(app_config=SimpleNamespace())
-    resolved, discovered, requested = svc._resolve_agents(
+    resolved, discovered, requested, selected_root = svc._resolve_agents(
         out_root=out_root,
         input_mode="sim",
         symbol=symbol,
@@ -346,9 +346,12 @@ def test_stepf_resolve_agents_from_stepe_daily_logs_10_agents(tmp_path, capsys) 
     assert len(discovered) == 10
     assert resolved == expected_agents
     assert requested == []
+    assert selected_root == stepe_root.resolve()
 
     out = capsys.readouterr().out
     assert "[STEPF_AGENTS] begin" in out
+    assert "[STEPF_AGENTS] candidate_stepE_roots=" in out
+    assert f"[STEPF_AGENTS] selected_stepE_root={stepe_root.resolve()}" in out
     assert "[STEPF_AGENTS] discovered_daily_logs_count=10" in out
     assert "[STEPF_AGENTS] resolved_agents_count=10" in out
 
@@ -361,7 +364,7 @@ def test_stepf_resolve_agents_fallback_when_config_empty(tmp_path) -> None:
     _write_stepe_daily_log(stepe_root / f"stepE_daily_log_dprime_mix_h01_{symbol}.csv")
 
     svc = StepFService(app_config=SimpleNamespace())
-    resolved, _, _ = svc._resolve_agents(
+    resolved, _, _, _ = svc._resolve_agents(
         out_root=out_root,
         input_mode="sim",
         symbol=symbol,
@@ -379,7 +382,7 @@ def test_stepf_extract_agent_name_handles_soxl_suffix() -> None:
 
 def test_stepf_resolve_agents_logs_details_when_empty(tmp_path, capsys) -> None:
     svc = StepFService(app_config=SimpleNamespace())
-    resolved, discovered, requested = svc._resolve_agents(
+    resolved, discovered, requested, selected_root = svc._resolve_agents(
         out_root=tmp_path / "out",
         input_mode="sim",
         symbol="SOXL",
@@ -424,7 +427,7 @@ def test_stepf_regression_empty_config_but_stepe_logs_exist_no_agents_empty_erro
 
 def test_stepf_resolve_agents_logs_resolved_zero_when_no_request_and_no_logs(tmp_path, capsys) -> None:
     svc = StepFService(app_config=SimpleNamespace())
-    resolved, discovered, requested = svc._resolve_agents(
+    resolved, discovered, requested, selected_root = svc._resolve_agents(
         out_root=tmp_path / "out",
         input_mode="sim",
         symbol="SOXL",
@@ -438,3 +441,32 @@ def test_stepf_resolve_agents_logs_resolved_zero_when_no_request_and_no_logs(tmp
     out = capsys.readouterr().out
     assert "[STEPF_AGENTS] discovered_daily_logs_count=0" in out
     assert "[STEPF_AGENTS] resolved_agents_count=0" in out
+
+
+def test_stepf_resolve_agents_prefers_output_root_over_repo_relative_output_path(tmp_path, capsys) -> None:
+    symbol = "SOXL"
+    output_root = tmp_path / "run_123" / "output"
+    stepe_root = output_root / "stepE" / "sim"
+    for i in range(10):
+        _write_stepe_daily_log(stepe_root / f"stepE_daily_log_agent{i}_{symbol}.csv")
+
+    svc = StepFService(app_config=SimpleNamespace(output_root="output"))
+    resolved, discovered, requested, selected_root = svc._resolve_agents(
+        out_root=output_root,
+        input_mode="sim",
+        symbol=symbol,
+        requested_agents_raw="",
+    )
+
+    assert len(discovered) == 10
+    assert len(resolved) == 10
+    assert requested == []
+    assert selected_root == stepe_root.resolve()
+    repo_relative_candidate = (Path.cwd() / "output" / "stepE" / "sim").resolve()
+    assert selected_root != repo_relative_candidate
+
+    out = capsys.readouterr().out
+    assert f"[STEPF_AGENTS] selected_stepE_root={stepe_root.resolve()}" in out
+    assert f"[STEPF_AGENTS] candidate_stepE_roots={stepe_root.resolve()},{repo_relative_candidate}" in out
+    assert "[STEPF_AGENTS] discovered_daily_logs_count=10" in out
+    assert "[STEPF_AGENTS] resolved_agents_count=10" in out
