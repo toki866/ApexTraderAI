@@ -80,7 +80,7 @@ def test_reward_mode_outputs_are_separated(tmp_path) -> None:
     sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
-    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
@@ -111,7 +111,7 @@ def test_compare_mode_runs_all_reward_modes(tmp_path) -> None:
     sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
-    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
@@ -146,7 +146,7 @@ def test_compare_mode_continues_on_single_mode_failure_and_writes_traceback(tmp_
     sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
-    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
@@ -232,7 +232,7 @@ def test_compare_mode_first_failure_still_persists_primary_outputs_on_first_succ
     sf_mod.hdbscan_prediction = object()
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
-    svc._load_stepe_logs = lambda out_root, mode, symbol, agents: {  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda step_e_root, symbol, agents: {  # type: ignore[assignment]
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
@@ -472,3 +472,17 @@ def test_stepf_resolve_agents_prefers_effective_output_root_and_avoids_repo_rela
     assert str(repo_relative_candidate) not in out
     assert "[STEPF_AGENTS] discovered_daily_logs_count=10" in out
     assert "[STEPF_AGENTS] resolved_agents_count=10" in out
+
+
+def test_stepf_resolve_output_root_prefers_effective_root_when_config_is_default_output(tmp_path) -> None:
+    effective_root = tmp_path / "runs" / "20260101_000000" / "output"
+    svc = StepFService(
+        app_config=SimpleNamespace(
+            output_root="output",
+            effective_output_root=str(effective_root),
+        )
+    )
+
+    resolved = svc._resolve_output_root("output")
+
+    assert resolved == effective_root.resolve()
