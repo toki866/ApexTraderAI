@@ -125,6 +125,20 @@ def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
         os.path.join(out_dir, "EVAL_TABLE_stepF.csv"), index=False
     )
 
+    stepf_compare = report.get("stepF_compare", {}) if isinstance(report.get("stepF_compare", {}), dict) else {}
+    stepf_compare_row = stepf_compare.get("row", {}) if isinstance(stepf_compare.get("row", {}), dict) else {}
+    if stepf_compare_row:
+        pd.DataFrame([stepf_compare_row]).to_csv(os.path.join(out_dir, "EVAL_TABLE_stepF_compare.csv"), index=False)
+    else:
+        pd.DataFrame([{"status": stepf_compare.get("status", "WARN"), "summary": stepf_compare.get("summary", "compare skipped"), "reason": stepf_compare.get("reason", "NA")}]).to_csv(
+            os.path.join(out_dir, "EVAL_TABLE_stepF_compare.csv"), index=False
+        )
+
+    cluster_rows = stepf_compare.get("cluster", {}).get("rows", []) if isinstance(stepf_compare.get("cluster", {}), dict) else []
+    pd.DataFrame(cluster_rows if cluster_rows else [{"status": stepf_compare.get("cluster", {}).get("status", "PENDING"), "reason": stepf_compare.get("cluster", {}).get("reason", "cluster comparison pending")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepF_compare_cluster.csv"), index=False
+    )
+
     dprime = report.get("dprime", {}) if isinstance(report.get("dprime", {}), dict) else {}
     ddet = dprime.get("details", {}) if isinstance(dprime.get("details", {}), dict) else {}
     pd.DataFrame(
@@ -414,6 +428,275 @@ def _calc_diversity(pos_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _metrics_from_ret_series(ret_s: pd.Series) -> dict[str, Any]:
+    rets = pd.to_numeric(ret_s, errors="coerce").dropna().reset_index(drop=True)
+    if rets.empty:
+        return {
+            "test_days": 0,
+            "equity_multiple": None,
+            "max_dd": None,
+            "mean_ret": None,
+            "std_ret": None,
+            "sharpe": None,
+        }
+    eq = (1.0 + rets).cumprod()
+    peak = eq.cummax()
+    dd = eq / peak - 1.0
+    mean_ret = float(rets.mean()) if len(rets) >= 1 else None
+    std_ret = float(rets.std(ddof=1)) if len(rets) >= 2 else None
+    sharpe = None
+    if std_ret is not None and std_ret > 0:
+        sharpe = float((mean_ret or 0.0) / std_ret * np.sqrt(252.0))
+    return {
+        "test_days": int(len(rets)),
+        "equity_multiple": _to_float(float(eq.iloc[-1])),
+        "max_dd": _to_float(float(dd.min())),
+        "mean_ret": _to_float(mean_ret),
+        "std_ret": _to_float(std_ret),
+        "sharpe": _to_float(sharpe),
+    }
+
+
+def _build_test_ret_frame(df: pd.DataFrame, output_root: str, *, date_col: str = "Date") -> pd.DataFrame:
+    work = df.copy()
+    if date_col not in work.columns:
+        return pd.DataFrame(columns=["Date", "ret"])
+    ret_col = _pick_col(work, ["ret"])
+    if ret_col is None:
+        eq_col = _pick_col(work, ["equity", "Equity"])
+        if eq_col is None:
+            return pd.DataFrame(columns=["Date", "ret"])
+        work["_ret_eval"] = pd.to_numeric(work[eq_col], errors="coerce").pct_change()
+        ret_col = "_ret_eval"
+    split_col = _pick_col(work, ["Split"])
+    split_values, _, _ = _resolve_split_series(work, split_col, output_root=output_root, date_col=date_col)
+    test_df = work[split_values == "test"].copy()
+    test_df["Date"] = pd.to_datetime(test_df[date_col], errors="coerce").dt.normalize()
+    test_df["ret"] = pd.to_numeric(test_df[ret_col], errors="coerce")
+    extra_cols = [c for c in ["cluster_id_stable", "cluster_id_raw20", "rare_flag_raw20"] if c in test_df.columns]
+    cols = ["Date", "ret", *extra_cols]
+    return test_df[cols].dropna(subset=["Date", "ret"]).sort_values("Date").reset_index(drop=True)
+
+
+def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dict[str, Any]) -> dict[str, Any]:
+    stepf_rows = report.get("stepF", {}).get("rows", []) if isinstance(report.get("stepF", {}), dict) else []
+    stepe_rows = report.get("stepE", {}).get("rows", []) if isinstance(report.get("stepE", {}), dict) else []
+    current_row = next((r for r in stepf_rows if r.get("status") == "OK" and r.get("equity_multiple") is not None), None)
+    ranked_stepe = [
+        r
+        for r in stepe_rows
+        if r.get("status") == "OK" and r.get("equity_multiple") is not None and r.get("agent") and r.get("file")
+    ]
+    if current_row is None:
+        return {"status": "WARN", "summary": "compare skipped", "reason": "current StepF row with numeric equity_multiple not found"}
+    if len(ranked_stepe) < 1:
+        return {"status": "WARN", "summary": "compare skipped", "reason": "StepE daily logs are missing or non-numeric"}
+
+    ranked_stepe = sorted(
+        ranked_stepe,
+        key=lambda r: (float(r.get("equity_multiple") or -np.inf), float(r.get("sharpe") or -np.inf)),
+        reverse=True,
+    )
+    fixed_best = ranked_stepe[0]
+
+    expert_frames: dict[str, pd.DataFrame] = {}
+    step_e_dir = os.path.join(output_root, "stepE", mode)
+    for row in ranked_stepe:
+        fpath = os.path.join(step_e_dir, str(row.get("file")))
+        if not os.path.exists(fpath):
+            continue
+        try:
+            expert_frames[str(row.get("agent"))] = _build_test_ret_frame(_read_csv(fpath), output_root)
+        except Exception:
+            continue
+    if len(expert_frames) < 1:
+        return {"status": "WARN", "summary": "compare skipped", "reason": "failed to load StepE test return frames"}
+
+    all_dates = sorted({d for df in expert_frames.values() for d in pd.to_datetime(df["Date"], errors="coerce").dropna().tolist()})
+    if not all_dates:
+        return {"status": "WARN", "summary": "compare skipped", "reason": "StepE test date alignment is empty"}
+
+    oracle_records: list[dict[str, Any]] = []
+    for d in all_dates:
+        picks: list[tuple[str, float]] = []
+        for ag, df in expert_frames.items():
+            s = df.loc[df["Date"] == d, "ret"]
+            if not s.empty:
+                rv = float(s.iloc[0])
+                if np.isfinite(rv):
+                    picks.append((ag, rv))
+        if not picks:
+            continue
+        picks = sorted(picks, key=lambda x: x[1], reverse=True)
+        oracle_records.append({"Date": d, "oracle_expert": picks[0][0], "oracle_ret": picks[0][1]})
+    if not oracle_records:
+        return {"status": "WARN", "summary": "compare skipped", "reason": "oracle series could not be constructed"}
+    oracle_df = pd.DataFrame(oracle_records).sort_values("Date").reset_index(drop=True)
+    oracle_metrics = _metrics_from_ret_series(oracle_df["oracle_ret"])
+
+    stepf_eq_path = os.path.join(output_root, "stepF", mode, f"stepF_equity_marl_{symbol}.csv")
+    stepf_test = _build_test_ret_frame(_read_csv(stepf_eq_path), output_root)
+    current_by_date = {d: float(r) for d, r in zip(stepf_test["Date"], stepf_test["ret"]) if np.isfinite(r)}
+
+    fixed_df = expert_frames.get(str(fixed_best.get("agent")), pd.DataFrame(columns=["Date", "ret"]))
+    fixed_by_date = {d: float(r) for d, r in zip(fixed_df["Date"], fixed_df["ret"]) if np.isfinite(r)}
+
+    by_date_rows: list[dict[str, Any]] = []
+    cum_regret = 0.0
+    win_days = 0
+    common_days = 0
+    for d in oracle_df["Date"].tolist():
+        cur = current_by_date.get(d)
+        fxd = fixed_by_date.get(d)
+        orc = float(oracle_df.loc[oracle_df["Date"] == d, "oracle_ret"].iloc[0])
+        if cur is not None:
+            cum_regret += float(orc - cur)
+        if cur is not None and fxd is not None:
+            common_days += 1
+            if cur > fxd:
+                win_days += 1
+        by_date_rows.append(
+            {
+                "Date": str(pd.Timestamp(d).date()),
+                "current_stepf_ret": _to_float(cur),
+                "fixed_best_ret": _to_float(fxd),
+                "oracle_ret": _to_float(orc),
+                "oracle_expert": str(oracle_df.loc[oracle_df["Date"] == d, "oracle_expert"].iloc[0]),
+                "cumulative_regret_vs_oracle": _to_float(cum_regret),
+            }
+        )
+
+    oracle_counts = oracle_df["oracle_expert"].value_counts().to_dict()
+
+    # Optional StepF picked expert match-rate (via router weights)
+    pick_match_rate = None
+    stepf_selected_by_name: dict[str, int] = {}
+    try:
+        router_path = os.path.join(output_root, "stepF", mode, f"stepF_daily_log_router_{symbol}.csv")
+        if os.path.exists(router_path):
+            rdf = _read_csv(router_path)
+            rdf_test = _build_test_ret_frame(rdf, output_root)
+            rdf_test = rdf_test[["Date"]].copy()
+            wcols = [c for c in rdf.columns if c.startswith("w_")]
+            if wcols:
+                rwork = rdf.copy()
+                split_col = _pick_col(rwork, ["Split"])
+                split_values, _, _ = _resolve_split_series(rwork, split_col, output_root=output_root, date_col="Date")
+                rwork = rwork[split_values == "test"].copy()
+                rwork["Date"] = pd.to_datetime(rwork["Date"], errors="coerce").dt.normalize()
+                for c in wcols:
+                    rwork[c] = pd.to_numeric(rwork[c], errors="coerce")
+                rwork = rwork.dropna(subset=["Date"])
+                if not rwork.empty:
+                    argmax_cols = rwork[wcols].idxmax(axis=1)
+                    rwork["stepf_expert"] = argmax_cols.str.replace("w_", "", regex=False)
+                    stepf_selected_by_name = rwork["stepf_expert"].value_counts().astype(int).to_dict()
+                    merged_pick = oracle_df[["Date", "oracle_expert"]].merge(rwork[["Date", "stepf_expert"]], on="Date", how="inner")
+                    if not merged_pick.empty:
+                        pick_match_rate = float((merged_pick["oracle_expert"] == merged_pick["stepf_expert"]).mean())
+                        pick_map = {str(r.Date.date()): str(r.stepf_expert) for r in merged_pick.itertuples(index=False)}
+                        for row in by_date_rows:
+                            row["stepf_expert"] = pick_map.get(row["Date"])
+    except Exception:
+        pass
+
+    cluster_rows: list[dict[str, Any]] = []
+    cluster_status = "PENDING"
+    cluster_reason = "cluster comparison pending"
+    cluster_col = None
+    cluster_map_df = None
+    for ef in expert_frames.values():
+        if "cluster_id_stable" in ef.columns:
+            cluster_col = "cluster_id_stable"
+            cluster_map_df = ef[["Date", cluster_col]].drop_duplicates(subset=["Date"])
+            break
+        if "cluster_id_raw20" in ef.columns:
+            cluster_col = "cluster_id_raw20"
+            cluster_map_df = ef[["Date", cluster_col]].drop_duplicates(subset=["Date"])
+    if cluster_col is not None and cluster_map_df is not None:
+        orc_cluster = oracle_df.merge(cluster_map_df, on="Date", how="left").dropna(subset=[cluster_col])
+        if not orc_cluster.empty:
+            cluster_status = "OK"
+            cluster_reason = "computed from StepE daily logs"
+            for cid, cdf in orc_cluster.groupby(cluster_col):
+                cid_s = str(cid)
+                top_oracle = cdf["oracle_expert"].value_counts(normalize=True)
+                oracle_top_freq = float(top_oracle.iloc[0]) if not top_oracle.empty else 0.0
+                oracle_top_name = str(top_oracle.index[0]) if not top_oracle.empty else "NA"
+                mismatch_rate = None
+                stepf_top_freq = None
+                if any("stepf_expert" in x for x in by_date_rows):
+                    c_dates = set(str(pd.Timestamp(x).date()) for x in cdf["Date"].tolist())
+                    c_rows = [r for r in by_date_rows if r["Date"] in c_dates and r.get("stepf_expert")]
+                    if c_rows:
+                        stepf_names = pd.Series([r.get("stepf_expert") for r in c_rows], dtype="object")
+                        stepf_top_freq = float(stepf_names.value_counts(normalize=True).iloc[0])
+                        mismatch_rate = float(np.mean([r.get("stepf_expert") != r.get("oracle_expert") for r in c_rows]))
+                # best expert by cluster from mean return
+                best_name = "NA"
+                best_ret = -np.inf
+                for ag, ef in expert_frames.items():
+                    if cluster_col not in ef.columns:
+                        continue
+                    tmp = ef[ef[cluster_col] == cid]
+                    if tmp.empty:
+                        continue
+                    mr = float(pd.to_numeric(tmp["ret"], errors="coerce").dropna().mean())
+                    if np.isfinite(mr) and mr > best_ret:
+                        best_ret = mr
+                        best_name = ag
+                cluster_rows.append(
+                    {
+                        "cluster_id": cid_s,
+                        "best_expert_by_cluster": best_name,
+                        "oracle_top1_expert": oracle_top_name,
+                        "top1_frequency": _to_float(oracle_top_freq),
+                        "stepf_selected_frequency": _to_float(stepf_top_freq),
+                        "mismatch_rate": _to_float(mismatch_rate),
+                    }
+                )
+
+    current_em = float(current_row.get("equity_multiple") or np.nan)
+    fixed_em = float(fixed_best.get("equity_multiple") or np.nan)
+    oracle_em = float(oracle_metrics.get("equity_multiple") or np.nan)
+    summary_row = {
+        "current_stepf_equity_multiple": _to_float(current_em),
+        "fixed_best_expert": str(fixed_best.get("agent")),
+        "fixed_best_equity_multiple": _to_float(fixed_em),
+        "oracle_equity_multiple": _to_float(oracle_em),
+        "regret_vs_fixed_best": _to_float(fixed_em - current_em),
+        "regret_vs_oracle": _to_float(oracle_em - current_em),
+        "current_stepf_sharpe": _to_float(current_row.get("sharpe")),
+        "fixed_best_sharpe": _to_float(fixed_best.get("sharpe")),
+        "oracle_sharpe": _to_float(oracle_metrics.get("sharpe")),
+        "current_stepf_max_dd": _to_float(current_row.get("max_dd")),
+        "fixed_best_max_dd": _to_float(fixed_best.get("max_dd")),
+        "oracle_max_dd": _to_float(oracle_metrics.get("max_dd")),
+        "stepf_win_days_vs_fixed_best": _to_int(win_days),
+        "stepf_common_days_vs_fixed_best": _to_int(common_days),
+        "stepf_pick_match_rate_vs_oracle": _to_float(pick_match_rate),
+        "oracle_unique_expert_count": _to_int(len(oracle_counts)),
+    }
+    return {
+        "status": "OK",
+        "summary": "current StepF vs fixed-best expert vs daily oracle",
+        "row": summary_row,
+        "best_expert_name": str(fixed_best.get("agent")),
+        "best_expert_equity_multiple": _to_float(fixed_em),
+        "best_expert_sharpe": _to_float(fixed_best.get("sharpe")),
+        "best_expert_max_dd": _to_float(fixed_best.get("max_dd")),
+        "oracle_equity_multiple": _to_float(oracle_em),
+        "oracle_sharpe": _to_float(oracle_metrics.get("sharpe")),
+        "oracle_max_dd": _to_float(oracle_metrics.get("max_dd")),
+        "oracle_selected_expert_count_by_name": {str(k): int(v) for k, v in oracle_counts.items()},
+        "oracle_unique_expert_count": int(len(oracle_counts)),
+        "cumulative_regret_vs_oracle": _to_float(cum_regret),
+        "cluster": {"status": cluster_status, "reason": cluster_reason, "rows": cluster_rows},
+        "series": by_date_rows,
+        "stepf_selected_expert_count_by_name": stepf_selected_by_name,
+    }
+
+
 def _save_empty_plot_notice(path: str, title: str, message: str) -> None:
     if not MPL_AVAILABLE or plt is None:
         return
@@ -591,6 +874,60 @@ def _generate_plots(output_root: str, mode: str, symbol: str, report: dict[str, 
             notes.append("StepF_vs_best_StepE: 比較に必要な equity_multiple が不足")
     except Exception as exc:
         notes.append(f"PLOT StepE scatter exception: {exc}")
+
+    # StepF compare plots
+    try:
+        cmp = report.get("stepF_compare", {}) if isinstance(report.get("stepF_compare", {}), dict) else {}
+        path = record_plot("equity_stepF_vs_fixed_best_vs_oracle.png")
+        series = cmp.get("series", []) if isinstance(cmp.get("series", []), list) else []
+        if not series:
+            _save_empty_plot_notice(path, "StepF vs fixed-best vs oracle", "StepF comparison series is unavailable")
+            notes.append("PLOT StepF compare equity: comparison series unavailable")
+        else:
+            s = pd.DataFrame(series)
+            for c in ["current_stepf_ret", "fixed_best_ret", "oracle_ret"]:
+                s[c] = pd.to_numeric(s.get(c), errors="coerce")
+            s = s.dropna(subset=["Date"]).copy()
+            if s.empty:
+                _save_empty_plot_notice(path, "StepF vs fixed-best vs oracle", "No plottable compare rows")
+                notes.append("PLOT StepF compare equity: no plottable rows")
+            else:
+                cur = (1.0 + s["current_stepf_ret"].fillna(0.0)).cumprod()
+                fxd = (1.0 + s["fixed_best_ret"].fillna(0.0)).cumprod()
+                orc = (1.0 + s["oracle_ret"].fillna(0.0)).cumprod()
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(cur.values, label="current_stepf", color="black", linewidth=2.0)
+                ax.plot(fxd.values, label="fixed_best", color="tab:blue", linewidth=1.5)
+                ax.plot(orc.values, label="daily_oracle", color="tab:orange", linewidth=1.5)
+                ax.set_title("StepF vs Fixed Best vs Daily Oracle (test)")
+                ax.set_xlabel("Test day")
+                ax.set_ylabel("Equity")
+                ax.grid(True, alpha=0.3)
+                ax.legend(loc="best")
+                fig.tight_layout()
+                fig.savefig(path, dpi=120)
+                plt.close(fig)
+
+        path2 = record_plot("bar_stepF_regret.png")
+        row = cmp.get("row", {}) if isinstance(cmp.get("row", {}), dict) else {}
+        rv_fixed = row.get("regret_vs_fixed_best")
+        rv_oracle = row.get("regret_vs_oracle")
+        if rv_fixed is None and rv_oracle is None:
+            _save_empty_plot_notice(path2, "StepF regret", "Regret values are unavailable")
+            notes.append("PLOT StepF regret: regret values unavailable")
+        else:
+            vals = [0.0 if rv_fixed is None else float(rv_fixed), 0.0 if rv_oracle is None else float(rv_oracle)]
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.bar(["vs_fixed_best", "vs_oracle"], vals, color=["tab:blue", "tab:orange"])
+            ax.axhline(0.0, color="black", linewidth=1.0)
+            ax.set_title("StepF regret (equity multiple gap)")
+            ax.set_ylabel("Regret")
+            ax.grid(True, axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(path2, dpi=120)
+            plt.close(fig)
+    except Exception as exc:
+        notes.append(f"PLOT StepF compare exception: {exc}")
 
     for item in plots:
         item["exists"] = os.path.exists(item.get("path", ""))
@@ -978,6 +1315,12 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     except Exception as exc:
         report["stepF"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
+    # StepF comparison diagnostics (current vs fixed-best StepE vs daily oracle)
+    try:
+        report["stepF_compare"] = _collect_stepf_compare(output_root=output_root, mode=mode, symbol=symbol, report=report)
+    except Exception as exc:
+        report["stepF_compare"] = {"status": "WARN", "summary": "compare skipped", "reason": f"exception: {exc}"}
+
     statuses = [
         report["stepA"]["status"],
         report["stepB"]["status"],
@@ -985,6 +1328,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         report["stepE"]["status"],
         report["stepF"]["status"],
         report.get("diversity", {}).get("status", "SKIP"),
+        report.get("stepF_compare", {}).get("status", "SKIP"),
     ]
     report["overall_status"] = "BAD" if "BAD" in statuses else ("WARN" if "WARN" in statuses or "SKIP" in statuses else "OK")
     return report
@@ -1085,6 +1429,28 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append(f"- SKIP: {report.get('stepF', {}).get('summary')}")
+
+    stepf_cmp = report.get("stepF_compare", {}) if isinstance(report.get("stepF_compare", {}), dict) else {}
+    cmp_row = stepf_cmp.get("row", {}) if isinstance(stepf_cmp.get("row", {}), dict) else {}
+    lines.extend([
+        "",
+        "## StepFCompare",
+        f"- status: **{stepf_cmp.get('status', 'WARN')}**",
+        f"- summary: {stepf_cmp.get('summary', stepf_cmp.get('reason', 'NA'))}",
+    ])
+    if cmp_row:
+        lines.extend([
+            f"- current_stepf_equity_multiple: {_fmt(cmp_row.get('current_stepf_equity_multiple'))}",
+            f"- fixed_best_expert: {_fmt(cmp_row.get('fixed_best_expert'))}",
+            f"- fixed_best_equity_multiple: {_fmt(cmp_row.get('fixed_best_equity_multiple'))}",
+            f"- oracle_equity_multiple: {_fmt(cmp_row.get('oracle_equity_multiple'))}",
+            f"- regret_vs_fixed_best: {_fmt(cmp_row.get('regret_vs_fixed_best'))}",
+            f"- regret_vs_oracle: {_fmt(cmp_row.get('regret_vs_oracle'))}",
+            f"- stepf_win_days_vs_fixed_best: {_fmt(cmp_row.get('stepf_win_days_vs_fixed_best'))}",
+            f"- stepf_pick_match_rate_vs_oracle: {_fmt(cmp_row.get('stepf_pick_match_rate_vs_oracle'))}",
+        ])
+    cl = stepf_cmp.get("cluster", {}) if isinstance(stepf_cmp.get("cluster", {}), dict) else {}
+    lines.append(f"- cluster_status: {cl.get('status', 'PENDING')} ({cl.get('reason', 'cluster comparison pending')})")
 
     div = report.get("diversity", {})
     lines.extend([
@@ -1205,6 +1571,20 @@ def render_summary(report: dict[str, Any]) -> str:
                 lines.append(f"    reason={r.get('reason')}")
             if r.get("note"):
                 lines.append(f"    note={r.get('note')}")
+
+    stepf_cmp = report.get("stepF_compare", {}) if isinstance(report.get("stepF_compare", {}), dict) else {}
+    cmp_row = stepf_cmp.get("row", {}) if isinstance(stepf_cmp.get("row", {}), dict) else {}
+    lines.append("StepFCompare:")
+    lines.append(f"  status={stepf_cmp.get('status', 'WARN')} summary={stepf_cmp.get('summary', stepf_cmp.get('reason', 'NA'))}")
+    if cmp_row:
+        lines.append(f"  current_stepf_equity_multiple={_fmt(cmp_row.get('current_stepf_equity_multiple'))}")
+        lines.append(f"  fixed_best_expert={_fmt(cmp_row.get('fixed_best_expert'))}")
+        lines.append(f"  fixed_best_equity_multiple={_fmt(cmp_row.get('fixed_best_equity_multiple'))}")
+        lines.append(f"  oracle_equity_multiple={_fmt(cmp_row.get('oracle_equity_multiple'))}")
+        lines.append(f"  regret_vs_fixed_best={_fmt(cmp_row.get('regret_vs_fixed_best'))}")
+        lines.append(f"  regret_vs_oracle={_fmt(cmp_row.get('regret_vs_oracle'))}")
+        lines.append(f"  stepf_win_days_vs_fixed_best={_fmt(cmp_row.get('stepf_win_days_vs_fixed_best'))}")
+        lines.append(f"  stepf_pick_match_rate_vs_oracle={_fmt(cmp_row.get('stepf_pick_match_rate_vs_oracle'))}")
 
     div = report.get("diversity", {})
     lines.append("Diversity:")
