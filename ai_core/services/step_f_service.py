@@ -25,6 +25,7 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.clusterers.ticc_clusterer import TICCClusterer
 from ai_core.services.step_dprime_service import _compute_base_features
+from ai_core.utils.cluster_stats import compute_cluster_stats, derive_valid_and_rare_clusters
 from ai_core.utils.metrics_utils import compute_split_metrics
 try:
     from ai_core.utils.timing_logger import TimingLogger
@@ -60,9 +61,15 @@ class StepFRouterConfig:
     pca_n_components: int = 30
     hdbscan_min_cluster_size: int = 30
     hdbscan_min_samples: int = 10
-    clusterer_type: str = "ticc"
-    clusterer_fallback_type: str = "none"
+    clusterer_type: str = "ticc_raw20_stable"
+    clusterer_fallback_type: str = "hdbscan"
     ticc_num_clusters: int = 8
+    raw20_num_clusters: int = 20
+    k_eff_min: int = 12
+    cluster_share_min: float = 0.01
+    cluster_mean_run_min: float = 3.0
+    cluster_main_source: str = "stable"
+    enable_raw20_monitor: bool = True
     ticc_window_size: int = 5
     ticc_lambda: float = 0.11
     ticc_beta: float = 600.0
@@ -698,6 +705,14 @@ class StepFService:
                         "clusterer_type_used": cluster_diag.get("clusterer_type_used", ""),
                         "fallback_type": cluster_diag.get("fallback_type", ""),
                         "fallback_used": bool(cluster_diag.get("fallback_used", False)),
+                        "raw20_num_clusters_requested": int(cluster_diag.get("raw20_num_clusters_requested", 0) or 0),
+                        "raw20_regime_count": int(cluster_diag.get("raw20_regime_count", 0) or 0),
+                        "k_valid": int(cluster_diag.get("k_valid", 0) or 0),
+                        "k_eff": int(cluster_diag.get("k_eff", 0) or 0),
+                        "k_eff_min": int(cluster_diag.get("k_eff_min", 0) or 0),
+                        "stable_regime_count": int(cluster_diag.get("stable_regime_count", 0) or 0),
+                        "cluster_main_source": cluster_diag.get("cluster_main_source", "stable"),
+                        "rare_flag_raw20_count": int(cluster_diag.get("rare_flag_raw20_count", 0) or 0),
                     }
                 )
                 if persist_primary_outputs:
@@ -897,61 +912,198 @@ class StepFService:
 
         train_dates = X_df.loc[tr_mask, "Date"].to_numpy()
         test_dates = X_df.loc[te_mask, "Date"].to_numpy()
-        train_labels, test_labels, strengths, diag = self._cluster_phase2(
+        cluster_out, diag = self._cluster_phase2(
             cfg=cfg,
             x_train=x_train_p,
             x_test=x_test_p,
         )
         setattr(self, "_last_cluster_diag", dict(diag))
 
-        phase2_train = pd.DataFrame({"Date": train_dates, "regime_id": train_labels.astype(int), "confidence": 1.0})
-        phase2_test = pd.DataFrame({"Date": test_dates, "regime_id": test_labels.astype(int), "confidence": strengths.astype(float)})
+        phase2_train = pd.DataFrame(
+            {
+                "Date": train_dates,
+                "regime_id": cluster_out["train_main"].astype(int),
+                "cluster_id_stable": cluster_out["train_stable"].astype(int),
+                "cluster_id_raw20": cluster_out["train_raw20"].astype(int),
+                "rare_flag_raw20": cluster_out["train_rare_raw20"].astype(int),
+                "confidence_stable": cluster_out["train_conf_stable"].astype(float),
+                "confidence_raw20": cluster_out["train_conf_raw20"].astype(float),
+            }
+        )
+        phase2_test = pd.DataFrame(
+            {
+                "Date": test_dates,
+                "regime_id": cluster_out["test_main"].astype(int),
+                "cluster_id_stable": cluster_out["test_stable"].astype(int),
+                "cluster_id_raw20": cluster_out["test_raw20"].astype(int),
+                "rare_flag_raw20": cluster_out["test_rare_raw20"].astype(int),
+                "confidence_stable": cluster_out["test_conf_stable"].astype(float),
+                "confidence_raw20": cluster_out["test_conf_raw20"].astype(float),
+            }
+        )
         phase2 = pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        phase2["cluster_id_main"] = phase2["regime_id"].astype(int)
+        phase2["confidence"] = phase2["confidence_stable"].astype(float)
         regime_count = int(pd.Series(phase2["regime_id"].astype(int)).nunique()) if len(phase2) else 0
         print(f"[STEPF_CLUSTER] clusterer_type_requested={diag['clusterer_type_requested']}")
         print(f"[STEPF_CLUSTER] clusterer_type_used={diag['clusterer_type_used']}")
         print(f"[STEPF_CLUSTER] fallback_type={diag['fallback_type']}")
         print(f"[STEPF_CLUSTER] fallback_triggered={str(diag['fallback_used']).lower()}")
+        print(f"[STEPF_CLUSTER] raw20_num_clusters_requested={diag.get('raw20_num_clusters_requested', 0)}")
+        print(f"[STEPF_CLUSTER] raw20_regime_count={diag.get('raw20_regime_count', 0)}")
+        print(f"[STEPF_CLUSTER] k_valid={diag.get('k_valid', 0)}")
+        print(f"[STEPF_CLUSTER] k_eff={diag.get('k_eff', 0)}")
+        print(f"[STEPF_CLUSTER] k_eff_min={diag.get('k_eff_min', 0)}")
+        print(f"[STEPF_CLUSTER] stable_regime_count={diag.get('stable_regime_count', 0)}")
+        print(f"[STEPF_CLUSTER] main_cluster_source={diag.get('cluster_main_source', 'stable')}")
+        print(f"[STEPF_CLUSTER] rare_flag_raw20_count={diag.get('rare_flag_raw20_count', 0)}")
         print(f"[STEPF_CLUSTER] train_rows={len(train_dates)}")
         print(f"[STEPF_CLUSTER] test_rows={len(test_dates)}")
         print(f"[STEPF_CLUSTER] regime_count={regime_count}")
         return phase2
 
-    def _cluster_phase2(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
-        requested = str(getattr(cfg, "clusterer_type", "ticc") or "ticc").strip().lower()
+    def _cluster_phase2(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
+        requested = str(getattr(cfg, "clusterer_type", "ticc_raw20_stable") or "ticc_raw20_stable").strip().lower()
         fallback = str(getattr(cfg, "clusterer_fallback_type", "none") or "none").strip().lower()
         used = requested
         fallback_used = False
 
-        if requested == "ticc":
+        if requested in {"ticc_raw20_stable", "ticc"}:
             try:
-                train_labels, test_labels, strengths = self._run_ticc_clusterer(cfg=cfg, x_train=x_train, x_test=x_test)
+                train_raw20, test_raw20, conf_raw20 = self._run_ticc_clusterer_with_k(
+                    cfg=cfg,
+                    x_train=x_train,
+                    x_test=x_test,
+                    num_clusters=int(getattr(cfg, "raw20_num_clusters", 20)),
+                )
+                raw_stats = compute_cluster_stats(train_raw20.astype(int).tolist())
+                valid_clusters, rare_clusters = derive_valid_and_rare_clusters(
+                    raw_stats,
+                    share_min=float(getattr(cfg, "cluster_share_min", 0.01)),
+                    mean_run_min=float(getattr(cfg, "cluster_mean_run_min", 3.0)),
+                )
+                k_valid = int(len(valid_clusters))
+                k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+                k_eff = int(max(k_eff_min, k_valid))
+                train_stable, test_stable, conf_stable = self._run_ticc_clusterer_with_k(
+                    cfg=cfg,
+                    x_train=x_train,
+                    x_test=x_test,
+                    num_clusters=k_eff,
+                )
+                used = "raw20_stable"
+                main_source = str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower()
+                train_main = train_stable if main_source == "stable" else train_raw20
+                test_main = test_stable if main_source == "stable" else test_raw20
+                train_rare = np.isin(train_raw20.astype(int), list(set(rare_clusters))).astype(int)
+                test_rare = np.isin(test_raw20.astype(int), list(set(rare_clusters))).astype(int)
+                if not bool(getattr(cfg, "enable_raw20_monitor", True)):
+                    train_rare = np.zeros((x_train.shape[0],), dtype=int)
+                    test_rare = np.zeros((x_test.shape[0],), dtype=int)
+                out = {
+                    "train_main": train_main.astype(int),
+                    "test_main": test_main.astype(int),
+                    "train_stable": train_stable.astype(int),
+                    "test_stable": test_stable.astype(int),
+                    "train_raw20": train_raw20.astype(int),
+                    "test_raw20": test_raw20.astype(int),
+                    "train_conf_stable": np.ones((x_train.shape[0],), dtype=float),
+                    "test_conf_stable": conf_stable.astype(float),
+                    "train_conf_raw20": np.ones((x_train.shape[0],), dtype=float),
+                    "test_conf_raw20": conf_raw20.astype(float),
+                    "train_rare_raw20": train_rare,
+                    "test_rare_raw20": test_rare,
+                }
             except Exception as exc:
-                print(f"[STEPF_CLUSTER] ticc_unavailable={type(exc).__name__}: {exc}")
+                print(f"[STEPF_CLUSTER] ticc_raw20_stable_unavailable={type(exc).__name__}: {exc}")
                 fallback_used = True
-                used = fallback
-                train_labels, test_labels, strengths = self._run_cluster_fallback(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
+                out, used = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
+                raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
+                valid_clusters = []
+                rare_clusters = []
+                k_valid = 0
+                k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+                k_eff = k_eff_min
         elif requested == "hdbscan":
-            train_labels, test_labels, strengths = self._run_hdbscan_clusterer(cfg=cfg, x_train=x_train, x_test=x_test)
+            out, used = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback="hdbscan")
+            raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
+            valid_clusters = []
+            rare_clusters = []
+            k_valid = 0
+            k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+            k_eff = k_eff_min
         elif requested == "none":
-            train_labels, test_labels, strengths = self._run_none_clusterer(x_train=x_train, x_test=x_test)
+            out, used = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback="none")
+            raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
+            valid_clusters = []
+            rare_clusters = []
+            k_valid = 0
+            k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+            k_eff = k_eff_min
         else:
             fallback_used = True
-            used = fallback
-            train_labels, test_labels, strengths = self._run_cluster_fallback(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
+            out, used = self._run_cluster_fallback_dual(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
+            raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
+            valid_clusters = []
+            rare_clusters = []
+            k_valid = 0
+            k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+            k_eff = k_eff_min
 
         diag = {
             "clusterer_type_requested": requested,
             "clusterer_type_used": used,
             "fallback_type": fallback,
             "fallback_used": fallback_used,
+            "raw20_num_clusters_requested": int(getattr(cfg, "raw20_num_clusters", 20)),
+            "raw20_regime_count": int(len(pd.unique(out["train_raw20"]))),
+            "k_valid": int(k_valid),
+            "k_eff": int(k_eff),
+            "k_eff_min": int(k_eff_min),
+            "stable_regime_count": int(len(pd.unique(out["train_stable"]))),
+            "cluster_main_source": str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower(),
+            "rare_flag_raw20_count": int(np.sum(out["test_rare_raw20"].astype(int)) + np.sum(out["train_rare_raw20"].astype(int))),
+            "rare_clusters_raw20": [int(x) for x in sorted(set(rare_clusters))],
+            "raw20_cluster_stats": raw_stats.to_dict(orient="records"),
         }
-        return train_labels, test_labels, strengths, diag
+        return out, diag
 
     def _run_cluster_fallback(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, fallback: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if fallback == "hdbscan":
             return self._run_hdbscan_clusterer(cfg=cfg, x_train=x_train, x_test=x_test)
         return self._run_none_clusterer(x_train=x_train, x_test=x_test)
+
+    def _run_cluster_fallback_dual(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, fallback: str) -> Tuple[Dict[str, np.ndarray], str]:
+        train, test, conf = self._run_cluster_fallback(cfg=cfg, x_train=x_train, x_test=x_test, fallback=fallback)
+        used = "stable_only" if fallback == "hdbscan" else "none"
+        out = {
+            "train_main": train.astype(int),
+            "test_main": test.astype(int),
+            "train_stable": train.astype(int),
+            "test_stable": test.astype(int),
+            "train_raw20": train.astype(int),
+            "test_raw20": test.astype(int),
+            "train_conf_stable": np.ones((x_train.shape[0],), dtype=float),
+            "test_conf_stable": conf.astype(float),
+            "train_conf_raw20": np.ones((x_train.shape[0],), dtype=float),
+            "test_conf_raw20": conf.astype(float),
+            "train_rare_raw20": np.zeros((x_train.shape[0],), dtype=int),
+            "test_rare_raw20": np.zeros((x_test.shape[0],), dtype=int),
+        }
+        return out, used
+
+    def _run_ticc_clusterer_with_k(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray, num_clusters: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        clusterer = TICCClusterer(
+            num_clusters=int(num_clusters),
+            window_size=int(cfg.ticc_window_size),
+            lambda_parameter=float(cfg.ticc_lambda),
+            beta=float(cfg.ticc_beta),
+            max_iter=int(cfg.ticc_max_iter),
+            threshold=float(cfg.ticc_threshold),
+        )
+        train_labels = clusterer.fit_predict_train(x_train)
+        test_labels, strengths = clusterer.predict_test(x_test)
+        return train_labels.astype(int), test_labels.astype(int), strengths.astype(float)
 
     def _run_ticc_clusterer(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         clusterer = TICCClusterer(
