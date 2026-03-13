@@ -440,7 +440,7 @@ class StepFService:
     def _resolve_step_e_root_candidates(self, out_root: Path, input_mode: str) -> List[Path]:
         candidates: List[Path] = [self._normalize_absolute_path(out_root / "stepE" / input_mode)]
         app_output_root = str(getattr(self.app_config, "output_root", "") or "").strip()
-        if app_output_root:
+        if app_output_root and app_output_root.lower() != "output":
             candidates.append(self._normalize_absolute_path(Path(app_output_root) / "stepE" / input_mode))
 
         unique_candidates: List[Path] = []
@@ -451,23 +451,21 @@ class StepFService:
 
     @staticmethod
     def _extract_agent_name_from_daily_log(path: Path, symbol: str) -> Optional[str]:
-        stem = path.stem
-        prefix = "stepE_daily_log_"
-        if not stem.startswith(prefix):
+        file_name = path.name
+        match = re.match(rf"^stepE_daily_log_(.+)_{re.escape(symbol)}\.csv$", file_name, flags=re.IGNORECASE)
+        if not match:
             return None
-        body = stem[len(prefix) :]
-        symbol_suffix = f"_{symbol}"
-        if body.endswith(symbol_suffix):
-            body = body[: -len(symbol_suffix)]
-        body = body.strip("_")
-        return body or None
+        return match.group(1).strip("_") or None
 
     def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str], Path]:
         candidate_roots = self._resolve_step_e_root_candidates(out_root=out_root, input_mode=input_mode)
         selected_step_e_root = candidate_roots[0]
         discovered_daily_logs: List[Path] = []
         for candidate_root in candidate_roots:
-            logs = sorted(candidate_root.glob("stepE_daily_log_*.csv"))
+            logs = sorted(
+                p.resolve(strict=False)
+                for p in candidate_root.glob("stepE_daily_log_*.csv")
+            )
             if logs:
                 selected_step_e_root = candidate_root
                 discovered_daily_logs = logs
@@ -490,6 +488,7 @@ class StepFService:
         print("[STEPF_AGENTS] begin")
         print(f"[STEPF_AGENTS] candidate_stepE_roots={','.join(str(p) for p in candidate_roots)}")
         print(f"[STEPF_AGENTS] selected_stepE_root={selected_step_e_root}")
+        print(f"[STEPF_AGENTS] selected_stepE_root_exists={str(selected_step_e_root.exists()).lower()}")
         print(f"[STEPF_AGENTS] input_stepE_root={selected_step_e_root}")
         print(f"[STEPF_AGENTS] requested_agents_raw={requested_agents_raw}")
         print(f"[STEPF_AGENTS] requested_agents_normalized={','.join(requested_agents) if requested_agents else '(none)'}")
