@@ -122,6 +122,11 @@ class StepFService:
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
     @staticmethod
+    def _log_stepf_multi(message: str) -> None:
+        print(message)
+        print(f"[ONE_TAP]{message}")
+
+    @staticmethod
     def evaluate_final_outputs(output_root: Path, mode: str, symbol: str) -> Dict[str, object]:
         """Evaluate StepF final artifact health at end-of-step.
 
@@ -203,27 +208,27 @@ class StepFService:
         if resolved_mode in {"ops", "prod", "production", "real"}:
             resolved_mode = "live"
         compare_enabled, reward_modes = self._resolve_reward_modes(cfg)
-        print(f"[STEPF_MULTI] compare_enabled={str(compare_enabled).lower()}")
-        print(f"[STEPF_MULTI] reward_modes={','.join(reward_modes)}")
+        self._log_stepf_multi(f"[STEPF_MULTI] compare_enabled={str(compare_enabled).lower()}")
+        self._log_stepf_multi(f"[STEPF_MULTI] reward_modes={','.join(reward_modes)}")
 
         out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
         step_e_root = out_root / "stepE" / resolved_mode
         step_e_daily_logs = sorted(step_e_root.glob(f"stepE_daily_log_*_{symbol}.csv"))
-        print(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
-        print(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
 
         primary_result: Optional[StepFResult] = None
         mode_records: List[StepFModeRunRecord] = []
-        for idx, reward_mode in enumerate(reward_modes):
+        for reward_mode in reward_modes:
             mode_cfg = deepcopy(cfg)
             mode_cfg.reward_mode = reward_mode
-            persist_primary_outputs = idx == 0
-            print(f"[STEPF_MULTI] mode_start={reward_mode}")
+            persist_primary_outputs = primary_result is None
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
             retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
             mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
-            print(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
-            print(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
-            print(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
 
             try:
                 mode_result = self._run_router(
@@ -239,8 +244,8 @@ class StepFService:
                     f"stepF_daily_log_marl_{symbol}.csv",
                     f"stepF_summary_router_{symbol}.json",
                 ]
-                print(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
-                print(f"[STEPF_MULTI] mode_success={reward_mode}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
                 mode_records.append(
                     StepFModeRunRecord(
                         mode=reward_mode,
@@ -259,10 +264,13 @@ class StepFService:
                 traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
                 traceback_path.write_text(tb_text, encoding="utf-8")
                 files_present = [p.name for p in sorted(mode_dir.glob("*"))]
-                print(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
-                print(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
-                print(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
                 print(tb_text)
+                print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
+                print(tb_text)
+                print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
                 mode_records.append(
                     StepFModeRunRecord(
                         mode=reward_mode,
@@ -278,13 +286,26 @@ class StepFService:
 
         multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
         multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
+        success_modes = [r.mode for r in mode_records if r.status == "SUCCESS"]
+        failed_modes = [r.mode for r in mode_records if r.status == "FAIL"]
+        missing_outputs = [
+            f"reward_{r.mode}/stepF_equity_marl_{symbol}.csv"
+            for r in mode_records
+            if r.status != "SUCCESS"
+        ]
         multi_summary = {
             "compare_enabled": compare_enabled,
             "reward_modes": reward_modes,
+            "success_modes": success_modes,
+            "failed_modes": failed_modes,
+            "missing_outputs": missing_outputs,
             "records": [r.__dict__ for r in mode_records],
         }
         multi_summary_path.write_text(json.dumps(multi_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[STEPF_MULTI] summary_path={multi_summary_path}")
+        self._log_stepf_multi(f"[STEPF_MULTI] success_modes={','.join(success_modes) if success_modes else '(none)'}")
+        self._log_stepf_multi(f"[STEPF_MULTI] failed_modes={','.join(failed_modes) if failed_modes else '(none)'}")
+        self._log_stepf_multi(f"[STEPF_MULTI] missing_outputs={','.join(missing_outputs) if missing_outputs else '(none)'}")
+        self._log_stepf_multi(f"[STEPF_MULTI] summary_path={multi_summary_path}")
 
         if primary_result is None:
             failed = [f"{r.mode}:{r.error}" for r in mode_records if r.status == "FAIL"]
