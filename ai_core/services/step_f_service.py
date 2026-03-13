@@ -67,6 +67,11 @@ class StepFRouterConfig:
     pos_limit: float = 1.0
     trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
+    reward_mode: str = "legacy"
+    lambda_switch: float = 0.0005
+    lambda_churn: float = 0.0002
+    lambda_regret: float = 0.2
+    lambda_dd: float = 0.05
     eps_ir: float = 1e-8
     verbose: bool = True
     retrain: str = "off"
@@ -193,11 +198,14 @@ class StepFService:
 
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
             retrain = "on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off"
+            reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
             out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
+            reward_dir = out_dir / f"reward_{reward_mode}"
             router_dir = out_dir / "router"
             phase2_dir = out_dir / "phase2"
             router_dir.mkdir(parents=True, exist_ok=True)
             phase2_dir.mkdir(parents=True, exist_ok=True)
+            reward_dir.mkdir(parents=True, exist_ok=True)
 
             agents = [a.strip() for a in str(cfg.agents or "").split(",") if a.strip()]
             if not agents:
@@ -310,6 +318,14 @@ class StepFService:
                 eq_df.to_csv(eq_marl_path, index=False)
                 daily[["Date", "ratio"]].to_csv(ratio_live_path, index=False)
 
+                reward_router_path = reward_dir / f"stepF_daily_log_router_{symbol}.csv"
+                reward_marl_path = reward_dir / f"stepF_daily_log_marl_{symbol}.csv"
+                reward_eq_path = reward_dir / f"stepF_equity_marl_{symbol}.csv"
+                reward_summary_path = reward_dir / f"stepF_summary_router_{symbol}.json"
+                daily.to_csv(reward_router_path, index=False)
+                daily.to_csv(reward_marl_path, index=False)
+                eq_df.to_csv(reward_eq_path, index=False)
+
                 daily_for_summary = pd.read_csv(log_router_path)
                 if "Split" not in daily_for_summary.columns:
                     daily_for_summary["Split"] = self._assign_split_by_date(daily_for_summary["Date"], date_range)
@@ -329,6 +345,8 @@ class StepFService:
                 }
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
                 summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                summary_with_reward = {**summary, "reward_mode": reward_mode}
+                reward_summary_path.write_text(json.dumps(summary_with_reward, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if cfg.verbose:
                 print(f"[StepF-router] wrote phase2={phase2_path}")
@@ -655,6 +673,8 @@ class StepFService:
         out = []
         ratio_prev = 0.0
         eq = 1.0
+        peak_eq = 1.0
+        reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
         for row in merged.itertuples(index=False):
             rid = int(getattr(row, "regime_id"))
             allowed = allow_map.get(rid, safe_set if rid == -1 else agents)
@@ -698,12 +718,30 @@ class StepFService:
             cost = float(cfg.trade_cost_bps) * 1e-4 * abs(ratio - ratio_prev)
             turnover = float(abs(ratio - ratio_prev))
             penalty = float(cfg.pos_l2_lambda) * (ratio ** 2)
+            switch_cost = turnover
+            churn_cost = float(np.sum([abs(w_full[a] - w_prev[a]) for a in agents]))
             pos_plus = max(ratio, 0.0)
             pos_minus = max(-ratio, 0.0)
             r_soxl = float(getattr(row, "r_soxl", 0.0) or 0.0)
             r_soxs = float(getattr(row, "r_soxs", 0.0) or 0.0)
-            ret = pos_plus * r_soxl + pos_minus * r_soxs - cost - penalty
+            ret_selected = pos_plus * r_soxl + pos_minus * r_soxs
+            ret_best_expert = max([float(getattr(row, f"ret_{a}", np.nan)) for a in agents if np.isfinite(float(getattr(row, f"ret_{a}", np.nan)))] or [ret_selected])
+
+            if reward_mode == "profit_basic":
+                ret = ret_selected - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_churn) * churn_cost
+            elif reward_mode == "profit_regret":
+                regret = max(0.0, ret_best_expert - ret_selected)
+                ret = ret_selected - float(cfg.lambda_regret) * regret - float(cfg.lambda_switch) * switch_cost
+            elif reward_mode == "profit_light_risk":
+                eq_tmp = eq * (1.0 + ret_selected - cost - penalty)
+                peak_next = max(peak_eq, eq_tmp)
+                dd_penalty = max(0.0, 1.0 - eq_tmp / max(1e-12, peak_next))
+                ret = ret_selected - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_dd) * dd_penalty
+            else:
+                ret = ret_selected - cost - penalty
+
             eq *= (1.0 + ret)
+            peak_eq = max(peak_eq, eq)
 
             split = str(getattr(row, "Split", "test"))
             rec = {
@@ -714,6 +752,11 @@ class StepFService:
                 "ret": ret,
                 "cost": cost,
                 "turnover": turnover,
+                "ret_selected": ret_selected,
+                "ret_best_expert": ret_best_expert,
+                "switch_cost": switch_cost,
+                "churn_cost": churn_cost,
+                "reward_mode": reward_mode,
                 "equity": eq,
                 "allowed_agents": "|".join(allowed),
                 "r_soxl": r_soxl,
