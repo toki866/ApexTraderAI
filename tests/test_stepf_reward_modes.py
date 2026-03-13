@@ -302,3 +302,139 @@ def test_stepf_wrapper_exception_logs_traceback_to_one_tap(tmp_path, capsys) -> 
     assert "[ONE_TAP][STEPF_ENTRY] wrapper_traceback_begin" in out
     assert "Traceback (most recent call last)" in out
     assert "[ONE_TAP][STEPF_ENTRY] wrapper_stepf_dir_exists=true" in out
+
+
+def _write_stepe_daily_log(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "Date": ["2024-01-01"],
+            "Split": ["test"],
+            "ratio": [1.0],
+            "reward_next": [0.01],
+        }
+    ).to_csv(path, index=False)
+
+
+def test_stepf_resolve_agents_from_stepe_daily_logs_10_agents(tmp_path, capsys) -> None:
+    symbol = "SOXL"
+    out_root = tmp_path / "out"
+    stepe_root = out_root / "stepE" / "sim"
+    expected_agents = [
+        "dprime_all_features_3scale",
+        "dprime_all_features_h01",
+        "dprime_all_features_h02",
+        "dprime_all_features_h03",
+        "dprime_bnf_3scale",
+        "dprime_bnf_h01",
+        "dprime_bnf_h02",
+        "dprime_mix_3scale",
+        "dprime_mix_h01",
+        "dprime_mix_h02",
+    ]
+    for agent in expected_agents:
+        _write_stepe_daily_log(stepe_root / f"stepE_daily_log_{agent}_{symbol}.csv")
+
+    svc = StepFService(app_config=SimpleNamespace())
+    resolved, discovered, requested = svc._resolve_agents(
+        out_root=out_root,
+        input_mode="sim",
+        symbol=symbol,
+        requested_agents_raw="",
+    )
+
+    assert len(discovered) == 10
+    assert resolved == expected_agents
+    assert requested == []
+
+    out = capsys.readouterr().out
+    assert "[STEPF_AGENTS] begin" in out
+    assert "[STEPF_AGENTS] discovered_daily_logs_count=10" in out
+    assert "[STEPF_AGENTS] resolved_agents_count=10" in out
+
+
+def test_stepf_resolve_agents_fallback_when_config_empty(tmp_path) -> None:
+    symbol = "SOXL"
+    out_root = tmp_path / "out"
+    stepe_root = out_root / "stepE" / "sim"
+    _write_stepe_daily_log(stepe_root / f"stepE_daily_log_dprime_bnf_h01_{symbol}.csv")
+    _write_stepe_daily_log(stepe_root / f"stepE_daily_log_dprime_mix_h01_{symbol}.csv")
+
+    svc = StepFService(app_config=SimpleNamespace())
+    resolved, _, _ = svc._resolve_agents(
+        out_root=out_root,
+        input_mode="sim",
+        symbol=symbol,
+        requested_agents_raw="   ",
+    )
+
+    assert resolved == ["dprime_bnf_h01", "dprime_mix_h01"]
+
+
+def test_stepf_extract_agent_name_handles_soxl_suffix() -> None:
+    symbol = "SOXL"
+    p = Path(f"stepE_daily_log_dprime_bnf_h01_{symbol}.csv")
+    assert StepFService._extract_agent_name_from_daily_log(p, symbol) == "dprime_bnf_h01"
+
+
+def test_stepf_resolve_agents_logs_details_when_empty(tmp_path, capsys) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    resolved, discovered, requested = svc._resolve_agents(
+        out_root=tmp_path / "out",
+        input_mode="sim",
+        symbol="SOXL",
+        requested_agents_raw="dprime_bnf_h01",
+    )
+
+    assert resolved == ["dprime_bnf_h01"]
+    assert discovered == []
+    assert requested == ["dprime_bnf_h01"]
+
+    out = capsys.readouterr().out
+    assert "[STEPF_AGENTS] input_stepE_root=" in out
+    assert "[STEPF_AGENTS] requested_agents_raw=dprime_bnf_h01" in out
+    assert "[STEPF_AGENTS] discovered_daily_logs_count=0" in out
+    assert "[STEPF_AGENTS] resolved_agents_count=1" in out
+
+
+def test_stepf_regression_empty_config_but_stepe_logs_exist_no_agents_empty_error(tmp_path) -> None:
+    symbol = "SOXL"
+    out_root = tmp_path / "out"
+    stepe_root = out_root / "stepE" / "sim"
+    _write_stepe_daily_log(stepe_root / f"stepE_daily_log_dprime_all_features_h01_{symbol}.csv")
+
+    cfg = StepFRouterConfig(output_root=str(out_root), agents="", reward_mode="legacy")
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(out_root))
+    svc = StepFService(app_config=app_config)
+
+    sf_mod.hdbscan = object()
+    sf_mod.hdbscan_prediction = object()
+
+    svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
+    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "dprime_all_features_h01", "IR": 1.0}])  # type: ignore[assignment]
+    svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "dprime_all_features_h01"}])  # type: ignore[assignment]
+    svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim", train_start="2023-01-01", train_end="2023-12-31", test_start="2024-01-01", test_end="2024-12-31")
+    svc.run(date_range, symbol=symbol, mode="sim")
+
+    assert (out_root / "stepF" / "sim" / "reward_legacy" / f"stepF_equity_marl_{symbol}.csv").exists()
+
+
+def test_stepf_resolve_agents_logs_resolved_zero_when_no_request_and_no_logs(tmp_path, capsys) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    resolved, discovered, requested = svc._resolve_agents(
+        out_root=tmp_path / "out",
+        input_mode="sim",
+        symbol="SOXL",
+        requested_agents_raw="",
+    )
+
+    assert resolved == []
+    assert discovered == []
+    assert requested == []
+
+    out = capsys.readouterr().out
+    assert "[STEPF_AGENTS] discovered_daily_logs_count=0" in out
+    assert "[STEPF_AGENTS] resolved_agents_count=0" in out
