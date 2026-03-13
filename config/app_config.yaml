@@ -25,3 +25,8 @@ cluster_regime:
   cluster_enable_8y_context: true
   # raw20 rare監視フラグ（small/rare membership）
   cluster_rare_flag_enabled: true
+
+stepF:
+  # Compare entrypoint: run all reward modes by default for StepF comparison.
+  stepf_compare_reward_modes: true
+  stepf_reward_modes: legacy,profit_basic,profit_regret,profit_light_risk

@@ -702,10 +702,12 @@ def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dic
                 )
 
     reward_compare_rows: list[dict[str, Any]] = []
-    reward_modes = ["profit_basic", "profit_regret", "profit_light_risk"]
+    reward_modes = ["legacy", "profit_basic", "profit_regret", "profit_light_risk"]
     reward_rows_by_mode: dict[str, dict[str, Any]] = {}
     current_test_df = stepf_test.copy()
-    reward_rows_by_mode["current_stepf"] = _mode_compare_row("current_stepf", current_test_df, fixed_by_date, oracle_df, pick_match_rate)
+    reward_legacy_row = _mode_compare_row("reward_legacy", current_test_df, fixed_by_date, oracle_df, pick_match_rate)
+    reward_rows_by_mode["reward_legacy"] = reward_legacy_row
+    reward_rows_by_mode["current_stepf"] = {**reward_legacy_row, "name": "current_stepf", "alias_of": "reward_legacy"}
 
     for rm in reward_modes:
         pair = _load_stepf_mode_artifacts(output_root, mode, symbol, rm)
@@ -762,7 +764,7 @@ def _collect_stepf_compare(output_root: str, mode: str, symbol: str, report: dic
         "common_days_vs_fixed_best": None,
     }
 
-    ordered_names = ["current_stepf", "reward_profit_basic", "reward_profit_regret", "reward_profit_light_risk"]
+    ordered_names = ["reward_legacy", "current_stepf", "reward_profit_basic", "reward_profit_regret", "reward_profit_light_risk"]
     for n in ordered_names:
         if n in reward_rows_by_mode:
             reward_compare_rows.append(reward_rows_by_mode[n])

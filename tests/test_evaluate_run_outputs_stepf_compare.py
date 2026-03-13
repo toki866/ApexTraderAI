@@ -93,6 +93,7 @@ def test_stepf_compare_generates_table_and_regret(tmp_path: Path):
     assert reward_cmp["status"] == "OK"
     names = [r["name"] for r in reward_cmp["rows"]]
     assert "current_stepf" in names
+    assert "reward_legacy" in names
     assert "reward_profit_basic" in names
     assert "reward_profit_regret" in names
     assert "reward_profit_light_risk" in names

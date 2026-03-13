@@ -68,6 +68,8 @@ class StepFRouterConfig:
     trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
     reward_mode: str = "legacy"
+    stepf_compare_reward_modes: bool = False
+    stepf_reward_modes: str = ""
     lambda_switch: float = 0.0005
     lambda_churn: float = 0.0002
     lambda_regret: float = 0.2
@@ -92,6 +94,13 @@ class StepFResult:
 
 
 class StepFService:
+    DEFAULT_COMPARE_REWARD_MODES: Tuple[str, ...] = (
+        "legacy",
+        "profit_basic",
+        "profit_regret",
+        "profit_light_risk",
+    )
+
     def __init__(self, app_config):
         self.app_config = app_config
 
@@ -180,7 +189,40 @@ class StepFService:
         resolved_mode = str(mode or getattr(date_range, "mode", None) or cfg.mode or "sim").strip().lower()
         if resolved_mode in {"ops", "prod", "production", "real"}:
             resolved_mode = "live"
-        return self._run_router(cfg, date_range, symbol=symbol, mode=resolved_mode)
+        compare_enabled, reward_modes = self._resolve_reward_modes(cfg)
+        print(f"[STEPF_MULTI] compare_enabled={str(compare_enabled).lower()}")
+        print(f"[STEPF_MULTI] reward_modes={','.join(reward_modes)}")
+
+        primary_result: Optional[StepFResult] = None
+        for idx, reward_mode in enumerate(reward_modes):
+            mode_cfg = deepcopy(cfg)
+            mode_cfg.reward_mode = reward_mode
+            persist_primary_outputs = idx == 0
+            print(f"[STEPF_MULTI] mode_start={reward_mode}")
+            mode_result = self._run_router(
+                mode_cfg,
+                date_range,
+                symbol=symbol,
+                mode=resolved_mode,
+                persist_primary_outputs=persist_primary_outputs,
+            )
+            out_root = Path(mode_cfg.output_root or getattr(self.app_config, "output_root", "output"))
+            mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain="off", reward_mode=reward_mode)
+            written_files = [
+                f"stepF_equity_marl_{symbol}.csv",
+                f"stepF_daily_log_router_{symbol}.csv",
+                f"stepF_daily_log_marl_{symbol}.csv",
+                f"stepF_summary_router_{symbol}.json",
+            ]
+            print(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+            print(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
+            print(f"[STEPF_MULTI] mode_end={reward_mode} rc=0")
+            if primary_result is None:
+                primary_result = mode_result
+
+        if primary_result is None:
+            raise RuntimeError("StepF reward mode resolution returned no runnable modes")
+        return primary_result
 
     def run_live(self, date_range, symbol: str, retrain: str = "off", branch_id: str = "default", data_cutoff: str = "") -> StepFResult:
         cfg: StepFRouterConfig = deepcopy(getattr(self.app_config, "stepF", None))
@@ -190,7 +232,29 @@ class StepFService:
         cfg.branch_id = str(branch_id or "default")
         return self._run_router(cfg, date_range, symbol=symbol, mode="live", data_cutoff=data_cutoff)
 
-    def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "") -> StepFResult:
+    @classmethod
+    def _resolve_reward_modes(cls, cfg: StepFRouterConfig) -> Tuple[bool, List[str]]:
+        compare_enabled = bool(getattr(cfg, "stepf_compare_reward_modes", False))
+        raw_modes = str(getattr(cfg, "stepf_reward_modes", "") or "").strip()
+        parsed: List[str] = []
+        if raw_modes:
+            parsed = [m.strip().lower() for m in raw_modes.split(",") if m.strip()]
+        if compare_enabled and not parsed:
+            parsed = list(cls.DEFAULT_COMPARE_REWARD_MODES)
+        if not parsed:
+            parsed = [str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()]
+        normalized: List[str] = []
+        for mode_name in parsed:
+            if mode_name not in normalized:
+                normalized.append(mode_name)
+        return compare_enabled, normalized
+
+    @staticmethod
+    def _reward_dir(out_root: Path, mode: str, retrain: str, reward_mode: str) -> Path:
+        out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
+        return out_dir / f"reward_{reward_mode}"
+
+    def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "", persist_primary_outputs: bool = True) -> StepFResult:
         timing = self._timing()
         with timing.stage("stepF.total"):
             if hdbscan is None or hdbscan_prediction is None:
@@ -200,7 +264,7 @@ class StepFService:
             retrain = "on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off"
             reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
             out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
-            reward_dir = out_dir / f"reward_{reward_mode}"
+            reward_dir = self._reward_dir(out_root=out_root, mode=mode, retrain=retrain, reward_mode=reward_mode)
             router_dir = out_dir / "router"
             phase2_dir = out_dir / "phase2"
             router_dir.mkdir(parents=True, exist_ok=True)
@@ -312,11 +376,12 @@ class StepFService:
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
             with timing.stage("stepF.persist_outputs"):
-                daily.to_csv(log_router_path, index=False)
-                daily.to_csv(log_marl_path, index=False)
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
-                eq_df.to_csv(eq_marl_path, index=False)
-                daily[["Date", "ratio"]].to_csv(ratio_live_path, index=False)
+                if persist_primary_outputs:
+                    daily.to_csv(log_router_path, index=False)
+                    daily.to_csv(log_marl_path, index=False)
+                    eq_df.to_csv(eq_marl_path, index=False)
+                    daily[["Date", "ratio"]].to_csv(ratio_live_path, index=False)
 
                 reward_router_path = reward_dir / f"stepF_daily_log_router_{symbol}.csv"
                 reward_marl_path = reward_dir / f"stepF_daily_log_marl_{symbol}.csv"
@@ -326,7 +391,7 @@ class StepFService:
                 daily.to_csv(reward_marl_path, index=False)
                 eq_df.to_csv(reward_eq_path, index=False)
 
-                daily_for_summary = pd.read_csv(log_router_path)
+                daily_for_summary = daily.copy()
                 if "Split" not in daily_for_summary.columns:
                     daily_for_summary["Split"] = self._assign_split_by_date(daily_for_summary["Date"], date_range)
                 metrics = compute_split_metrics(daily_for_summary, split="test", equity_col="equity", ret_col="ret")
@@ -344,7 +409,8 @@ class StepFService:
                     "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                 }
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
-                summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                if persist_primary_outputs:
+                    summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
                 summary_with_reward = {**summary, "reward_mode": reward_mode}
                 reward_summary_path.write_text(json.dumps(summary_with_reward, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -354,9 +420,10 @@ class StepFService:
                 print(f"[StepF-router] wrote allowlist={allow_path}")
                 print(f"[StepF-router] wrote daily={log_router_path}")
                 print(f"[StepF-router] wrote summary={summary_router_path}")
-            final_eval = self.evaluate_final_outputs(output_root=out_root, mode=mode, symbol=symbol)
-            if int(final_eval.get("return_code", 1)) != 0:
-                raise RuntimeError(f"StepF final artifacts invalid: {final_eval.get('errors', [])}")
+            if persist_primary_outputs:
+                final_eval = self.evaluate_final_outputs(output_root=out_root, mode=mode, symbol=symbol)
+                if int(final_eval.get("return_code", 1)) != 0:
+                    raise RuntimeError(f"StepF final artifacts invalid: {final_eval.get('errors', [])}")
 
             return StepFResult(daily_log_path=str(log_router_path), summary_path=str(summary_router_path), ratio_path=str(ratio_live_path))
 

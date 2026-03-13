@@ -421,7 +421,14 @@ def _normalize_symbols(values: object) -> Tuple[str, ...]:
 # Artifact presence checks
 # ---------------------------------------------------------------------------
 
-def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -> bool:
+def check_step_artifacts(
+    step: str,
+    output_root: Path,
+    symbol: str,
+    mode: str,
+    *,
+    required_stepf_reward_modes: Optional[Tuple[str, ...]] = None,
+) -> bool:
     """Return True if the key artifacts for *step* exist in output_root."""
     base = Path(output_root)
     step_upper = step.upper()
@@ -497,12 +504,26 @@ def check_step_artifacts(step: str, output_root: Path, symbol: str, mode: str) -
 
     if step_upper == "F":
         d = base / "stepF" / mode
-        return (
+        primary_ok = (
             (d / f"stepF_equity_marl_{symbol}.csv").exists()
             and (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
             and (d / f"stepF_daily_log_router_{symbol}.csv").exists()
             and (d / f"stepF_summary_router_{symbol}.json").exists()
         )
+        if not primary_ok:
+            return False
+        reward_modes = tuple(str(x).strip().lower() for x in (required_stepf_reward_modes or tuple()) if str(x).strip())
+        for rm in reward_modes:
+            rdir = d / f"reward_{rm}"
+            required_reward = (
+                rdir / f"stepF_equity_marl_{symbol}.csv",
+                rdir / f"stepF_daily_log_marl_{symbol}.csv",
+                rdir / f"stepF_daily_log_router_{symbol}.csv",
+                rdir / f"stepF_summary_router_{symbol}.json",
+            )
+            if not all(x.exists() for x in required_reward):
+                return False
+        return True
 
     return False
 
