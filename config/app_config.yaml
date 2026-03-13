@@ -30,3 +30,11 @@ stepF:
   # Compare entrypoint: run all reward modes by default for StepF comparison.
   stepf_compare_reward_modes: true
   stepf_reward_modes: legacy,profit_basic,profit_regret,profit_light_risk
+  clusterer_type: ticc
+  clusterer_fallback_type: none
+  ticc_num_clusters: 8
+  ticc_window_size: 5
+  ticc_lambda: 0.11
+  ticc_beta: 600.0
+  ticc_max_iter: 100
+  ticc_threshold: 0.00002
