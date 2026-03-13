@@ -257,3 +257,48 @@ def test_compare_mode_first_failure_still_persists_primary_outputs_on_first_succ
     assert (base / "stepF_equity_marl_SOXL.csv").exists()
     assert (base / "reward_legacy" / "stepF_equity_marl_SOXL.csv").exists()
     assert (base / "reward_profit_regret" / "stepF_traceback_SOXL.log").exists()
+
+
+def test_stepf_wrapper_creates_stepf_sim_dir_before_config_validation(tmp_path, capsys) -> None:
+    app_config = SimpleNamespace(stepF=None, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+    date_range = SimpleNamespace(mode="sim")
+
+    try:
+        svc.run(date_range, symbol="SOXL", mode="sim")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "app_config.stepF is missing" in str(exc)
+
+    out = capsys.readouterr().out
+    assert "[ONE_TAP][STEPF_ENTRY] begin" in out
+    assert (tmp_path / "out" / "stepF").exists()
+    assert (tmp_path / "out" / "stepF" / "sim").exists()
+
+
+def test_stepf_wrapper_exception_logs_traceback_to_one_tap(tmp_path, capsys) -> None:
+    cfg = StepFRouterConfig(
+        output_root=str(tmp_path / "out"),
+        agents="a1,a2",
+        reward_mode="legacy",
+        stepf_compare_reward_modes=True,
+        stepf_reward_modes="legacy",
+    )
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+
+    sf_mod.hdbscan = object()
+    sf_mod.hdbscan_prediction = object()
+    svc._run_router = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim")
+    try:
+        svc.run(date_range, symbol="SOXL", mode="sim")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "failed for all modes" in str(exc)
+
+    out = capsys.readouterr().out
+    assert "[ONE_TAP][STEPF_ENTRY] wrapper_traceback_begin" in out
+    assert "Traceback (most recent call last)" in out
+    assert "[ONE_TAP][STEPF_ENTRY] wrapper_stepf_dir_exists=true" in out

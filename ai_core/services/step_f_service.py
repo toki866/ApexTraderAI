@@ -8,6 +8,7 @@ Role boundary note:
 from __future__ import annotations
 
 import json
+import os
 import traceback
 from copy import deepcopy
 from dataclasses import dataclass
@@ -127,6 +128,11 @@ class StepFService:
         print(f"[ONE_TAP]{message}")
 
     @staticmethod
+    def _log_stepf_entry(message: str) -> None:
+        print(message)
+        print(f"[ONE_TAP]{message}")
+
+    @staticmethod
     def evaluate_final_outputs(output_root: Path, mode: str, symbol: str) -> Dict[str, object]:
         """Evaluate StepF final artifact health at end-of-step.
 
@@ -201,116 +207,174 @@ class StepFService:
         }
 
     def run(self, date_range, symbol: str, mode: Optional[str] = None) -> StepFResult:
-        cfg: StepFRouterConfig = getattr(self.app_config, "stepF", None)
-        if cfg is None:
-            raise ValueError("app_config.stepF is missing")
-        resolved_mode = str(mode or getattr(date_range, "mode", None) or cfg.mode or "sim").strip().lower()
-        if resolved_mode in {"ops", "prod", "production", "real"}:
-            resolved_mode = "live"
-        compare_enabled, reward_modes = self._resolve_reward_modes(cfg)
-        self._log_stepf_multi(f"[STEPF_MULTI] compare_enabled={str(compare_enabled).lower()}")
-        self._log_stepf_multi(f"[STEPF_MULTI] reward_modes={','.join(reward_modes)}")
+        out_root: Optional[Path] = None
+        stepf_dir: Optional[Path] = None
+        try:
+            self._log_stepf_entry("[STEPF_ENTRY] begin")
+            pre_output_root = Path(getattr(self.app_config, "output_root", "output") or "output")
+            pre_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
+            if pre_mode in {"ops", "prod", "production", "real"}:
+                pre_mode = "live"
+            pre_stepf_root = pre_output_root / "stepF"
+            pre_stepf_root.mkdir(parents=True, exist_ok=True)
+            (pre_stepf_root / "sim").mkdir(parents=True, exist_ok=True)
+            (pre_stepf_root / pre_mode).mkdir(parents=True, exist_ok=True)
+            self._log_stepf_entry("[STEPF_ENTRY] before_config_load")
+            cfg: StepFRouterConfig = getattr(self.app_config, "stepF", None)
+            if cfg is None:
+                raise ValueError("app_config.stepF is missing")
+            self._log_stepf_entry("[STEPF_ENTRY] after_config_load")
 
-        out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
-        step_e_root = out_root / "stepE" / resolved_mode
-        step_e_daily_logs = sorted(step_e_root.glob(f"stepE_daily_log_*_{symbol}.csv"))
-        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
-        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+            resolved_mode = str(mode or getattr(date_range, "mode", None) or cfg.mode or "sim").strip().lower()
+            if resolved_mode in {"ops", "prod", "production", "real"}:
+                resolved_mode = "live"
+            out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
+            stepf_root = out_root / "stepF"
+            stepf_dir = stepf_root / resolved_mode
+            stepf_root.mkdir(parents=True, exist_ok=True)
+            stepf_dir.mkdir(parents=True, exist_ok=True)
 
-        primary_result: Optional[StepFResult] = None
-        mode_records: List[StepFModeRunRecord] = []
-        for reward_mode in reward_modes:
-            mode_cfg = deepcopy(cfg)
-            mode_cfg.reward_mode = reward_mode
-            persist_primary_outputs = primary_result is None
-            self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
-            retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
-            mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
-            self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] output_root={out_root}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] stepf_dir={stepf_dir}")
+
+            self._log_stepf_entry("[STEPF_ENTRY] before_reward_modes_resolve")
+            compare_enabled, reward_modes = self._resolve_reward_modes(cfg)
+            self._log_stepf_entry(f"[STEPF_ENTRY] compare_enabled={str(compare_enabled).lower()}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] reward_modes={','.join(reward_modes)}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] config_path={getattr(self.app_config, '_config_path', '(unknown)')}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] symbol={symbol}")
+
+            self._log_stepf_multi(f"[STEPF_MULTI] compare_enabled={str(compare_enabled).lower()}")
+            self._log_stepf_multi(f"[STEPF_MULTI] reward_modes={','.join(reward_modes)}")
+
+            self._log_stepf_entry("[STEPF_ENTRY] before_stepe_daily_logs_resolve")
+            step_e_root = out_root / "stepE" / resolved_mode
+            step_e_daily_logs = sorted(step_e_root.glob(f"stepE_daily_log_*_{symbol}.csv"))
+            self._log_stepf_entry("[STEPF_ENTRY] after_stepe_daily_logs_resolve")
             self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
             self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
 
+            self._log_stepf_entry("[STEPF_ENTRY] output_dir_prepare_done")
+            self._log_stepf_entry("[STEPF_ENTRY] before_mode_loop")
+            primary_result: Optional[StepFResult] = None
+            mode_records: List[StepFModeRunRecord] = []
+            for reward_mode in reward_modes:
+                mode_cfg = deepcopy(cfg)
+                mode_cfg.reward_mode = reward_mode
+                persist_primary_outputs = primary_result is None
+                self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
+                retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
+                mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
+                self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+
+                try:
+                    self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
+                    mode_result = self._run_router(
+                        mode_cfg,
+                        date_range,
+                        symbol=symbol,
+                        mode=resolved_mode,
+                        persist_primary_outputs=persist_primary_outputs,
+                    )
+                    self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
+                    written_files = [
+                        f"stepF_equity_marl_{symbol}.csv",
+                        f"stepF_daily_log_router_{symbol}.csv",
+                        f"stepF_daily_log_marl_{symbol}.csv",
+                        f"stepF_summary_router_{symbol}.json",
+                    ]
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
+                    mode_records.append(
+                        StepFModeRunRecord(
+                            mode=reward_mode,
+                            status="SUCCESS",
+                            output_dir=str(mode_dir),
+                            step_e_root=str(step_e_root),
+                            step_e_daily_log_count=len(step_e_daily_logs),
+                            files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                        )
+                    )
+                    if primary_result is None:
+                        primary_result = mode_result
+                except Exception as exc:
+                    mode_dir.mkdir(parents=True, exist_ok=True)
+                    tb_text = traceback.format_exc()
+                    traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
+                    traceback_path.write_text(tb_text, encoding="utf-8")
+                    files_present = [p.name for p in sorted(mode_dir.glob("*"))]
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
+                    print(tb_text)
+                    print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
+                    print(tb_text)
+                    print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
+                    mode_records.append(
+                        StepFModeRunRecord(
+                            mode=reward_mode,
+                            status="FAIL",
+                            output_dir=str(mode_dir),
+                            step_e_root=str(step_e_root),
+                            step_e_daily_log_count=len(step_e_daily_logs),
+                            traceback_path=str(traceback_path),
+                            error=f"{type(exc).__name__}: {exc}",
+                            files_present=files_present,
+                        )
+                    )
+
+            multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
+            multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
+            success_modes = [r.mode for r in mode_records if r.status == "SUCCESS"]
+            failed_modes = [r.mode for r in mode_records if r.status == "FAIL"]
+            missing_outputs = [
+                f"reward_{r.mode}/stepF_equity_marl_{symbol}.csv"
+                for r in mode_records
+                if r.status != "SUCCESS"
+            ]
+            multi_summary = {
+                "compare_enabled": compare_enabled,
+                "reward_modes": reward_modes,
+                "success_modes": success_modes,
+                "failed_modes": failed_modes,
+                "missing_outputs": missing_outputs,
+                "records": [r.__dict__ for r in mode_records],
+            }
+            multi_summary_path.write_text(json.dumps(multi_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._log_stepf_multi(f"[STEPF_MULTI] success_modes={','.join(success_modes) if success_modes else '(none)'}")
+            self._log_stepf_multi(f"[STEPF_MULTI] failed_modes={','.join(failed_modes) if failed_modes else '(none)'}")
+            self._log_stepf_multi(f"[STEPF_MULTI] missing_outputs={','.join(missing_outputs) if missing_outputs else '(none)'}")
+            self._log_stepf_multi(f"[STEPF_MULTI] summary_path={multi_summary_path}")
+
+            if primary_result is None:
+                failed = [f"{r.mode}:{r.error}" for r in mode_records if r.status == "FAIL"]
+                raise RuntimeError("StepF reward mode execution failed for all modes: " + " | ".join(failed))
+            return primary_result
+        except Exception as exc:
+            tb_text = traceback.format_exc()
+            cwd = Path(os.getcwd())
+            stepf_exists = bool(stepf_dir and stepf_dir.exists())
+            parent = stepf_dir.parent if stepf_dir is not None else (out_root.parent if out_root is not None else cwd)
             try:
-                mode_result = self._run_router(
-                    mode_cfg,
-                    date_range,
-                    symbol=symbol,
-                    mode=resolved_mode,
-                    persist_primary_outputs=persist_primary_outputs,
-                )
-                written_files = [
-                    f"stepF_equity_marl_{symbol}.csv",
-                    f"stepF_daily_log_router_{symbol}.csv",
-                    f"stepF_daily_log_marl_{symbol}.csv",
-                    f"stepF_summary_router_{symbol}.json",
-                ]
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
-                mode_records.append(
-                    StepFModeRunRecord(
-                        mode=reward_mode,
-                        status="SUCCESS",
-                        output_dir=str(mode_dir),
-                        step_e_root=str(step_e_root),
-                        step_e_daily_log_count=len(step_e_daily_logs),
-                        files_present=[p.name for p in sorted(mode_dir.glob("*"))],
-                    )
-                )
-                if primary_result is None:
-                    primary_result = mode_result
-            except Exception as exc:
-                mode_dir.mkdir(parents=True, exist_ok=True)
-                tb_text = traceback.format_exc()
-                traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
-                traceback_path.write_text(tb_text, encoding="utf-8")
-                files_present = [p.name for p in sorted(mode_dir.glob("*"))]
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
-                print(tb_text)
-                print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
-                print(tb_text)
-                print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
-                mode_records.append(
-                    StepFModeRunRecord(
-                        mode=reward_mode,
-                        status="FAIL",
-                        output_dir=str(mode_dir),
-                        step_e_root=str(step_e_root),
-                        step_e_daily_log_count=len(step_e_daily_logs),
-                        traceback_path=str(traceback_path),
-                        error=f"{type(exc).__name__}: {exc}",
-                        files_present=files_present,
-                    )
-                )
+                parent_listing = ",".join(sorted(p.name for p in parent.iterdir()))
+            except Exception as list_exc:  # pragma: no cover
+                parent_listing = f"<failed:{type(list_exc).__name__}:{list_exc}>"
 
-        multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
-        multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
-        success_modes = [r.mode for r in mode_records if r.status == "SUCCESS"]
-        failed_modes = [r.mode for r in mode_records if r.status == "FAIL"]
-        missing_outputs = [
-            f"reward_{r.mode}/stepF_equity_marl_{symbol}.csv"
-            for r in mode_records
-            if r.status != "SUCCESS"
-        ]
-        multi_summary = {
-            "compare_enabled": compare_enabled,
-            "reward_modes": reward_modes,
-            "success_modes": success_modes,
-            "failed_modes": failed_modes,
-            "missing_outputs": missing_outputs,
-            "records": [r.__dict__ for r in mode_records],
-        }
-        multi_summary_path.write_text(json.dumps(multi_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._log_stepf_multi(f"[STEPF_MULTI] success_modes={','.join(success_modes) if success_modes else '(none)'}")
-        self._log_stepf_multi(f"[STEPF_MULTI] failed_modes={','.join(failed_modes) if failed_modes else '(none)'}")
-        self._log_stepf_multi(f"[STEPF_MULTI] missing_outputs={','.join(missing_outputs) if missing_outputs else '(none)'}")
-        self._log_stepf_multi(f"[STEPF_MULTI] summary_path={multi_summary_path}")
-
-        if primary_result is None:
-            failed = [f"{r.mode}:{r.error}" for r in mode_records if r.status == "FAIL"]
-            raise RuntimeError("StepF reward mode execution failed for all modes: " + " | ".join(failed))
-        return primary_result
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_exception={type(exc).__name__}: {exc}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_exception_repr={repr(exc)}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_cwd={cwd}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_output_root={out_root}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_stepf_dir={stepf_dir}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_stepf_dir_exists={str(stepf_exists).lower()}")
+            self._log_stepf_entry(f"[STEPF_ENTRY] wrapper_parent_listing={parent_listing if parent_listing else '(empty)'}")
+            self._log_stepf_entry("[STEPF_ENTRY] wrapper_traceback_begin")
+            for line in tb_text.rstrip().splitlines():
+                self._log_stepf_entry(line)
+            self._log_stepf_entry("[STEPF_ENTRY] wrapper_traceback_end")
+            raise
 
     def run_live(self, date_range, symbol: str, retrain: str = "off", branch_id: str = "default", data_cutoff: str = "") -> StepFResult:
         cfg: StepFRouterConfig = deepcopy(getattr(self.app_config, "stepF", None))
