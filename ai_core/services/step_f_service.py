@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from pandas.errors import PerformanceWarning
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
@@ -57,6 +58,9 @@ class StepFRouterConfig:
     z_pred_source: str = "dprime_mix_h02"
     robust_scaler: bool = True
     pca_n_components: int = 30
+    clusterer_type: str = "ticc"
+    clusterer_fallback_type: str = "none"
+    ticc_num_clusters: int = 6
     hdbscan_min_cluster_size: int = 30
     hdbscan_min_samples: int = 10
     past_window_days: int = 63
@@ -120,6 +124,7 @@ class StepFService:
 
     def __init__(self, app_config):
         self.app_config = app_config
+        self._last_phase2_cluster_meta: Dict[str, object] = {}
 
     def _timing(self) -> TimingLogger:
         t = getattr(self.app_config, "_timing_logger", None)
@@ -517,9 +522,6 @@ class StepFService:
     def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "", persist_primary_outputs: bool = True) -> StepFResult:
         timing = self._timing()
         with timing.stage("stepF.total"):
-            if hdbscan is None or hdbscan_prediction is None:
-                raise ImportError("StepF router requires hdbscan. Please install requirements.txt dependencies.")
-
             out_root = self._resolve_output_root(cfg.output_root)
             print(f"[STEPF_ROOT] wrapper_cfg_output_root={cfg.output_root}")
             print(f"[STEPF_ROOT] service_app_output_root={getattr(self.app_config, 'output_root', '')}")
@@ -603,6 +605,8 @@ class StepFService:
                             price_tech=prices_soxl,
                         )
 
+            cluster_meta = getattr(self, "_last_phase2_cluster_meta", {}) if not cfg.phase2_state_path else {}
+
             phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
             phase2.to_csv(phase2_path, index=False)
 
@@ -685,6 +689,15 @@ class StepFService:
                     "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                 }
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
+                if cluster_meta:
+                    summary.update(
+                        {
+                            "clusterer_type_requested": cluster_meta.get("clusterer_type_requested", "unknown"),
+                            "clusterer_type_used": cluster_meta.get("clusterer_type_used", "unknown"),
+                            "fallback_used": bool(cluster_meta.get("fallback_triggered", False)),
+                            "regime_count": int(cluster_meta.get("regime_count", -1)),
+                        }
+                    )
                 if persist_primary_outputs:
                     summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
                 summary_with_reward = {**summary, "reward_mode": reward_mode}
@@ -871,6 +884,26 @@ class StepFService:
         x_train = X_df.loc[tr_mask, feat_cols].to_numpy(dtype=float)
         x_test = X_df.loc[te_mask, feat_cols].to_numpy(dtype=float)
 
+        requested_clusterer = self._normalize_clusterer_type(getattr(cfg, "clusterer_type", "ticc"), default="ticc")
+        fallback_clusterer = self._normalize_clusterer_type(getattr(cfg, "clusterer_fallback_type", "none"), default="none")
+
+        if x_train.shape[0] == 0 or x_train.shape[1] == 0:
+            phase2 = self._make_single_regime_phase2(X_df=X_df, tr_mask=tr_mask, te_mask=te_mask)
+            self._last_phase2_cluster_meta = {
+                "clusterer_type_requested": requested_clusterer,
+                "clusterer_type_used": "none",
+                "fallback_triggered": requested_clusterer != "none",
+                "regime_count": 1,
+            }
+            print(f"[STEPF_CLUSTER] clusterer_type={requested_clusterer}")
+            print(f"[STEPF_CLUSTER] fallback_type={fallback_clusterer}")
+            print(f"[STEPF_CLUSTER] train_rows={int(x_train.shape[0])}")
+            print(f"[STEPF_CLUSTER] test_rows={int(x_test.shape[0])}")
+            print("[STEPF_CLUSTER] regime_count=1")
+            print(f"[STEPF_CLUSTER] fallback_triggered={str(requested_clusterer != 'none').lower()}")
+            print("[STEPF_CLUSTER] final_clusterer_used=none")
+            return phase2
+
         scaler = RobustScaler() if cfg.robust_scaler else StandardScaler()
         x_train_s = scaler.fit_transform(x_train)
         x_test_s = scaler.transform(x_test) if len(x_test) else np.zeros((0, x_train_s.shape[1]))
@@ -880,6 +913,108 @@ class StepFService:
         x_train_p = pca.fit_transform(x_train_s)
         x_test_p = pca.transform(x_test_s) if len(x_test_s) else np.zeros((0, pca_n))
 
+        final_used = requested_clusterer
+        fallback_triggered = False
+        primary_err: Optional[Exception] = None
+        try:
+            phase2 = self._run_clusterer(
+                clusterer_type=requested_clusterer,
+                cfg=cfg,
+                X_df=X_df,
+                tr_mask=tr_mask,
+                te_mask=te_mask,
+                x_train_p=x_train_p,
+                x_test_p=x_test_p,
+            )
+        except Exception as exc:
+            primary_err = exc
+            fallback_triggered = True
+            final_used = fallback_clusterer
+            phase2 = self._run_clusterer(
+                clusterer_type=fallback_clusterer,
+                cfg=cfg,
+                X_df=X_df,
+                tr_mask=tr_mask,
+                te_mask=te_mask,
+                x_train_p=x_train_p,
+                x_test_p=x_test_p,
+            )
+
+        regime_count = int(phase2["regime_id"].nunique()) if "regime_id" in phase2.columns and len(phase2) else 0
+        if primary_err is not None:
+            print(f"[STEPF_CLUSTER] primary_error={type(primary_err).__name__}:{primary_err}")
+        print(f"[STEPF_CLUSTER] clusterer_type={requested_clusterer}")
+        print(f"[STEPF_CLUSTER] fallback_type={fallback_clusterer}")
+        print(f"[STEPF_CLUSTER] train_rows={int(x_train.shape[0])}")
+        print(f"[STEPF_CLUSTER] test_rows={int(x_test.shape[0])}")
+        print(f"[STEPF_CLUSTER] regime_count={regime_count}")
+        print(f"[STEPF_CLUSTER] fallback_triggered={str(fallback_triggered).lower()}")
+        print(f"[STEPF_CLUSTER] final_clusterer_used={final_used}")
+        self._last_phase2_cluster_meta = {
+            "clusterer_type_requested": requested_clusterer,
+            "clusterer_type_used": final_used,
+            "fallback_triggered": fallback_triggered,
+            "regime_count": regime_count,
+        }
+        return phase2
+
+    @staticmethod
+    def _normalize_clusterer_type(value: str, default: str = "none") -> str:
+        v = str(value or "").strip().lower()
+        return v if v in {"ticc", "hdbscan", "none"} else default
+
+    def _run_clusterer(
+        self,
+        clusterer_type: str,
+        cfg: StepFRouterConfig,
+        X_df: pd.DataFrame,
+        tr_mask: pd.Series,
+        te_mask: pd.Series,
+        x_train_p: np.ndarray,
+        x_test_p: np.ndarray,
+    ) -> pd.DataFrame:
+        if clusterer_type == "ticc":
+            return self._run_ticc_clusterer(cfg=cfg, X_df=X_df, tr_mask=tr_mask, te_mask=te_mask, x_train_p=x_train_p, x_test_p=x_test_p)
+        if clusterer_type == "hdbscan":
+            return self._run_hdbscan_clusterer(cfg=cfg, X_df=X_df, tr_mask=tr_mask, te_mask=te_mask, x_train_p=x_train_p, x_test_p=x_test_p)
+        return self._make_single_regime_phase2(X_df=X_df, tr_mask=tr_mask, te_mask=te_mask)
+
+    def _run_ticc_clusterer(
+        self,
+        cfg: StepFRouterConfig,
+        X_df: pd.DataFrame,
+        tr_mask: pd.Series,
+        te_mask: pd.Series,
+        x_train_p: np.ndarray,
+        x_test_p: np.ndarray,
+    ) -> pd.DataFrame:
+        n_train = int(x_train_p.shape[0])
+        n_clusters = max(1, min(int(getattr(cfg, "ticc_num_clusters", 6)), n_train))
+        model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        model.fit(x_train_p)
+        train_labels = model.labels_.astype(int)
+        if len(x_test_p):
+            d_test = model.transform(x_test_p)
+            test_labels = np.argmin(d_test, axis=1).astype(int)
+            strengths = 1.0 / (1.0 + np.min(d_test, axis=1))
+        else:
+            test_labels = np.zeros((0,), dtype=int)
+            strengths = np.zeros((0,), dtype=float)
+        phase2_train = pd.DataFrame({"Date": X_df.loc[tr_mask, "Date"].to_numpy(), "regime_id": train_labels, "confidence": 1.0})
+        phase2_test = pd.DataFrame({"Date": X_df.loc[te_mask, "Date"].to_numpy(), "regime_id": test_labels.astype(int), "confidence": strengths.astype(float)})
+        return pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
+
+    def _run_hdbscan_clusterer(
+        self,
+        cfg: StepFRouterConfig,
+        X_df: pd.DataFrame,
+        tr_mask: pd.Series,
+        te_mask: pd.Series,
+        x_train_p: np.ndarray,
+        x_test_p: np.ndarray,
+    ) -> pd.DataFrame:
+        if hdbscan is None or hdbscan_prediction is None:
+            raise ImportError("hdbscan module unavailable")
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=int(cfg.hdbscan_min_cluster_size),
             min_samples=int(cfg.hdbscan_min_samples),
@@ -887,16 +1022,28 @@ class StepFService:
         )
         clusterer.fit(x_train_p)
         train_labels = clusterer.labels_.astype(int)
+        has_defined_cluster = bool(np.any(train_labels >= 0))
         if len(x_test_p):
-            test_labels, strengths = hdbscan_prediction.approximate_predict(clusterer, x_test_p)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                test_labels, strengths = hdbscan_prediction.approximate_predict(clusterer, x_test_p)
+            warn_text = " | ".join(str(w.message) for w in caught)
+            if warn_text:
+                print(f"[STEPF_CLUSTER] hdbscan_predict_warning={warn_text}")
         else:
             test_labels = np.zeros((0,), dtype=int)
             strengths = np.zeros((0,), dtype=float)
-
+        if not has_defined_cluster:
+            return self._make_single_regime_phase2(X_df=X_df, tr_mask=tr_mask, te_mask=te_mask)
         phase2_train = pd.DataFrame({"Date": X_df.loc[tr_mask, "Date"].to_numpy(), "regime_id": train_labels, "confidence": 1.0})
         phase2_test = pd.DataFrame({"Date": X_df.loc[te_mask, "Date"].to_numpy(), "regime_id": test_labels.astype(int), "confidence": strengths.astype(float)})
-        phase2 = pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        return phase2
+        return pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
+
+    @staticmethod
+    def _make_single_regime_phase2(X_df: pd.DataFrame, tr_mask: pd.Series, te_mask: pd.Series) -> pd.DataFrame:
+        phase2_train = pd.DataFrame({"Date": X_df.loc[tr_mask, "Date"].to_numpy(), "regime_id": 0, "confidence": 1.0})
+        phase2_test = pd.DataFrame({"Date": X_df.loc[te_mask, "Date"].to_numpy(), "regime_id": 0, "confidence": 1.0})
+        return pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
     def _load_z_pred(self, out_root: Path, mode: str, symbol: str, profile: str) -> pd.DataFrame:
         p = out_root / "stepDprime" / mode / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
