@@ -3693,6 +3693,82 @@ jobs:
             Write-Host 'No run_reports changes to push.'
           }
 
+
+      - name: Build output-latest publish bundle (always)
+        if: always()
+        continue-on-error: true
+        id: output_latest_bundle
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $publishRoot = Join-Path $env:RUNNER_TEMP 'output_latest_publish'
+          try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:REPO_ROOT 'scripts\publish_output_latest.ps1') `
+              -OutputRoot '${{ steps.resolve_artifacts.outputs.output_root }}' `
+              -RunDir '${{ steps.resolve_artifacts.outputs.run_dir }}' `
+              -StageDir $publishRoot `
+              -BranchName 'output-latest' `
+              -ZipName 'output_latest.zip' `
+              -TestStartDate '${{ inputs.test_start_date }}'
+          } catch {
+            Write-Warning "publish_output_latest.ps1 failed: $($_.Exception.Message)"
+          }
+
+          if (Test-Path $publishRoot) {
+            "publish_dir=$publishRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Upload output-latest bundle artifact (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-latest-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ steps.output_latest_bundle.outputs.publish_dir }}/**
+
+      - name: Push latest output snapshot to output-latest branch (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $sourceDir = '${{ steps.output_latest_bundle.outputs.publish_dir }}'
+          if ([string]::IsNullOrWhiteSpace($sourceDir) -or -not (Test-Path $sourceDir)) {
+            Write-Warning "output latest publish dir not found: $sourceDir"
+            exit 0
+          }
+
+          $publishRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\output-latest-repo'
+          if (Test-Path $publishRepo) { Remove-Item -Path $publishRepo -Recurse -Force }
+          New-Item -Path $publishRepo -ItemType Directory -Force | Out-Null
+          Set-Location $publishRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          git checkout --orphan output-latest
+          cmd /c "git rm -rf . 1>nul 2>nul"
+
+          Copy-Item -Path (Join-Path $sourceDir '*') -Destination $publishRepo -Recurse -Force
+
+          git add output_latest.zip output_latest.sha256 latest_run_info.json EVAL_REPORT.md CSV_INDEX.md metrics_summary.csv ONE_TAP_ERROR_REPORT.txt run_manifest.json split_summary.json
+          if (Test-Path (Join-Path $publishRepo 'timings.csv')) { git add timings.csv }
+          if (Test-Path (Join-Path $publishRepo 'metrics_summary.md')) { git add metrics_summary.md }
+
+          cmd /c "git diff --cached --quiet"
+          if ($LASTEXITCODE -ne 0) {
+            $msg = "output-latest: run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}"
+            git commit -m $msg
+            git push --force origin output-latest
+          } else {
+            Write-Host 'No output-latest changes to push.'
+          }
+
       - name: Fail run if repo prepare failed
         if: ${{ always() && steps.prep_repo.outcome == 'failure' }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -7047,6 +7123,82 @@ jobs:
             git push -u origin diag-logs
           } else {
             Write-Host 'No run_reports changes to push.'
+          }
+
+
+      - name: Build output-latest publish bundle (always)
+        if: always()
+        continue-on-error: true
+        id: output_latest_bundle
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $publishRoot = Join-Path $env:RUNNER_TEMP 'output_latest_publish'
+          try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:REPO_ROOT 'scripts\publish_output_latest.ps1') `
+              -OutputRoot '${{ steps.resolve_artifacts.outputs.output_root }}' `
+              -RunDir '${{ steps.resolve_artifacts.outputs.run_dir }}' `
+              -StageDir $publishRoot `
+              -BranchName 'output-latest' `
+              -ZipName 'output_latest.zip' `
+              -TestStartDate '${{ inputs.test_start_date }}'
+          } catch {
+            Write-Warning "publish_output_latest.ps1 failed: $($_.Exception.Message)"
+          }
+
+          if (Test-Path $publishRoot) {
+            "publish_dir=$publishRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Upload output-latest bundle artifact (always)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-latest-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: ${{ steps.output_latest_bundle.outputs.publish_dir }}/**
+
+      - name: Push latest output snapshot to output-latest branch (always)
+        if: always()
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $sourceDir = '${{ steps.output_latest_bundle.outputs.publish_dir }}'
+          if ([string]::IsNullOrWhiteSpace($sourceDir) -or -not (Test-Path $sourceDir)) {
+            Write-Warning "output latest publish dir not found: $sourceDir"
+            exit 0
+          }
+
+          $publishRepo = Join-Path $env:GITHUB_WORKSPACE 'temp\output-latest-repo'
+          if (Test-Path $publishRepo) { Remove-Item -Path $publishRepo -Recurse -Force }
+          New-Item -Path $publishRepo -ItemType Directory -Force | Out-Null
+          Set-Location $publishRepo
+
+          git init
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          git checkout --orphan output-latest
+          cmd /c "git rm -rf . 1>nul 2>nul"
+
+          Copy-Item -Path (Join-Path $sourceDir '*') -Destination $publishRepo -Recurse -Force
+
+          git add output_latest.zip output_latest.sha256 latest_run_info.json EVAL_REPORT.md CSV_INDEX.md metrics_summary.csv ONE_TAP_ERROR_REPORT.txt run_manifest.json split_summary.json
+          if (Test-Path (Join-Path $publishRepo 'timings.csv')) { git add timings.csv }
+          if (Test-Path (Join-Path $publishRepo 'metrics_summary.md')) { git add metrics_summary.md }
+
+          cmd /c "git diff --cached --quiet"
+          if ($LASTEXITCODE -ne 0) {
+            $msg = "output-latest: run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}"
+            git commit -m $msg
+            git push --force origin output-latest
+          } else {
+            Write-Host 'No output-latest changes to push.'
           }
 
       - name: Fail run if repo prepare failed
