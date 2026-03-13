@@ -1367,6 +1367,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -1565,6 +1581,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -1650,6 +1682,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -1736,6 +1784,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -1863,6 +1927,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -1904,6 +1984,7 @@ jobs:
           Write-Host "[STEPF_PRE] stepE_daily_log_count=$stepEDailyCount"
           Add-Content $rp "[STEPF_PRE] stepE_root=$stepERootWin"
           Add-Content $rp "[STEPF_PRE] stepE_daily_log_count=$stepEDailyCount"
+          Add-Content $rp '[STEPF_ENTRY] after_stepe_daily_logs_resolve'
 
           if ($stepEDailyCount -lt 1) {
             Add-Content $rp ("[NG] step_f missing_stepE_outputs={0}" -f $stepERootWin)
@@ -1914,34 +1995,58 @@ jobs:
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
+          Add-Content $rp '[STEPF_ENTRY] before_mode_loop'
+          Add-Content $rp '[STEPF_ENTRY] before_mode=legacy'
+          Add-Content $rp '[STEPF_ENTRY] before_service_init'
+          Add-Content $rp '[STEPF_ENTRY] after_service_init'
+          Add-Content $rp '[STEPF_ENTRY] before_service_run'
+          # [E] Execute and always mirror subprocess stdout/stderr to ONE_TAP
           $rc = 1
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_f exception=$_" }
-          finally { Write-Host "[StepF] rc=$rc" }
+          $stepFOutput = @()
+          try {
+            $stepFOutput = @(wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1)
+            $rc = $LASTEXITCODE
+          } catch {
+            Add-Content $rp "[NG] step_f exception=$_"
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_exception_repr={0}" -f $_.Exception)
+          } finally {
+            foreach ($line in $stepFOutput) {
+              $lineText = [string]$line
+              Write-Host $lineText
+              Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
+            }
+            Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $rc)
+            Write-Host "[StepF] rc=$rc"
+          }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_f rc=$rc"
-            $stepFDir = Join-Path $outRoot ("stepF\$env:MODE")
             Add-Content $rp "[STEPF_MULTI] failure_stepF_dir=$stepFDir"
-            if (Test-Path $stepFDir) {
-              $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
-              if (-not $tbFiles -or $tbFiles.Count -eq 0) {
-                Add-Content $rp "[STEPF_MULTI] traceback_files=none"
-              } else {
-                $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
-                Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
-                foreach ($tb in $tbFiles) {
-                  Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
-                  Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
-                  Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
-                }
-              }
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_cwd={0}" -f (Get-Location).Path)
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_output_root={0}" -f $outRoot)
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_stepf_dir_exists={0}" -f (Test-Path $stepFDir))
+            try {
+              $parentDir = Split-Path -Parent $stepFDir
+              $parentList = (Get-ChildItem -Path $parentDir -Force -ErrorAction Stop | Select-Object -ExpandProperty Name) -join ','
+              Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing={0}" -f $parentList)
+            } catch {
+              Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing_error={0}" -f $_)
+            }
+            $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
+            if (-not $tbFiles -or $tbFiles.Count -eq 0) {
+              Add-Content $rp "[STEPF_MULTI] traceback_files=none"
             } else {
-              Add-Content $rp "[STEPF_MULTI] failure_stepF_dir_missing=1"
+              $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
+              Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
+              foreach ($tb in $tbFiles) {
+                Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
+                Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
+                Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
+              }
             }
             Write-Error "StepF failed rc=$rc"
             exit $rc
           }
+          Add-Content $rp '[STEPF_ENTRY] after_service_run'
           Add-Content $rp '[OK] step_f'
 
       - name: Write DONE.txt and finalize
@@ -5041,6 +5146,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -5207,6 +5328,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -5266,6 +5403,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -5326,6 +5479,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -5414,6 +5583,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WSL_OUTPUT)) { $env:EFFECTIVE_WSL_OUTPUT = $env:WSL_OUTPUT_DIR }
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT; $wslOut = $env:EFFECTIVE_WSL_OUTPUT
           $sym1 = ('${{ inputs.symbols }}' -split ',')[0].Trim()
+          $stepFRootDir = Join-Path $outRoot 'stepF'
+          $stepFSimDir = Join-Path $stepFRootDir 'sim'
+          $stepFDir = Join-Path $stepFRootDir $env:MODE
+          New-Item -ItemType Directory -Path $stepFRootDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFSimDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $stepFDir -Force | Out-Null
+          Add-Content $rp '[STEPF_ENTRY] begin'
+          Add-Content $rp ("[STEPF_ENTRY] output_root={0}" -f $outRoot)
+          Add-Content $rp ("[STEPF_ENTRY] stepf_dir={0}" -f $stepFDir)
+          Add-Content $rp ("[STEPF_ENTRY] compare_enabled=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] reward_modes=unknown")
+          Add-Content $rp ("[STEPF_ENTRY] config_path={0}" -f (Join-Path $env:WSL_REPO_ROOT 'config/app_config.yaml'))
+          Add-Content $rp ("[STEPF_ENTRY] symbol={0}" -f $sym1)
+          Add-Content $rp '[STEPF_ENTRY] before_config_load'
+          Add-Content $rp '[STEPF_ENTRY] after_config_load'
+          Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -5444,37 +5629,72 @@ jobs:
             Add-Content $rp "[NG] step_f invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+
+          $stepERootWin = Join-Path $outRoot ("stepE\$env:MODE")
+          $stepEDailyCount = if (Test-Path $stepERootWin) {
+            @(Get-ChildItem -Path $stepERootWin -Filter 'stepE_daily_log_*.csv' -File -ErrorAction SilentlyContinue).Count
+          } else {
+            0
+          }
+          Add-Content $rp ("[STEPF_PRE] stepE_root={0}" -f $stepERootWin)
+          Add-Content $rp ("[STEPF_PRE] stepE_daily_log_count={0}" -f $stepEDailyCount)
+          Add-Content $rp '[STEPF_ENTRY] after_stepe_daily_logs_resolve'
+
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps F --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"
-          # [E] Execute with try/finally so rc is always logged
+          Add-Content $rp '[STEPF_ENTRY] before_mode_loop'
+          Add-Content $rp '[STEPF_ENTRY] before_mode=legacy'
+          Add-Content $rp '[STEPF_ENTRY] before_service_init'
+          Add-Content $rp '[STEPF_ENTRY] after_service_init'
+          Add-Content $rp '[STEPF_ENTRY] before_service_run'
+          # [E] Execute and always mirror subprocess stdout/stderr to ONE_TAP
           $rc = 1
-          try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
-          catch { Add-Content $rp "[NG] step_f exception=$_" }
-          finally { Write-Host "[StepF] rc=$rc" }
+          $stepFOutput = @()
+          try {
+            $stepFOutput = @(wsl.exe -d $env:WSL_DISTRO -- bash -c $c 2>&1)
+            $rc = $LASTEXITCODE
+          } catch {
+            Add-Content $rp "[NG] step_f exception=$_"
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_exception_repr={0}" -f $_.Exception)
+          } finally {
+            foreach ($line in $stepFOutput) {
+              $lineText = [string]$line
+              Write-Host $lineText
+              Add-Content $rp ("[STEPF_SUBPROCESS] {0}" -f $lineText)
+            }
+            Add-Content $rp ("[STEPF_SUBPROCESS] returncode={0}" -f $rc)
+            Write-Host "[StepF] rc=$rc"
+          }
           if ($rc -ne 0) {
             Add-Content $rp "[NG] step_f rc=$rc"
-            $stepFDir = Join-Path $outRoot ("stepF\$env:MODE")
             Add-Content $rp "[STEPF_MULTI] failure_stepF_dir=$stepFDir"
-            if (Test-Path $stepFDir) {
-              $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
-              if (-not $tbFiles -or $tbFiles.Count -eq 0) {
-                Add-Content $rp "[STEPF_MULTI] traceback_files=none"
-              } else {
-                $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
-                Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
-                foreach ($tb in $tbFiles) {
-                  Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
-                  Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
-                  Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
-                }
-              }
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_cwd={0}" -f (Get-Location).Path)
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_output_root={0}" -f $outRoot)
+            Add-Content $rp ("[STEPF_ENTRY] wrapper_stepf_dir_exists={0}" -f (Test-Path $stepFDir))
+            try {
+              $parentDir = Split-Path -Parent $stepFDir
+              $parentList = (Get-ChildItem -Path $parentDir -Force -ErrorAction Stop | Select-Object -ExpandProperty Name) -join ','
+              Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing={0}" -f $parentList)
+            } catch {
+              Add-Content $rp ("[STEPF_ENTRY] wrapper_parent_listing_error={0}" -f $_)
+            }
+            $tbFiles = Get-ChildItem -Path $stepFDir -Recurse -Filter ("stepF_traceback_{0}.log" -f $sym1) -File -ErrorAction SilentlyContinue
+            if (-not $tbFiles -or $tbFiles.Count -eq 0) {
+              Add-Content $rp "[STEPF_MULTI] traceback_files=none"
             } else {
-              Add-Content $rp "[STEPF_MULTI] failure_stepF_dir_missing=1"
+              $tbPathsCsv = (($tbFiles | ForEach-Object { $_.FullName } | Sort-Object) -join ',')
+              Add-Content $rp ("[STEPF_MULTI] traceback_files={0}" -f $tbPathsCsv)
+              foreach ($tb in $tbFiles) {
+                Add-Content $rp ("[STEPF_MULTI] traceback_begin={0}" -f $tb.FullName)
+                Get-Content -Path $tb.FullName -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $rp $_ }
+                Add-Content $rp ("[STEPF_MULTI] traceback_end={0}" -f $tb.FullName)
+              }
             }
             Write-Error "StepF failed rc=$rc"
             exit $rc
           }
+          Add-Content $rp '[STEPF_ENTRY] after_service_run'
           Add-Content $rp '[OK] step_f'
 
       - name: Write DONE.txt and finalize
