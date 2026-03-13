@@ -171,14 +171,104 @@ def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
-def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_col: str | None) -> tuple[dict[str, Any], str | None]:
+def _load_split_summary(output_root: str) -> dict[str, Any] | None:
+    p = os.path.join(output_root, "split_summary.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _resolve_split_series(
+    df: pd.DataFrame,
+    split_col: str | None,
+    *,
+    output_root: str,
+    date_col: str | None = "Date",
+) -> tuple[pd.Series, dict[str, Any], str | None]:
     work = df.copy()
-    if split_col is None:
-        reason = "Split missing: evaluated all rows as test"
-        df_test = work
+    split_col_present = split_col is not None
+    note: str | None = None
+    source = "csv"
+
+    if split_col_present:
+        split_values = work[split_col].astype(str).str.strip().str.lower()  # type: ignore[index]
     else:
-        df_test = work[work[split_col] == "test"]
-        reason = None
+        split_values = pd.Series(["unknown"] * len(work), index=work.index, dtype="object")
+        summary = _load_split_summary(output_root)
+        date_series = None
+        if date_col and date_col in work.columns:
+            date_series = pd.to_datetime(work[date_col], errors="coerce")
+
+        test_start = None
+        if isinstance(summary, dict):
+            ts = str(summary.get("test_start", "")).strip()
+            if ts:
+                parsed = pd.to_datetime(ts, errors="coerce")
+                if pd.notna(parsed):
+                    test_start = parsed.normalize()
+
+        if test_start is not None and date_series is not None and date_series.notna().any():
+            source = "summary"
+            mask = date_series.dt.normalize() >= test_start
+            split_values = pd.Series(np.where(mask, "test", "train"), index=work.index)
+        elif date_series is not None and date_series.notna().any():
+            source = "date_infer"
+            norm = date_series.dt.normalize()
+            uniq = sorted(norm.dropna().unique())
+            if uniq:
+                cutoff = uniq[-1]
+                c = 1
+                for i in range(len(uniq) - 2, -1, -1):
+                    if (uniq[i + 1] - uniq[i]).days <= 3:
+                        cutoff = uniq[i]
+                        c += 1
+                    else:
+                        break
+                if c <= 1 and len(uniq) > 1:
+                    cutoff = uniq[max(0, len(uniq) // 2)]
+                mask = norm >= cutoff
+                split_values = pd.Series(np.where(mask, "test", "train"), index=work.index)
+        else:
+            source = "fallback_all_test"
+            note = "Split missing: evaluated all rows as test"
+            split_values = pd.Series(["test"] * len(work), index=work.index)
+
+    train_rows = int((split_values == "train").sum())
+    test_rows = int((split_values == "test").sum())
+    note_emitted = bool(note)
+
+    print(f"[STEPF_SPLIT] source={source}")
+    print(f"[STEPF_SPLIT] split_col_present={str(split_col_present).lower()}")
+    print(f"[STEPF_SPLIT] train_rows={train_rows}")
+    print(f"[STEPF_SPLIT] test_rows={test_rows}")
+    print(f"[STEPF_SPLIT] note_emitted={str(note_emitted).lower()}")
+
+    meta = {
+        "split_source": source,
+        "split_col_present": split_col_present,
+        "train_rows": train_rows,
+        "test_rows": test_rows,
+    }
+    return split_values, meta, note
+
+
+def _calc_equity_metrics(
+    df: pd.DataFrame,
+    equity_col: str,
+    ret_col: str,
+    split_col: str | None,
+    *,
+    output_root: str,
+    date_col: str | None = "Date",
+) -> tuple[dict[str, Any], str | None]:
+    work = df.copy()
+    split_values, split_meta, split_note = _resolve_split_series(work, split_col, output_root=output_root, date_col=date_col)
+    df_test = work[split_values == "test"]
 
     if df_test.empty:
         return {
@@ -188,6 +278,7 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
             "mean_ret": None,
             "std_ret": None,
             "sharpe": None,
+            **split_meta,
         }, "no test rows after split filter"
 
     eq = pd.to_numeric(df_test[equity_col], errors="coerce")
@@ -202,6 +293,7 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
             "mean_ret": None,
             "std_ret": None,
             "sharpe": None,
+            **split_meta,
         }, "equity has no numeric rows"
 
     eq_start, eq_end = float(eq.iloc[0]), float(eq.iloc[-1])
@@ -224,7 +316,7 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
     else:
         sharpe_reason = "sharpe NA: ret rows < 2"
 
-    reason_out = reason
+    reason_out = split_note
     if sharpe_reason:
         reason_out = f"{reason_out}; {sharpe_reason}" if reason_out else sharpe_reason
 
@@ -235,6 +327,7 @@ def _calc_equity_metrics(df: pd.DataFrame, equity_col: str, ret_col: str, split_
         "mean_ret": _to_float(mean_ret),
         "std_ret": _to_float(std_ret),
         "sharpe": _to_float(sharpe),
+        **split_meta,
     }, reason_out
 
 
@@ -812,7 +905,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                         rows.append({"file": fname, "agent": agent, "status": "SKIP", "reason": ", ".join(missing_reasons)})
                         continue
 
-                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col)
+                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col, output_root=output_root, date_col="Date")
                     row = {
                         "file": fname,
                         "agent": agent,
@@ -865,7 +958,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
                         ret_col = "_ret_eval"
                         note = "ret missing: computed from equity pct_change"
                     split_col = _pick_col(df, ["Split"])
-                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col)
+                    metrics, reason = _calc_equity_metrics(df, equity_col=equity_col, ret_col=ret_col, split_col=split_col, output_root=output_root, date_col="Date")
                     row = {
                         "file": os.path.basename(fpath),
                         **metrics,
@@ -982,12 +1075,12 @@ def render_markdown(report: dict[str, Any]) -> str:
     stepf_rows = report.get("stepF", {}).get("rows", [])
     if stepf_rows:
         lines.extend([
-            "| file | test_days | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
-            "|---|---:|---:|---:|---:|---:|---:|---|---|",
+            "| file | test_days | split_source | train_rows | equity_multiple | max_dd | mean_ret | std_ret | sharpe | note | status |",
+            "|---|---:|---|---:|---:|---:|---:|---:|---:|---|---|",
         ])
         for r in stepf_rows:
             lines.append(
-                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_dd'))} | "
+                f"| {r.get('file', 'NA')} | {_fmt(r.get('test_days'))} | {_fmt(r.get('split_source'))} | {_fmt(r.get('train_rows'))} | {_fmt(r.get('equity_multiple'))} | {_fmt(r.get('max_dd'))} | "
                 f"{_fmt(r.get('mean_ret'))} | {_fmt(r.get('std_ret'))} | {_fmt(r.get('sharpe'))} | {r.get('note', r.get('reason', ''))} | {r.get('status', 'NA')} |"
             )
     else:
@@ -1105,7 +1198,7 @@ def render_summary(report: dict[str, Any]) -> str:
     else:
         for r in stepf.get("rows", [])[:MAX_LIST_ITEMS]:
             lines.append(
-                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
+                f"  {r.get('file')} test_days={_fmt(r.get('test_days'))} split_source={_fmt(r.get('split_source'))} equity_multiple={_fmt(r.get('equity_multiple'))} "
                 f"max_dd={_fmt(r.get('max_dd'))} mean_ret={_fmt(r.get('mean_ret'))} std_ret={_fmt(r.get('std_ret'))} sharpe={_fmt(r.get('sharpe'))}"
             )
             if r.get("reason"):
