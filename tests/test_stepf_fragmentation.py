@@ -38,14 +38,28 @@ class _FakeHdbscanModule:
 
 
 class _FakeTICCClusterer:
+    calls = []
+
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self._train_mode = "raw20" if int(kwargs.get("num_clusters", 0)) == 20 else "stable"
+        _FakeTICCClusterer.calls.append(int(kwargs.get("num_clusters", 0)))
 
     def fit_predict_train(self, x_train):
-        return np.full((x_train.shape[0],), 2, dtype=int)
+        if self._train_mode == "raw20":
+            labels = np.array([0, 0, 0, 1, 1, 2, 3, 4], dtype=int)
+            if x_train.shape[0] <= len(labels):
+                return labels[: x_train.shape[0]]
+            return np.pad(labels, (0, x_train.shape[0] - len(labels)), mode="edge")
+        return np.array([(i % max(1, int(self.kwargs.get("num_clusters", 1)))) for i in range(x_train.shape[0])], dtype=int)
 
     def predict_test(self, x_test):
-        return np.full((x_test.shape[0],), 3, dtype=int), np.full((x_test.shape[0],), 0.8, dtype=float)
+        if self._train_mode == "raw20":
+            labels = np.array([0, 3, 2], dtype=int)
+        else:
+            labels = np.array([1, 1, 2], dtype=int)
+        labels = labels[: x_test.shape[0]] if x_test.shape[0] <= len(labels) else np.pad(labels, (0, x_test.shape[0] - len(labels)), mode="edge")
+        return labels.astype(int), np.full((x_test.shape[0],), 0.8, dtype=float)
 
 
 def test_build_phase2_state_uses_concat_and_logs_frame_stats(monkeypatch, capsys) -> None:
@@ -91,7 +105,7 @@ def test_build_phase2_state_uses_concat_and_logs_frame_stats(monkeypatch, capsys
 
     out = svc._build_phase2_state(cfg=cfg, date_range=date_range, symbol="SOXL", mode="sim", out_root=Path("."), price_tech=price_tech)
 
-    assert list(out.columns) == ["Date", "regime_id", "confidence"]
+    assert {"Date", "regime_id", "cluster_id_stable", "cluster_id_raw20", "rare_flag_raw20", "confidence_stable", "confidence_raw20", "confidence"}.issubset(set(out.columns))
     logs = capsys.readouterr().out
     assert "[STEPF_FRAME] before_feature_concat" in logs
     assert "[STEPF_FRAME] new_feature_cols=" in logs
@@ -154,19 +168,24 @@ def test_run_still_fails_on_real_exception(monkeypatch, tmp_path) -> None:
 
 def test_cluster_phase2_uses_real_ticc_route(monkeypatch) -> None:
     svc = StepFService(app_config=SimpleNamespace())
+    _FakeTICCClusterer.calls = []
     monkeypatch.setattr(sf_mod, "TICCClusterer", _FakeTICCClusterer)
-    cfg = StepFRouterConfig(clusterer_type="ticc", clusterer_fallback_type="none", ticc_num_clusters=3)
+    cfg = StepFRouterConfig(clusterer_type="ticc_raw20_stable", clusterer_fallback_type="none", raw20_num_clusters=20, k_eff_min=12, cluster_share_min=0.2, cluster_mean_run_min=2.0)
 
-    x_train = np.ones((5, 2), dtype=float)
+    x_train = np.ones((8, 2), dtype=float)
     x_test = np.ones((3, 2), dtype=float)
-    train_labels, test_labels, strengths, diag = svc._cluster_phase2(cfg=cfg, x_train=x_train, x_test=x_test)
+    out, diag = svc._cluster_phase2(cfg=cfg, x_train=x_train, x_test=x_test)
 
-    assert diag["clusterer_type_requested"] == "ticc"
-    assert diag["clusterer_type_used"] == "ticc"
+    assert diag["clusterer_type_requested"] == "ticc_raw20_stable"
+    assert diag["clusterer_type_used"] == "raw20_stable"
     assert diag["fallback_used"] is False
-    assert train_labels.tolist() == [2] * 5
-    assert test_labels.tolist() == [3] * 3
-    assert strengths.tolist() == [0.8] * 3
+    assert diag["raw20_num_clusters_requested"] == 20
+    assert diag["k_valid"] >= 1
+    assert diag["k_eff"] >= 12
+    assert _FakeTICCClusterer.calls[0] == 20
+    assert _FakeTICCClusterer.calls[1] == diag["k_eff"]
+    assert np.array_equal(out["train_main"], out["train_stable"])
+    assert int(np.max(out["train_rare_raw20"])) == 1
 
 
 def test_cluster_phase2_ticc_unavailable_falls_back_to_none(monkeypatch) -> None:
@@ -177,38 +196,77 @@ def test_cluster_phase2_ticc_unavailable_falls_back_to_none(monkeypatch) -> None
             raise RuntimeError("ticc backend missing")
 
     monkeypatch.setattr(sf_mod, "TICCClusterer", _BrokenTICC)
-    cfg = StepFRouterConfig(clusterer_type="ticc", clusterer_fallback_type="none")
+    cfg = StepFRouterConfig(clusterer_type="ticc_raw20_stable", clusterer_fallback_type="none")
 
-    train_labels, test_labels, strengths, diag = svc._cluster_phase2(
+    out, diag = svc._cluster_phase2(
         cfg=cfg,
         x_train=np.ones((4, 2), dtype=float),
         x_test=np.ones((2, 2), dtype=float),
     )
 
-    assert diag["clusterer_type_requested"] == "ticc"
+    assert diag["clusterer_type_requested"] == "ticc_raw20_stable"
     assert diag["clusterer_type_used"] == "none"
     assert diag["fallback_used"] is True
-    assert train_labels.tolist() == [0, 0, 0, 0]
-    assert test_labels.tolist() == [0, 0]
-    assert strengths.tolist() == [1.0, 1.0]
+    assert out["train_main"].tolist() == [0, 0, 0, 0]
+    assert out["test_main"].tolist() == [0, 0]
+    assert out["test_conf_stable"].tolist() == [1.0, 1.0]
 
 
 def test_cluster_phase2_none_returns_single_regime() -> None:
     svc = StepFService(app_config=SimpleNamespace())
     cfg = StepFRouterConfig(clusterer_type="none")
 
-    train_labels, test_labels, strengths, diag = svc._cluster_phase2(
+    out, diag = svc._cluster_phase2(
         cfg=cfg,
         x_train=np.ones((3, 2), dtype=float),
         x_test=np.ones((1, 2), dtype=float),
     )
 
     assert diag["clusterer_type_used"] == "none"
-    assert train_labels.tolist() == [0, 0, 0]
-    assert test_labels.tolist() == [0]
-    assert strengths.tolist() == [1.0]
+    assert out["train_main"].tolist() == [0, 0, 0]
+    assert out["test_main"].tolist() == [0]
+    assert out["test_conf_stable"].tolist() == [1.0]
 
 
 def test_stepf_service_source_has_no_kmeans_placeholder() -> None:
     src = Path(sf_mod.__file__).read_text(encoding="utf-8")
     assert "KMeans" not in src
+
+def test_build_phase2_state_sets_regime_id_from_stable(monkeypatch) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    _FakeTICCClusterer.calls = []
+    monkeypatch.setattr(sf_mod, "TICCClusterer", _FakeTICCClusterer)
+
+    def _fake_base_features(price_tech: pd.DataFrame, tech: pd.DataFrame) -> pd.DataFrame:
+        n = len(price_tech)
+        return pd.DataFrame(
+            {
+                "Date": pd.to_datetime(price_tech["Date"]),
+                "Gap": np.linspace(0.0, 1.0, n),
+                "ATR_norm": np.linspace(1.0, 2.0, n),
+                "ret_1": np.linspace(-0.1, 0.1, n),
+            }
+        )
+
+    monkeypatch.setattr(sf_mod, "_compute_base_features", _fake_base_features)
+    cfg = StepFRouterConfig(
+        clusterer_type="ticc_raw20_stable",
+        clusterer_fallback_type="none",
+        raw20_num_clusters=20,
+        k_eff_min=12,
+        cluster_share_min=0.2,
+        cluster_mean_run_min=2.0,
+        past_window_days=5,
+        past_resample_len=4,
+        pca_n_components=2,
+        use_z_pred=False,
+    )
+    dates = pd.date_range("2024-01-01", periods=12, freq="D")
+    price_tech = pd.DataFrame({"Date": dates, "price_exec": np.linspace(100.0, 112.0, len(dates)), "feat_a_tech": np.linspace(0.0, 2.0, len(dates))})
+    date_range = SimpleNamespace(train_start="2024-01-01", train_end="2024-01-08", test_start="2024-01-09", test_end="2024-01-12")
+
+    out = svc._build_phase2_state(cfg=cfg, date_range=date_range, symbol="SOXL", mode="sim", out_root=Path("."), price_tech=price_tech)
+    assert (out["regime_id"].astype(int) == out["cluster_id_stable"].astype(int)).all()
+    assert "cluster_id_raw20" in out.columns
+    assert "rare_flag_raw20" in out.columns
+    assert set(out["rare_flag_raw20"].astype(int).unique().tolist()).issubset({0, 1})
