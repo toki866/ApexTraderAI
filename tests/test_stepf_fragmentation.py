@@ -270,3 +270,147 @@ def test_build_phase2_state_sets_regime_id_from_stable(monkeypatch) -> None:
     assert "cluster_id_raw20" in out.columns
     assert "rare_flag_raw20" in out.columns
     assert set(out["rare_flag_raw20"].astype(int).unique().tolist()).issubset({0, 1})
+
+
+def test_stepf_router_config_default_fallback_is_none() -> None:
+    cfg = StepFRouterConfig()
+    assert cfg.clusterer_type == "ticc_raw20_stable"
+    assert cfg.clusterer_fallback_type == "none"
+
+
+def test_cluster_phase2_hdbscan_no_defined_clusters_falls_back_to_none(monkeypatch) -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+
+    class _NoClusterer:
+        def __init__(self, **kwargs):
+            self.labels_ = np.array([], dtype=int)
+
+        def fit(self, x_train):
+            self.labels_ = np.full((x_train.shape[0],), -1, dtype=int)
+            return self
+
+    class _NoClusterPred:
+        called = 0
+
+        @staticmethod
+        def approximate_predict(clusterer, x_test):
+            _NoClusterPred.called += 1
+            return np.zeros((x_test.shape[0],), dtype=int), np.ones((x_test.shape[0],), dtype=float)
+
+    class _NoClusterModule:
+        HDBSCAN = _NoClusterer
+
+    monkeypatch.setattr(sf_mod, "hdbscan", _NoClusterModule)
+    monkeypatch.setattr(sf_mod, "hdbscan_prediction", _NoClusterPred)
+
+    def _fake_base_features(price_tech: pd.DataFrame, tech: pd.DataFrame) -> pd.DataFrame:
+        n = len(price_tech)
+        return pd.DataFrame(
+            {
+                "Date": pd.to_datetime(price_tech["Date"]),
+                "Gap": np.linspace(0.0, 1.0, n),
+                "ATR_norm": np.linspace(1.0, 2.0, n),
+                "ret_1": np.linspace(-0.1, 0.1, n),
+            }
+        )
+
+    monkeypatch.setattr(sf_mod, "_compute_base_features", _fake_base_features)
+
+    out, diag = svc._cluster_phase2(
+        cfg=StepFRouterConfig(clusterer_type="hdbscan", clusterer_fallback_type="hdbscan", hdbscan_min_cluster_size=2, hdbscan_min_samples=1),
+        x_train=np.ones((5, 2), dtype=float),
+        x_test=np.ones((3, 2), dtype=float),
+    )
+
+    assert diag["clusterer_type_requested"] == "hdbscan"
+    assert diag["clusterer_type_used"] == "none"
+    assert diag["fallback_used"] is True
+    assert diag["fallback_reason"] == "hdbscan_no_defined_clusters"
+    assert diag["hdbscan_defined_cluster_count"] == 0
+    assert diag["hdbscan_all_noise"] is True
+    assert _NoClusterPred.called == 0
+    assert out["test_main"].tolist() == [0, 0, 0]
+    assert out["test_conf_stable"].tolist() == [1.0, 1.0, 1.0]
+
+
+def test_run_completes_and_writes_equity_csv_with_none_fallback(monkeypatch, tmp_path) -> None:
+    cfg = StepFRouterConfig(
+        output_root=str(tmp_path / "out"),
+        agents="a1",
+        reward_mode="legacy",
+        clusterer_type="hdbscan",
+        clusterer_fallback_type="hdbscan",
+        hdbscan_min_cluster_size=2,
+        hdbscan_min_samples=1,
+    )
+    app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
+    svc = StepFService(app_config=app_config)
+
+    class _NoClusterer:
+        def __init__(self, **kwargs):
+            self.labels_ = np.array([], dtype=int)
+
+        def fit(self, x_train):
+            self.labels_ = np.full((x_train.shape[0],), -1, dtype=int)
+            return self
+
+    class _NoClusterPred:
+        @staticmethod
+        def approximate_predict(clusterer, x_test):
+            raise AssertionError("approximate_predict should not be called when no defined clusters")
+
+    class _NoClusterModule:
+        HDBSCAN = _NoClusterer
+
+    monkeypatch.setattr(sf_mod, "hdbscan", _NoClusterModule)
+    monkeypatch.setattr(sf_mod, "hdbscan_prediction", _NoClusterPred)
+
+    svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({
+        "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+        "price_exec": [100.0, 101.0, 102.0],
+        "feat_a_tech": [0.1, 0.2, 0.3],
+    })  # type: ignore[assignment]
+    svc._load_stepe_logs = lambda step_e_root, symbol, agents: {
+        "a1": pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            "Split": ["train", "test", "test"],
+            "ratio": [1.0, 1.0, 1.0],
+            "stepE_ret_for_stats": [0.01, 0.01, 0.01],
+        })
+    }  # type: ignore[assignment]
+
+    def _phase2_none(**kwargs):
+        svc._last_cluster_diag = {
+            "clusterer_type_requested": "hdbscan",
+            "clusterer_type_used": "none",
+            "fallback_type": "hdbscan",
+            "fallback_used": True,
+            "fallback_reason": "hdbscan_no_defined_clusters",
+            "hdbscan_defined_cluster_count": 0,
+            "hdbscan_all_noise": True,
+        }
+        return pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            "regime_id": [0, 0, 0],
+            "cluster_id_stable": [0, 0, 0],
+            "cluster_id_raw20": [0, 0, 0],
+            "rare_flag_raw20": [0, 0, 0],
+            "confidence_stable": [1.0, 1.0, 1.0],
+            "confidence_raw20": [1.0, 1.0, 1.0],
+            "cluster_id_main": [0, 0, 0],
+            "confidence": [1.0, 1.0, 1.0],
+        })
+
+    svc._build_phase2_state = _phase2_none  # type: ignore[assignment]
+
+    date_range = SimpleNamespace(mode="sim", train_start="2024-01-01", train_end="2024-01-01", test_start="2024-01-02", test_end="2024-01-03")
+    result = svc.run(date_range, symbol="SOXL", mode="sim")
+
+    assert Path(result.daily_log_path).exists()
+    eq_path = tmp_path / "out" / "stepF" / "sim" / "stepF_equity_marl_SOXL.csv"
+    assert eq_path.exists()
+    import json
+
+    summary = json.loads((tmp_path / "out" / "stepF" / "sim" / "stepF_summary_router_SOXL.json").read_text(encoding="utf-8"))
+    assert summary["clusterer_type_used"] == "none"
+    assert summary["fallback_reason"] == "hdbscan_no_defined_clusters"
