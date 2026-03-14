@@ -9,12 +9,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn.utils.extmath import randomized_svd
 
 from ai_core.utils.timing_logger import TimingLogger
 from ai_core.services.dprime_cluster_components import (
     ClusterRuntimeConfig,
     DPrimeClusterService,
 )
+
+_LAST_DPRIME_PROFILE = ""
 
 _PROFILES: Tuple[str, ...] = (
     "dprime_bnf_h01",
@@ -178,27 +181,111 @@ def _compute_base_features(prices: pd.DataFrame, tech: pd.DataFrame) -> pd.DataF
     return out
 
 
+def _sanitize_matrix(
+    x: np.ndarray,
+    *,
+    name: str,
+    fill_value: float = 0.0,
+    clip_abs: Optional[float] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    arr = np.asarray(x, dtype=float)
+    nonfinite_before = int(arr.size - int(np.isfinite(arr).sum()))
+    arr = np.nan_to_num(arr, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    if clip_abs is not None:
+        arr = np.clip(arr, -float(clip_abs), float(clip_abs))
+    nonfinite_after = int(arr.size - int(np.isfinite(arr).sum()))
+    zero_var_cols = 0
+    if arr.ndim == 2 and arr.shape[1] > 0:
+        zero_var_cols = int(np.count_nonzero(np.std(arr, axis=0) < 1e-8))
+    diag = {
+        "name": name,
+        "shape": [int(v) for v in arr.shape],
+        "nonfinite_count_before": nonfinite_before,
+        "nonfinite_count_after": nonfinite_after,
+        "zero_var_cols": zero_var_cols,
+    }
+    return arr, diag
+
+
 def _fit_scaler(train: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    mu = train.mean(axis=0)
-    sd = train.std(axis=0)
+    train_arr, _ = _sanitize_matrix(train, name="fit_scaler.train", clip_abs=1e6)
+    mu = train_arr.mean(axis=0)
+    sd = train_arr.std(axis=0)
+    mu = np.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
+    sd = np.nan_to_num(sd, nan=1.0, posinf=1.0, neginf=1.0)
     sd = np.where(sd < 1e-8, 1.0, sd)
     return mu, sd
 
 
-def _fit_pca(train: np.ndarray, dim: int) -> Tuple[np.ndarray, int]:
-    if train.shape[0] < 2:
+def _fit_pca(train: np.ndarray, dim: int) -> Tuple[np.ndarray, int, Dict[str, Any]]:
+    train_san, train_diag = _sanitize_matrix(train, name="fit_pca.train", clip_abs=1e6)
+    if train_san.ndim != 2 or train_san.shape[0] < 2:
         raise ValueError("too few train rows for PCA fit")
-    x = train - train.mean(axis=0, keepdims=True)
-    _, _, vt = np.linalg.svd(x, full_matrices=False)
-    d = int(min(dim, vt.shape[0], vt.shape[1]))
+
+    x = train_san - train_san.mean(axis=0, keepdims=True)
+    var = np.var(x, axis=0)
+    keep = var >= 1e-12
+    keep_count = int(np.count_nonzero(keep))
+    if keep_count <= 0:
+        d = int(min(dim, max(1, min(train_san.shape[0] - 1, train_san.shape[1]))))
+        comp = np.zeros((train_san.shape[1], d), dtype=float)
+        if train_san.shape[1] > 0:
+            for j in range(d):
+                comp[j % train_san.shape[1], j] = 1.0
+        diag = {
+            "train": train_diag,
+            "pca_method_used": "degenerate_identity",
+            "fallback_used": True,
+            "rankable_dim": 0,
+            "dim_requested": int(dim),
+            "dim_used": int(d),
+            "zero_var_cols_dropped": int(train_san.shape[1]),
+        }
+        return comp, d, diag
+
+    x_reduced = x[:, keep]
+    rankable_dim = min(x_reduced.shape[0] - 1, x_reduced.shape[1])
+    d = int(min(dim, rankable_dim))
     if d <= 0:
-        raise ValueError("invalid PCA dim")
-    return vt[:d].T.astype(float), d
+        d = 1
+
+    method = "numpy_svd"
+    fallback_used = False
+    try:
+        _, _, vt = np.linalg.svd(x_reduced, full_matrices=False)
+        comp_reduced = vt[:d].T.astype(float)
+    except np.linalg.LinAlgError:
+        fallback_used = True
+        method = "randomized_svd"
+        _, _, vt = randomized_svd(x_reduced, n_components=d, random_state=42)
+        comp_reduced = vt.T.astype(float)
+
+    comp = np.zeros((train_san.shape[1], d), dtype=float)
+    comp[keep, :] = comp_reduced
+    comp, _ = _sanitize_matrix(comp, name="fit_pca.comp", clip_abs=1e6)
+    diag = {
+        "train": train_diag,
+        "pca_method_used": method,
+        "fallback_used": bool(fallback_used),
+        "rankable_dim": int(rankable_dim),
+        "dim_requested": int(dim),
+        "dim_used": int(d),
+        "zero_var_cols_dropped": int(train_san.shape[1] - keep_count),
+    }
+    return comp, d, diag
 
 
 def _project(x: np.ndarray, mu: np.ndarray, sd: np.ndarray, comp: np.ndarray) -> np.ndarray:
-    xn = (x - mu) / sd
-    return xn @ comp
+    x_san, _ = _sanitize_matrix(x, name="project.x", clip_abs=1e6)
+    mu_san = np.nan_to_num(np.asarray(mu, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    sd_san = np.nan_to_num(np.asarray(sd, dtype=float), nan=1.0, posinf=1.0, neginf=1.0)
+    sd_san = np.where(sd_san < 1e-8, 1.0, sd_san)
+    comp_san, _ = _sanitize_matrix(comp, name="project.comp", clip_abs=1e6)
+    xn = (x_san - mu_san) / sd_san
+    xn, _ = _sanitize_matrix(xn, name="project.xn", clip_abs=1e6)
+    out = xn @ comp_san
+    out, _ = _sanitize_matrix(out, name="project.out", clip_abs=1e6)
+    return out
 
 
 def _collect_horizon_cols(df: pd.DataFrame) -> Dict[int, str]:
@@ -403,6 +490,7 @@ class DPrimeRLService:
             "pred_source_mode": pred_meta.get("pred_source_mode", ""),
             "pred_available_horizons": available,
             "pred_missing_horizons_filled": missing_filled,
+            "pca_diagnostics_files": [],
         }
         date_list = data["Date"].tolist()
         idx_train = [i for i, d in enumerate(date_list) if tr_s <= d <= tr_e]
@@ -410,8 +498,12 @@ class DPrimeRLService:
         if min(idx_test) < cfg.l_past - 1:
             raise RuntimeError("insufficient history before test_start for L_past window")
 
+        last_profile = ""
         with timing.stage("stepDPrimeRL.total"):
             for profile in cfg.profiles:
+                last_profile = profile
+                global _LAST_DPRIME_PROFILE
+                _LAST_DPRIME_PROFILE = profile
                 with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile), meta={"profile": str(profile), "stage_group": "rl_profile", "agent_kind": "profile", "profile_name": str(profile)}):
                     fam = _infer_family(profile)
                     pred_type = _infer_pred_type(profile)
@@ -444,13 +536,48 @@ class DPrimeRLService:
                     if len(Dtr) == 0 or len(Dte) == 0:
                         raise RuntimeError(f"profile={profile}: no rows for train/test")
 
+                    Xp_tr_before = int(np.asarray(Xp_tr, dtype=float).size - int(np.isfinite(np.asarray(Xp_tr, dtype=float)).sum()))
+                    Xp_tr, xp_tr_diag = _sanitize_matrix(Xp_tr, name=f"{profile}.Xp_tr", clip_abs=1e6)
+                    Xf_tr, xf_tr_diag = _sanitize_matrix(Xf_tr, name=f"{profile}.Xf_tr", clip_abs=1e6)
+                    Xp_te, _ = _sanitize_matrix(Xp_te, name=f"{profile}.Xp_te", clip_abs=1e6)
+                    Xf_te, _ = _sanitize_matrix(Xf_te, name=f"{profile}.Xf_te", clip_abs=1e6)
+
                     mu_p, sd_p = _fit_scaler(Xp_tr)
                     mu_f, sd_f = _fit_scaler(Xf_tr)
-                    comp_p, d_p = _fit_pca((Xp_tr - mu_p) / sd_p, cfg.z_past_dim)
+
+                    Xp_tr_n, _ = _sanitize_matrix((Xp_tr - mu_p) / sd_p, name=f"{profile}.Xp_tr_norm", clip_abs=1e6)
+                    Xf_tr_n, _ = _sanitize_matrix((Xf_tr - mu_f) / sd_f, name=f"{profile}.Xf_tr_norm", clip_abs=1e6)
+
+                    comp_p, d_p, pca_p_diag = _fit_pca(Xp_tr_n, cfg.z_past_dim)
                     pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
-                    comp_f, d_f = _fit_pca((Xf_tr - mu_f) / sd_f, pred_dim)
+                    comp_f, d_f, pca_f_diag = _fit_pca(Xf_tr_n, pred_dim)
                     Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
                     Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
+
+                    pca_diag = {
+                        "profile": profile,
+                        "Xp_tr_shape": [int(v) for v in Xp_tr.shape],
+                        "Xf_tr_shape": [int(v) for v in Xf_tr.shape],
+                        "Xp_tr_nonfinite_count_before": int(Xp_tr_before),
+                        "Xp_tr_nonfinite_count_after": int(xp_tr_diag["nonfinite_count_after"]),
+                        "Xp_tr_zero_var_cols": int(xp_tr_diag["zero_var_cols"]),
+                        "pca_method_used": str(pca_p_diag["pca_method_used"]),
+                        "fallback_used": bool(pca_p_diag["fallback_used"]),
+                        "z_past_dim_requested": int(cfg.z_past_dim),
+                        "z_past_dim_used": int(d_p),
+                        "z_pred_dim_requested": int(pred_dim),
+                        "z_pred_dim_used": int(d_f),
+                        "pred_pca_method_used": str(pca_f_diag["pca_method_used"]),
+                        "pred_fallback_used": bool(pca_f_diag["fallback_used"]),
+                        "Xf_tr_nonfinite_count_after": int(xf_tr_diag["nonfinite_count_after"]),
+                    }
+                    pca_diag_path = stepd_dir / f"stepDprime_pca_diagnostics_{profile}_{cfg.symbol}.json"
+                    pca_diag_path.write_text(json.dumps(_json_safe(pca_diag), indent=2, ensure_ascii=False), encoding="utf-8")
+                    results["pca_diagnostics_files"].append(str(pca_diag_path))
+                    print(f"[STEPDPRIME_PCA] profile={profile} Xp_tr_shape={Xp_tr.shape} Xf_tr_shape={Xf_tr.shape}")
+                    print(f"[STEPDPRIME_PCA] nonfinite_before={Xp_tr_before} zero_var_cols={xp_tr_diag['zero_var_cols']}")
+                    print(f"[STEPDPRIME_PCA] method={pca_p_diag['pca_method_used']} fallback_used={pca_p_diag['fallback_used']}")
+                    print(f"[STEPDPRIME_PCA] z_past_dim_used={d_p} z_pred_dim_used={d_f}")
 
                     ref = (
                         data.sort_values("Date")
@@ -540,6 +667,10 @@ class DPrimeRLService:
 
                     results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
+        pca_all_path = stepd_dir / f"stepDprime_pca_diagnostics_{cfg.symbol}.json"
+        pca_all_path.write_text(json.dumps(_json_safe({"profiles": results.get("pca_diagnostics_files", [])}), indent=2, ensure_ascii=False), encoding="utf-8")
+        results["pca_diagnostics_index"] = str(pca_all_path)
+        results["last_profile"] = last_profile
         return results
 
 
@@ -576,6 +707,11 @@ class StepDPrimeService:
                     base = _compute_base_features(prices, tech)
                     all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
                     all_df["Close_anchor"] = _safe(prices, "Close")
+                    for c in all_df.columns:
+                        if c == "Date":
+                            continue
+                        all_df[c] = pd.to_numeric(all_df[c], errors="coerce")
+                        all_df[c] = all_df[c].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
                 cluster_service = DPrimeClusterService()
                 cluster_runtime_cfg = ClusterRuntimeConfig(
@@ -631,6 +767,7 @@ class StepDPrimeService:
                 "cluster_stage_reached": cluster_stage_reached,
                 "rl_stage_reached": rl_stage_reached,
                 "last_stage": stage_reached,
+                "last_profile": _LAST_DPRIME_PROFILE,
             }
             summary_path = stepd_dir / f"stepDprime_failure_summary_{cfg.symbol}.json"
             summary_path.write_text(json.dumps(_json_safe(failure_summary), indent=2, ensure_ascii=False), encoding="utf-8")
