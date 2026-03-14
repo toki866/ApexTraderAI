@@ -37,6 +37,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from ai_core.utils.paths import resolve_repo_path
+from ai_core.utils.timing_logger import TimingLogger
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -89,6 +90,9 @@ class StepCService:
 
     # ========= 公開メソッド =========
 
+    def _timing(self) -> TimingLogger:
+        t = getattr(self.app_config, "_timing_logger", None)
+        return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
     def _get_output_root(self) -> Path:
         """Best-effort resolver for output_root used by daily snapshot writers."""
@@ -106,7 +110,9 @@ class StepCService:
         return resolve_repo_path("output")
 
     def run(self, symbol: str, date_range: DateRange) -> StepCResult:
-        config = StepCConfig(
+        timing = self._timing()
+        with timing.stage("stepC.total"):
+            config = StepCConfig(
             app_config=self.app_config,
             symbol=symbol,
             date_range=date_range,
@@ -116,7 +122,7 @@ class StepCService:
             raw_column_map=self.raw_column_map,
             write_legacy_root_copy=self.write_legacy_root_copy,
         )
-        return self._run_with_config(config)
+            return self._run_with_config(config)
 
     # ========= 内部実装 =========
 
@@ -145,11 +151,13 @@ class StepCService:
             step_b_dir.mkdir(parents=True, exist_ok=True)
 
             # 1) 価格（Close）
-            price_df, price_path = self._load_price_df(step_a_dir, symbol, mode=stepb_mode)
+            timing = self._timing()
+            with timing.stage("stepC.load_inputs"):
+                price_df, price_path = self._load_price_df(step_a_dir, symbol, mode=stepb_mode)
+                pred_df, pred_path = self._load_stepb_pred_df(step_b_dir, symbol, mode=stepb_mode)
             print(f"[StepC] price_path={price_path}")
 
             # 2) StepB の予測（pred_time_all + mamba pred_close を統合）
-            pred_df, pred_path = self._load_stepb_pred_df(step_b_dir, symbol, mode=stepb_mode)
 
             # Determine mode from actual StepB input location if possible
             mode_final = None
@@ -166,58 +174,60 @@ class StepCService:
             step_c_dir.mkdir(parents=True, exist_ok=True)
 
             # 3) マージ + date_range クリップ（train_start〜test_end）
-            merged_df = self._merge_and_clip(price_df=price_df, pred_df=pred_df, date_range=dr)
+            with timing.stage("stepC.merge_and_clip"):
+                merged_df = self._merge_and_clip(price_df=price_df, pred_df=pred_df, date_range=dr)
 
             # 4) モデルごとにスケールキャリブ（a,b推定）し、標準列名を作る
             raw_col_map = self._build_raw_column_map(config=config, pred_df=merged_df)
             calibrations: Dict[str, Dict[str, object]] = {}
 
-            for model_key in config.models:
-                mk = str(model_key).strip().lower()
-                raw_col = raw_col_map.get(model_key) or raw_col_map.get(mk)
-                if not raw_col or raw_col not in merged_df.columns:
-                    continue
+            with timing.stage("stepC.calibrate_models"):
+                for model_key in config.models:
+                    mk = str(model_key).strip().lower()
+                    raw_col = raw_col_map.get(model_key) or raw_col_map.get(mk)
+                    if not raw_col or raw_col not in merged_df.columns:
+                        continue
 
-                # ラグ補正（任意）
-                lag = int(config.lag_days.get(model_key, config.lag_days.get(mk, 0)) or 0)
+                    # ラグ補正（任意）
+                    lag = int(config.lag_days.get(model_key, config.lag_days.get(mk, 0)) or 0)
 
-                # a,b 推定（学習末尾 calib_window_days 日だけ）
-                calib_mask = self._build_calib_mask(
-                    dates=merged_df["date"],
-                    train_start=dr.train_start,
-                    train_end=dr.train_end,
-                    calib_window_days=int(config.calib_window_days),
-                )
+                    # a,b 推定（学習末尾 calib_window_days 日だけ）
+                    calib_mask = self._build_calib_mask(
+                        dates=merged_df["date"],
+                        train_start=dr.train_start,
+                        train_end=dr.train_end,
+                        calib_window_days=int(config.calib_window_days),
+                    )
 
-                series_raw = pd.to_numeric(merged_df[raw_col], errors="coerce")
-                if lag != 0:
-                    series_raw = series_raw.shift(-lag)
+                    series_raw = pd.to_numeric(merged_df[raw_col], errors="coerce")
+                    if lag != 0:
+                        series_raw = series_raw.shift(-lag)
 
-                nn_calib = int(series_raw.loc[calib_mask].notna().sum())
-                if nn_calib < 20:
-                    print(f"[StepC] skip calib model={mk} raw_col={raw_col} lag={lag} not_enough_nonnull_in_calib nn={nn_calib}")
-                    continue
+                    nn_calib = int(series_raw.loc[calib_mask].notna().sum())
+                    if nn_calib < 20:
+                        print(f"[StepC] skip calib model={mk} raw_col={raw_col} lag={lag} not_enough_nonnull_in_calib nn={nn_calib}")
+                        continue
 
-                close_calib = pd.to_numeric(merged_df.loc[calib_mask, "close"], errors="coerce")
-                raw_calib = series_raw.loc[calib_mask]
-                a, b = self._fit_scale_params(y_true=close_calib, y_pred=raw_calib)
+                    close_calib = pd.to_numeric(merged_df.loc[calib_mask, "close"], errors="coerce")
+                    raw_calib = series_raw.loc[calib_mask]
+                    a, b = self._fit_scale_params(y_true=close_calib, y_pred=raw_calib)
 
-                suffix = self._agent_suffix(mk)
+                    suffix = self._agent_suffix(mk)
 
-                raw_out = f"Pred_Close_{suffix}"
-                scaled_out = f"Pred_Close_scaled_{suffix}"
+                    raw_out = f"Pred_Close_{suffix}"
+                    scaled_out = f"Pred_Close_scaled_{suffix}"
 
-                # raw output
-                merged_df[raw_out] = series_raw
-                # scaled output
-                merged_df[scaled_out] = a * series_raw + b
+                    # raw output
+                    merged_df[raw_out] = series_raw
+                    # scaled output
+                    merged_df[scaled_out] = a * series_raw + b
 
-                calibrations[mk] = {
-                    "raw_column": str(raw_col),
-                    "raw_output": raw_out,
-                    "scaled_output": scaled_out,
-                    "a": float(a),
-                    "b": float(b),
+                    calibrations[mk] = {
+                        "raw_column": str(raw_col),
+                        "raw_output": raw_out,
+                        "scaled_output": scaled_out,
+                        "a": float(a),
+                        "b": float(b),
                     "lag_days": int(lag),
                     "calib_rows": int(calib_mask.sum()),
                 }

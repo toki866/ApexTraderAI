@@ -66,6 +66,7 @@ import numpy as np
 import pandas as pd
 
 from ai_core.utils.paths import get_repo_root
+from ai_core.utils.timing_logger import TimingLogger
 
 
 @dataclass
@@ -113,6 +114,7 @@ def snap_prev_by_prices(date: Any, available_dates_sorted: Any) -> pd.Timestamp:
 class StepAService:
     def __init__(self, app_config: Any = None, /, **kwargs: Any):
         cfg = kwargs.get("app_config", app_config)
+        self.app_config = cfg
         if isinstance(cfg, dict) and "app_config" in cfg:
             cfg = cfg.get("app_config")
         cfg_data_dir = _get_attr(cfg, "data_dir", None)
@@ -134,9 +136,19 @@ class StepAService:
     # -------------------------
     # Public API
     # -------------------------
+    def _timing(self) -> TimingLogger:
+        t = getattr(self, "app_config", None)
+        if t is not None:
+            logger = getattr(t, "_timing_logger", None)
+            if isinstance(logger, TimingLogger):
+                return logger
+        return TimingLogger.disabled()
+
     def run(self, symbol: str, date_range: Any = None, **kwargs: Any) -> Dict[str, Any]:
-        # Resolve mode (support legacy "ops" as alias to "live")
-        mode_raw = self._resolve_mode(date_range=date_range, kwargs=kwargs)
+        timing = self._timing()
+        with timing.stage("stepA.total"):
+            # Resolve mode (support legacy "ops" as alias to "live")
+            mode_raw = self._resolve_mode(date_range=date_range, kwargs=kwargs)
         mode = self._normalize_mode(mode_raw)
 
         out_dir_mode = Path(self.cfg.output_root) / "stepA" / mode
@@ -145,7 +157,8 @@ class StepAService:
         # Purge legacy combined files to prevent accidental training
         self._purge_combined_files(out_dir_mode, symbol)
 
-        src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
+        with timing.stage("stepA.load_inputs"):
+            src_csv = self._resolve_src_csv(symbol=symbol, date_range=date_range, kwargs=kwargs)
         resolved_data_dir = self._configured_data_root(kwargs=kwargs).resolve()
         print(f"[StepA] data_dir={resolved_data_dir} src_csv={src_csv.resolve()}")
         if not src_csv.exists():
@@ -169,8 +182,9 @@ class StepAService:
                 "or review --data-dir/AppConfig.data_dir so StepA reads the correct location"
             )
 
-        df = pd.read_csv(src_csv)
-        df = self._normalize_prices(df)
+        with timing.stage("stepA.load_inputs"):
+            df = pd.read_csv(src_csv)
+            df = self._normalize_prices(df)
 
         # Optional live pseudo daily bar row
         pseudo_daily_row = kwargs.get("pseudo_daily_row", None)
@@ -194,7 +208,8 @@ class StepAService:
 
         # Build FULL features (causal) on observed prices (in-memory only; never saved as combined)
         df_prices_full = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
-        df_feat_full = self._build_features(df_prices_full, periodic_start=periodic_start)
+        with timing.stage("stepA.build_features"):
+            df_feat_full = self._build_features(df_prices_full, periodic_start=periodic_start)
 
         prices_cols = ["Date", "Open", "High", "Low", "Close", "Volume"]
         per_cols = [c for c in df_feat_full.columns if c.startswith("per_")]
@@ -246,12 +261,13 @@ class StepAService:
             tech_test_path = out_dir_mode / f"stepA_tech_test_{symbol}.csv"
             summary_path = out_dir_mode / f"stepA_split_summary_{symbol}.csv"
 
-            df_prices_train.to_csv(prices_train_path, index=False)
-            df_prices_test.to_csv(prices_test_path, index=False)
-            df_periodic_train.to_csv(periodic_train_path, index=False)
-            df_periodic_test.to_csv(periodic_test_path, index=False)
-            df_tech_train.to_csv(tech_train_path, index=False)
-            df_tech_test.to_csv(tech_test_path, index=False)
+            with timing.stage("stepA.write_outputs"):
+                df_prices_train.to_csv(prices_train_path, index=False)
+                df_prices_test.to_csv(prices_test_path, index=False)
+                df_periodic_train.to_csv(periodic_train_path, index=False)
+                df_periodic_test.to_csv(periodic_test_path, index=False)
+                df_tech_train.to_csv(tech_train_path, index=False)
+                df_tech_test.to_csv(tech_test_path, index=False)
 
             # Daily snapshots (per test-date) for "run-each-day" operation
             # Creates: output/stepA/<mode>/daily/stepA_(prices|periodic|tech|daily_features)_{symbol}_YYYY_MM_DD.csv
@@ -301,7 +317,8 @@ class StepAService:
                 future_months=future_months,
                 future_end=future_end,
             )
-            summary_df.to_csv(summary_path, index=False)
+            with timing.stage("stepA.write_outputs"):
+                summary_df.to_csv(summary_path, index=False)
 
             out: Dict[str, Any] = {
                 "mode": mode,
@@ -332,7 +349,8 @@ class StepAService:
             )
 
             # prices/tech observed-only
-            disp_prices_path = out_dir_mode / f"stepA_prices_{symbol}.csv"
+            with timing.stage("stepA.write_outputs"):
+                disp_prices_path = out_dir_mode / f"stepA_prices_{symbol}.csv"
             disp_tech_path = out_dir_mode / f"stepA_tech_{symbol}.csv"
             base_obs[prices_cols].to_csv(disp_prices_path, index=False)
             (base_obs[["Date"] + tech_cols] if tech_cols else base_obs[["Date"]]).to_csv(disp_tech_path, index=False)
@@ -373,7 +391,8 @@ class StepAService:
                 future_months=future_months,
                 future_end=future_end,
             )
-            summary_df.to_csv(summary_path, index=False)
+            with timing.stage("stepA.write_outputs"):
+                    summary_df.to_csv(summary_path, index=False)
 
             return {
                 "mode": mode,

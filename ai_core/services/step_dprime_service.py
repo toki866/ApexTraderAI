@@ -395,13 +395,16 @@ class DPrimeRLService:
 
         with timing.stage("stepDPrimeRL.total"):
             for profile in cfg.profiles:
-                with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile)):
+                with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile), meta={"profile": str(profile), "stage_group": "rl_profile"}):
                     fam = _infer_family(profile)
                     pred_type = _infer_pred_type(profile)
                     past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
                     past_cols = [c for c in past_cols if c in data.columns]
 
                     pred_steps = [1] if pred_type == "h01" else ([1, 5, 10, 20] if pred_type == "h02" else list(range(1, cfg.pred_k + 1)))
+
+                    with timing.stage("stepDPrimeRL.profile.state_build", agent_id=str(profile), meta={"profile": str(profile)}):
+                        pass
                     pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
 
                     def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
@@ -521,51 +524,52 @@ class StepDPrimeService:
         stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
         stepd_dir.mkdir(parents=True, exist_ok=True)
         try:
-            with timing.stage("stepDPrime.load_inputs"):
-                split = _read_split_summary(stepa_dir, cfg.symbol)
-                pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
-                tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
-                pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+            with timing.stage("stepDPrime.total"):
+                with timing.stage("stepDPrime.load_inputs"):
+                    split = _read_split_summary(stepa_dir, cfg.symbol)
+                    pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+                    tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+                    pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
 
-            prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-            tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-            periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+                prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+                tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+                periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
-            with timing.stage("stepDPrime.build_features"):
-                base = _compute_base_features(prices, tech)
-                all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
-                all_df["Close_anchor"] = _safe(prices, "Close")
+                with timing.stage("stepDPrime.build_features"):
+                    base = _compute_base_features(prices, tech)
+                    all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+                    all_df["Close_anchor"] = _safe(prices, "Close")
 
-            cluster_service = DPrimeClusterService()
-            cluster_runtime_cfg = ClusterRuntimeConfig(
-                symbol=cfg.symbol,
-                mode=cfg.mode,
-                cluster_backend=cfg.cluster_backend,
-                cluster_raw_k=cfg.cluster_raw_k,
-                cluster_k_eff_min=cfg.cluster_k_eff_min,
-                cluster_small_share_threshold=cfg.cluster_small_share_threshold,
-                cluster_small_mean_run_threshold=cfg.cluster_small_mean_run_threshold,
-                cluster_short_window_days=cfg.cluster_short_window_days,
-                cluster_mid_window_weeks=cfg.cluster_mid_window_weeks,
-                cluster_long_window_months=cfg.cluster_long_window_months,
-                cluster_enable_8y_context=cfg.cluster_enable_8y_context,
-                cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
-            )
-            with timing.stage("stepDPrimeCluster.run"):
-                cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
-
-            rl_service = DPrimeRLService()
-            with timing.stage("stepDPrimeRL.run"):
-                rl_out = rl_service.run(
-                    cfg,
-                    timing=timing,
-                    data=all_df.copy(),
-                    split=split,
-                    stepb_dir=stepb_dir,
-                    stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
-                    stepd_dir=stepd_dir,
-                    cluster_daily=cluster_out["daily"],
+                cluster_service = DPrimeClusterService()
+                cluster_runtime_cfg = ClusterRuntimeConfig(
+                    symbol=cfg.symbol,
+                    mode=cfg.mode,
+                    cluster_backend=cfg.cluster_backend,
+                    cluster_raw_k=cfg.cluster_raw_k,
+                    cluster_k_eff_min=cfg.cluster_k_eff_min,
+                    cluster_small_share_threshold=cfg.cluster_small_share_threshold,
+                    cluster_small_mean_run_threshold=cfg.cluster_small_mean_run_threshold,
+                    cluster_short_window_days=cfg.cluster_short_window_days,
+                    cluster_mid_window_weeks=cfg.cluster_mid_window_weeks,
+                    cluster_long_window_months=cfg.cluster_long_window_months,
+                    cluster_enable_8y_context=cfg.cluster_enable_8y_context,
+                    cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
                 )
+                with timing.stage("stepDPrimeCluster.run"):
+                    cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
+
+                rl_service = DPrimeRLService()
+                with timing.stage("stepDPrimeRL.run"):
+                    rl_out = rl_service.run(
+                        cfg,
+                        timing=timing,
+                        data=all_df.copy(),
+                        split=split,
+                        stepb_dir=stepb_dir,
+                        stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
+                        stepd_dir=stepd_dir,
+                        cluster_daily=cluster_out["daily"],
+                    )
         except Exception:
             tb_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
             tb_path.write_text(traceback.format_exc(), encoding="utf-8")

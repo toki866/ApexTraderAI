@@ -42,3 +42,8 @@ stepF:
   ticc_beta: 600.0
   ticc_max_iter: 100
   ticc_threshold: 0.00002
+
+
+timing:
+  enable: true
+  clear_on_run_start: true
