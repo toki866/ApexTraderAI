@@ -161,33 +161,35 @@ class StepEService:
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
-        mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
-        if mode in {"ops", "prod", "production", "real"}:
-            mode = "live"
+        timing = self._timing()
+        with timing.stage("stepE.total"):
+            mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
+            if mode in {"ops", "prod", "production", "real"}:
+                mode = "live"
 
-        raw_cfgs = getattr(self.app_config, "stepE", None)
-        if raw_cfgs is None:
-            cfgs: List[StepEConfig] = []
-        elif isinstance(raw_cfgs, (list, tuple)):
-            cfgs = list(raw_cfgs)
-        else:
-            cfgs = [raw_cfgs]
-        if agents:
-            cfgs = [c for c in cfgs if c.agent in set(agents)]
+            raw_cfgs = getattr(self.app_config, "stepE", None)
+            if raw_cfgs is None:
+                cfgs: List[StepEConfig] = []
+            elif isinstance(raw_cfgs, (list, tuple)):
+                cfgs = list(raw_cfgs)
+            else:
+                cfgs = [raw_cfgs]
+            if agents:
+                cfgs = [c for c in cfgs if c.agent in set(agents)]
 
-        if not cfgs:
-            print("[StepE] WARN: No StepE configs to run. Skipping StepE.")
-            return {
+            if not cfgs:
+                print("[StepE] WARN: No StepE configs to run. Skipping StepE.")
+                return {
                 "skipped": True,
                 "reason": "no_stepE_configs",
                 "symbol": symbol,
                 "mode": mode,
             }
 
-        for cfg in cfgs:
-            self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
+            for cfg in cfgs:
+                self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
 
-        return {
+            return {
             "skipped": False,
             "configs_run": len(cfgs),
             "symbol": symbol,
@@ -200,10 +202,10 @@ class StepEService:
 
     def _run_one(self, cfg: StepEConfig, date_range, symbol: str, mode: str) -> None:
         timing = self._timing()
-        with timing.stage("stepE.agent.total", agent_id=str(cfg.agent)):
+        with timing.stage("stepE.agent.total", agent_id=str(cfg.agent), meta={"stage_group": "stepE_agent", "mode": str(mode)}):
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
-        out_dir = out_root / "stepE" / mode
-        model_dir = out_dir / "models"
+            out_dir = out_root / "stepE" / mode
+            model_dir = out_dir / "models"
         out_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -477,11 +479,12 @@ class StepEService:
             df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
 
         eq_path = out_dir / f"stepE_equity_{cfg.agent}_{symbol}.csv"
-        with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent)):
-            df_eq.to_csv(eq_path, index=False)
+        with timing.stage("stepE.agent.eval", agent_id=str(cfg.agent), meta={"stage_group": "eval"}):
+            with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent)):
+                df_eq.to_csv(eq_path, index=False)
 
-            log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
-            df_log.to_csv(log_path, index=False)
+                log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
+                df_log.to_csv(log_path, index=False)
 
         # Summary metrics (test) using metrics_summary.csv-aligned definitions.
         # Read back from saved daily log to guarantee summary uses persisted data.
