@@ -86,7 +86,7 @@ class ClusterMonthlyTrainer:
         train_df = features[["Date"]].copy()
         train_df["cluster_id_raw20"] = raw_id.astype(int)
 
-        run_id = (train_df["cluster_id_raw20"] != train_df["cluster_id_raw20"].shift(1)).cumsum()
+        run_id = (train_df["cluster_id_raw20"] != train_df["cluster_id_raw20"].shift(1)).cumsum().rename("run_id")
         runs = train_df.groupby(["cluster_id_raw20", run_id], as_index=False).size().rename(columns={"size": "run_len"})
         mean_run = runs.groupby("cluster_id_raw20")["run_len"].mean()
         share = train_df["cluster_id_raw20"].value_counts(normalize=True).sort_index()
@@ -239,4 +239,3 @@ class DPrimeClusterService:
             "outputs": paths,
         }
         return {"daily": daily, "summary": summary}
-
