@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -183,16 +184,87 @@ def _project(x: np.ndarray, mu: np.ndarray, sd: np.ndarray, comp: np.ndarray) ->
     return xn @ comp
 
 
-def _build_pred_from_stepb(stepb_dir: Path, symbol: str, pred_k: int) -> Tuple[pd.DataFrame, str]:
-    cands = sorted(stepb_dir.glob(f"stepB_pred_pathseq_*_h{pred_k:02d}_{symbol}.csv"))
-    if not cands:
-        raise FileNotFoundError(f"missing pathseq file under {stepb_dir}")
-    p = cands[0]
-    df = pd.read_csv(p)
-    if "Date_anchor" not in df.columns:
-        raise ValueError(f"{p} missing Date_anchor")
-    df["Date"] = pd.to_datetime(df["Date_anchor"], errors="coerce").dt.normalize()
-    return df, str(p.as_posix())
+def _collect_horizon_cols(df: pd.DataFrame) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for c in df.columns:
+        lc = str(c).lower()
+        if "pred_close_t_plus_" in lc:
+            try:
+                h = int(lc.split("pred_close_t_plus_")[-1])
+                out[h] = c
+            except Exception:
+                continue
+            continue
+        for pfx in ("pred_close_mamba_h", "close_pred_h", "pred_close_mamba_periodic_h"):
+            if pfx in lc:
+                try:
+                    h = int(lc.split(pfx)[-1])
+                    out[h] = c
+                except Exception:
+                    pass
+    if 1 not in out:
+        for c in df.columns:
+            if str(c).lower() in {"pred_close_mamba", "pred_close", "pred_close_mamba_periodic"}:
+                out[1] = c
+                break
+    return out
+
+
+def _normalize_pred_frame(df: pd.DataFrame, pred_k: int) -> Tuple[pd.DataFrame, List[int]]:
+    dcol = "Date" if "Date" in df.columns else ("Date_anchor" if "Date_anchor" in df.columns else None)
+    if dcol is None:
+        raise ValueError("prediction source missing Date/Date_anchor")
+    out = pd.DataFrame()
+    out["Date"] = pd.to_datetime(df[dcol], errors="coerce").dt.normalize()
+    hmap = _collect_horizon_cols(df)
+    for h, src in hmap.items():
+        if 1 <= h <= pred_k:
+            out[f"Pred_Close_t_plus_{h:02d}"] = pd.to_numeric(df[src], errors="coerce")
+    out = out.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    return out, sorted([h for h in hmap.keys() if 1 <= h <= pred_k])
+
+
+def _build_pred_from_stepb(stepb_dir: Path, symbol: str, pred_k: int) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    cands_pathseq = sorted(stepb_dir.glob(f"stepB_pred_pathseq_*_h{pred_k:02d}_{symbol}.csv"))
+    cands_path = sorted(stepb_dir.glob(f"stepB_pred_path_mamba_{symbol}.csv"))
+    cands_time = sorted(stepb_dir.glob(f"stepB_pred_time_all_{symbol}.csv"))
+    cands_periodic_close = sorted(stepb_dir.glob(f"stepB_pred_close_mamba_periodic_{symbol}.csv"))
+    cands_close = sorted(stepb_dir.glob(f"stepB_pred_close_mamba_{symbol}.csv"))
+    candidate_files = [str(p.as_posix()) for p in (cands_pathseq + cands_path + cands_time + cands_periodic_close + cands_close)]
+
+    selected: Optional[Path] = None
+    mode = ""
+    if cands_pathseq:
+        selected, mode = cands_pathseq[0], "pathseq"
+        src_df = pd.read_csv(selected)
+    elif cands_path:
+        selected, mode = cands_path[0], "path_mamba"
+        src_df = pd.read_csv(selected)
+    elif cands_time:
+        selected, mode = cands_time[0], "time_all"
+        src_df = pd.read_csv(selected)
+    elif cands_periodic_close or cands_close:
+        mode = "periodic_fallback"
+        selected = cands_periodic_close[0] if cands_periodic_close else cands_close[0]
+        base_df = pd.read_csv(selected)
+        if cands_periodic_close and cands_close:
+            close_df = pd.read_csv(cands_close[0])
+            src_df = base_df.merge(close_df, on="Date", how="outer", suffixes=("", "_close"))
+        else:
+            src_df = base_df
+    else:
+        raise FileNotFoundError(f"missing StepB prediction source under {stepb_dir}; candidates={candidate_files}")
+
+    norm_df, available = _normalize_pred_frame(src_df, pred_k)
+    if not available:
+        raise FileNotFoundError(f"selected StepB source has no usable prediction horizons: {selected}")
+    meta = {
+        "pred_source_candidate_files": candidate_files,
+        "pred_source_selected": str(selected.as_posix()) if selected else "",
+        "pred_source_mode": mode,
+        "pred_available_horizons": available,
+    }
+    return norm_df, meta
 
 
 
@@ -250,12 +322,31 @@ class DPrimeRLService:
         tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
         te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
 
-        pred_df, pred_src = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
+        pred_df, pred_meta = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
         pred_time_df, pred_time_src = _load_pred_time_priority(stepc_dir, stepb_dir, cfg.symbol)
+        print(f"[STEPDPRIME_INPUT] stepb_dir={stepb_dir}")
+        print(f"[STEPDPRIME_INPUT] pred_source_candidate_files={pred_meta['pred_source_candidate_files']}")
+        print(f"[STEPDPRIME_INPUT] pred_source_selected={pred_meta['pred_source_selected']}")
+        print(f"[STEPDPRIME_INPUT] pred_source_mode={pred_meta['pred_source_mode']}")
+        print(f"[STEPDPRIME_INPUT] pred_available_horizons={pred_meta['pred_available_horizons']}")
+
         pred_cols = [f"Pred_Close_t_plus_{i:02d}" for i in range(1, cfg.pred_k + 1)]
-        for c in pred_cols:
-            if c not in pred_df.columns:
-                pred_df[c] = np.nan
+        available = sorted([int(c.split("_")[-1]) for c in pred_df.columns if c.startswith("Pred_Close_t_plus_")])
+        missing_filled: Dict[str, object] = {}
+        for h in range(1, cfg.pred_k + 1):
+            c = f"Pred_Close_t_plus_{h:02d}"
+            if c in pred_df.columns:
+                continue
+            if available:
+                lower = [x for x in available if x <= h]
+                upper = [x for x in available if x > h]
+                src_h = (max(lower) if lower else min(upper))
+                pred_df[c] = pd.to_numeric(pred_df.get(f"Pred_Close_t_plus_{src_h:02d}"), errors="coerce")
+                missing_filled[f"h{h:02d}"] = f"reuse_h{src_h:02d}"
+            else:
+                pred_df[c] = 0.0
+                missing_filled[f"h{h:02d}"] = "zero_fill"
+        print(f"[STEPDPRIME_INPUT] pred_missing_horizons_filled={missing_filled}")
         data = data.merge(pred_df[["Date"] + pred_cols], on="Date", how="left")
 
         if pred_time_df is not None:
@@ -266,7 +357,7 @@ class DPrimeRLService:
                     sub = pred_time_df[["Date", col]].rename(columns={col: f"Pred_Close_t_plus_{h:02d}"})
                     data = data.drop(columns=[f"Pred_Close_t_plus_{h:02d}"], errors="ignore").merge(sub, on="Date", how="left")
             if pred_time_src:
-                pred_src = pred_time_src + "|" + pred_src
+                pred_meta["pred_source_selected"] = pred_time_src + "|" + str(pred_meta.get("pred_source_selected", ""))
 
         data = data.merge(cluster_daily[["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"]], on="Date", how="left")
         data["cluster_id_raw20"] = pd.to_numeric(data.get("cluster_id_raw20"), errors="coerce").fillna(0).astype(int)
@@ -286,7 +377,16 @@ class DPrimeRLService:
         mix_cols = bnf_cols + ["RSI", "MACD_hist", "macd_hist_delta", "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20"]
         all_cols = [c for c in num_cols if c not in {"Open", "High", "Low", "Close", "Volume", "Close_anchor"}]
 
-        results: Dict[str, object] = {"mode": cfg.mode, "symbol": cfg.symbol, "profiles": {}, "output_dir": str(stepd_dir)}
+        results: Dict[str, object] = {
+            "mode": cfg.mode,
+            "symbol": cfg.symbol,
+            "profiles": {},
+            "output_dir": str(stepd_dir),
+            "pred_source_selected": pred_meta.get("pred_source_selected", ""),
+            "pred_source_mode": pred_meta.get("pred_source_mode", ""),
+            "pred_available_horizons": available,
+            "pred_missing_horizons_filled": missing_filled,
+        }
         date_list = data["Date"].tolist()
         idx_train = [i for i, d in enumerate(date_list) if tr_s <= d <= tr_e]
         idx_test = [i for i, d in enumerate(date_list) if te_s <= d <= te_e]
@@ -364,7 +464,10 @@ class DPrimeRLService:
                         {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
                         {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
                         {"key": "past_feature_channels", "value": "|".join(past_cols)},
-                        {"key": "pred_source_file", "value": pred_src},
+                        {"key": "pred_source_file", "value": pred_meta.get("pred_source_selected", "")},
+                        {"key": "pred_source_mode", "value": pred_meta.get("pred_source_mode", "")},
+                        {"key": "pred_available_horizons", "value": "|".join(str(x) for x in available)},
+                        {"key": "pred_missing_horizons_filled", "value": json.dumps(missing_filled, ensure_ascii=False)},
                         {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
                         {"key": "dprime_cluster_status", "value": "placeholder_or_live"},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
@@ -417,52 +520,56 @@ class StepDPrimeService:
         stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
         stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
         stepd_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with timing.stage("stepDPrime.load_inputs"):
+                split = _read_split_summary(stepa_dir, cfg.symbol)
+                pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+                tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+                pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
 
-        with timing.stage("stepDPrime.load_inputs"):
-            split = _read_split_summary(stepa_dir, cfg.symbol)
-            pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
-            tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
-            pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+            prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+            tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+            periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
-        prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-        periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+            with timing.stage("stepDPrime.build_features"):
+                base = _compute_base_features(prices, tech)
+                all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+                all_df["Close_anchor"] = _safe(prices, "Close")
 
-        with timing.stage("stepDPrime.build_features"):
-            base = _compute_base_features(prices, tech)
-            all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
-            all_df["Close_anchor"] = _safe(prices, "Close")
-
-        cluster_service = DPrimeClusterService()
-        cluster_runtime_cfg = ClusterRuntimeConfig(
-            symbol=cfg.symbol,
-            mode=cfg.mode,
-            cluster_backend=cfg.cluster_backend,
-            cluster_raw_k=cfg.cluster_raw_k,
-            cluster_k_eff_min=cfg.cluster_k_eff_min,
-            cluster_small_share_threshold=cfg.cluster_small_share_threshold,
-            cluster_small_mean_run_threshold=cfg.cluster_small_mean_run_threshold,
-            cluster_short_window_days=cfg.cluster_short_window_days,
-            cluster_mid_window_weeks=cfg.cluster_mid_window_weeks,
-            cluster_long_window_months=cfg.cluster_long_window_months,
-            cluster_enable_8y_context=cfg.cluster_enable_8y_context,
-            cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
-        )
-        with timing.stage("stepDPrimeCluster.run"):
-            cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
-
-        rl_service = DPrimeRLService()
-        with timing.stage("stepDPrimeRL.run"):
-            rl_out = rl_service.run(
-                cfg,
-                timing=timing,
-                data=all_df.copy(),
-                split=split,
-                stepb_dir=stepb_dir,
-                stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
-                stepd_dir=stepd_dir,
-                cluster_daily=cluster_out["daily"],
+            cluster_service = DPrimeClusterService()
+            cluster_runtime_cfg = ClusterRuntimeConfig(
+                symbol=cfg.symbol,
+                mode=cfg.mode,
+                cluster_backend=cfg.cluster_backend,
+                cluster_raw_k=cfg.cluster_raw_k,
+                cluster_k_eff_min=cfg.cluster_k_eff_min,
+                cluster_small_share_threshold=cfg.cluster_small_share_threshold,
+                cluster_small_mean_run_threshold=cfg.cluster_small_mean_run_threshold,
+                cluster_short_window_days=cfg.cluster_short_window_days,
+                cluster_mid_window_weeks=cfg.cluster_mid_window_weeks,
+                cluster_long_window_months=cfg.cluster_long_window_months,
+                cluster_enable_8y_context=cfg.cluster_enable_8y_context,
+                cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
             )
+            with timing.stage("stepDPrimeCluster.run"):
+                cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
+
+            rl_service = DPrimeRLService()
+            with timing.stage("stepDPrimeRL.run"):
+                rl_out = rl_service.run(
+                    cfg,
+                    timing=timing,
+                    data=all_df.copy(),
+                    split=split,
+                    stepb_dir=stepb_dir,
+                    stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
+                    stepd_dir=stepd_dir,
+                    cluster_daily=cluster_out["daily"],
+                )
+        except Exception:
+            tb_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
+            tb_path.write_text(traceback.format_exc(), encoding="utf-8")
+            raise
 
         rl_out["dprime_cluster"] = cluster_out.get("summary", {})
         rl_out["stepDPrime_internal_flow"] = [
@@ -482,7 +589,19 @@ class StepDPrimeService:
         ]
 
         (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(rl_out, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        required_files = [
+            stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv",
+            stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json",
+            stepd_dir / f"stepDprime_state_test_dprime_all_features_h01_{cfg.symbol}.csv",
+            stepd_dir / f"stepDprime_summary_{cfg.symbol}.json",
+        ]
+        missing = [str(p) for p in required_files if not p.exists()]
+        emb_exists = bool(list((stepd_dir / "embeddings").glob(f"stepDprime_*_{cfg.symbol}_embeddings_all.csv")))
+        if not emb_exists:
+            missing.append(str(stepd_dir / "embeddings" / f"stepDprime_*_{cfg.symbol}_embeddings_all.csv"))
+        if missing:
+            raise FileNotFoundError(f"StepDPrime post-check missing artifacts: {missing}")
         print("[StepDPrime] DPrimeCluster complete (cluster_id_raw20/cluster_id_stable/rare_flag_raw20)")
         print("[StepDPrime] DPrimeRL complete (RL state with cluster integration)")
         return rl_out
-
