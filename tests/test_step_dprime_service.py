@@ -131,6 +131,8 @@ def test_stepdprime_service_writes_traceback_log_on_failure(tmp_path: Path, monk
     tb = stepd / f"stepDprime_traceback_{symbol}.log"
     assert tb.exists()
     assert "RuntimeError: boom" in tb.read_text(encoding="utf-8")
+    fs = stepd / f"stepDprime_failure_summary_{symbol}.json"
+    assert fs.exists()
 
 
 def test_stepdprime_service_postcheck_validates_required_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -176,3 +178,85 @@ def test_stepdprime_service_postcheck_validates_required_outputs(tmp_path: Path,
 
     with pytest.raises(FileNotFoundError):
         sds.StepDPrimeService().run(sds.StepDPrimeConfig(symbol=symbol, output_root=str(out_root), mode=mode))
+
+
+def test_stepdprime_service_failure_prints_traceback_markers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    mode = "sim"
+    symbol = "SOXL"
+    stepa = tmp_path / "output" / "stepA" / mode
+    stepa.mkdir(parents=True)
+
+    pd.DataFrame({"key": ["train_start", "train_end", "test_start", "test_end"], "value": ["2024-01-01", "2024-01-10", "2024-01-11", "2024-01-15"]}).to_csv(
+        stepa / f"stepA_split_summary_{symbol}.csv", index=False
+    )
+    for stem in ("stepA_prices", "stepA_tech", "stepA_periodic"):
+        pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=15, freq="D"), "Open": 1, "High": 1, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_train_{symbol}.csv", index=False
+        )
+        pd.DataFrame({"Date": pd.date_range("2024-01-16", periods=5, freq="D"), "Open": 1, "High": 1, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_test_{symbol}.csv", index=False
+        )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom-marker")
+
+    monkeypatch.setattr(sds.DPrimeClusterService, "run", _boom)
+
+    with pytest.raises(RuntimeError):
+        sds.StepDPrimeService().run(
+            sds.StepDPrimeConfig(symbol=symbol, output_root=str(tmp_path / "output"), mode=mode)
+        )
+
+    captured = capsys.readouterr()
+    assert "[STEPDPRIME_FAIL_TRACEBACK_BEGIN]" in captured.out
+    assert "RuntimeError: boom-marker" in captured.out
+    assert "[STEPDPRIME_FAIL_TRACEBACK_END]" in captured.out
+
+
+def test_dprime_rl_duplicate_dates_are_handled(tmp_path: Path):
+    n = 45
+    dates = pd.date_range("2024-01-01", periods=n, freq="D")
+    data = pd.DataFrame({"Date": list(dates) + [dates[-1]], "Close_anchor": list(np.linspace(100, 130, n)) + [130.0], "gap_atr": 0.1, "ATR_norm": 0.2})
+    for c in [
+        "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
+        "Gap", "vol_log_ratio_20", "vol_chg", "dev_z_25", "bnf_score", "RSI", "MACD_hist", "macd_hist_delta",
+        "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20",
+    ]:
+        data[c] = 0.01
+
+    cluster_daily = pd.DataFrame({"Date": list(dates) + [dates[-1]], "cluster_id_raw20": 1, "cluster_id_stable": 1, "rare_flag_raw20": 0})
+
+    stepb = tmp_path / "stepB"
+    stepc = tmp_path / "stepC"
+    stepd = tmp_path / "stepD"
+    stepb.mkdir(); stepc.mkdir(); stepd.mkdir()
+    pd.DataFrame(
+        {
+            "Date": [d.strftime("%Y-%m-%d") for d in dates],
+            "Pred_Close_MAMBA_h01": np.linspace(100, 130, n),
+            "Pred_Close_MAMBA_h05": np.linspace(101, 131, n),
+        }
+    ).to_csv(stepb / "stepB_pred_time_all_SOXL.csv", index=False)
+
+    cfg = sds.StepDPrimeConfig(
+        symbol="SOXL",
+        pred_k=5,
+        l_past=3,
+        z_past_dim=2,
+        z_pred_dim=2,
+        profiles=("dprime_all_features_h03",),
+    )
+    split = {"train_start": "2024-01-01", "train_end": "2024-01-25", "test_start": "2024-01-26", "test_end": "2024-02-14"}
+
+    out = sds.DPrimeRLService().run(
+        cfg,
+        timing=sds.TimingLogger.disabled(),
+        data=data,
+        split=split,
+        stepb_dir=stepb,
+        stepc_dir=stepc,
+        stepd_dir=stepd,
+        cluster_daily=cluster_daily,
+    )
+    assert out["profiles"]
+    assert (stepd / "stepDprime_state_test_dprime_all_features_h03_SOXL.csv").exists()

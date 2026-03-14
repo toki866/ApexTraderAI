@@ -40,6 +40,7 @@ class ClusterFeatureBuilder:
             per = per.reset_index().rename(columns={per.index.name or "index": "Date"})
         per["Date"] = pd.to_datetime(per["Date"], errors="coerce").dt.normalize()
         cdf = cdf.merge(per, on="Date", how="left", suffixes=("", "_periodic"))
+        cdf = cdf.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
         base = pd.to_numeric(cdf.get("bnf_score", 0.0), errors="coerce").fillna(0.0)
         cdf["cluster_short_signal"] = base.rolling(max(2, int(cfg.cluster_short_window_days)), min_periods=1).mean()
@@ -205,6 +206,8 @@ class DPrimeClusterService:
         artifacts = ClusterArtifactManager(stepd_dir=stepd_dir, mode=cfg.mode, symbol=cfg.symbol)
 
         features = builder.build(data, periodic, cfg)
+        print(f"[DPrimeCluster] feature_rows={len(features)}")
+        print(f"[DPrimeCluster] unique_dates={int(features['Date'].nunique()) if 'Date' in features.columns else 0}")
         print(f"[DPrimeCluster] raw20 training start k_raw={cfg.cluster_raw_k}")
         monthly = trainer.train(features, cfg)
         print(
@@ -215,6 +218,8 @@ class DPrimeClusterService:
         print(f"[DPrimeCluster] stable training end k_eff={monthly.get('k_eff')}")
 
         paths = artifacts.write(daily=daily, monthly=monthly, cfg=cfg)
+        print(f"[DPrimeCluster] assignments_written={paths.get('legacy_daily_assign', paths.get('assignments', ''))}")
+        print(f"[DPrimeCluster] summary_written={paths.get('legacy_summary', paths.get('summary', ''))}")
         print(
             "[DPrimeCluster] end "
             f"cluster_id_raw20={int(daily['cluster_id_raw20'].iloc[-1]) if len(daily) else 0} "

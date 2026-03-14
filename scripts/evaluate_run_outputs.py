@@ -1095,6 +1095,8 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
     cluster_embeddings_patterns: list[str] = []
     cluster_state_patterns: list[str] = []
     cluster_input_patterns: list[str] = []
+    traceback_patterns: list[str] = []
+    failure_summary_patterns: list[str] = []
     for base in bases:
         rl_state_patterns.extend(
             [
@@ -1125,6 +1127,10 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
                 os.path.join(base, "*cluster_features*.csv"),
             ]
         )
+        traceback_patterns.append(os.path.join(base, f"stepDprime_traceback_{symbol}.log"))
+        traceback_patterns.append(os.path.join(base, "stepDprime_traceback_*.log"))
+        failure_summary_patterns.append(os.path.join(base, f"stepDprime_failure_summary_{symbol}.json"))
+        failure_summary_patterns.append(os.path.join(base, "stepDprime_failure_summary_*.json"))
 
     def _collect(patterns: list[str]) -> list[str]:
         files: list[str] = []
@@ -1136,6 +1142,8 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
     cluster_embeddings_files = _collect(cluster_embeddings_patterns)
     cluster_state_files = _collect(cluster_state_patterns)
     cluster_input_files = _collect(cluster_input_patterns)
+    traceback_files = _collect(traceback_patterns)
+    failure_summary_files = _collect(failure_summary_patterns)
 
     rl_profiles = {
         m.group(1)
@@ -1148,6 +1156,14 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
     cluster_status = "OK" if (cluster_embeddings_files or cluster_state_files or cluster_input_files) else "WARN"
 
     rl_summary = "RL state files found under stepDprime/sim" if rl_state_files else "missing RL state files"
+    fail_reason = ""
+    if failure_summary_files:
+        try:
+            with open(failure_summary_files[0], 'r', encoding='utf-8') as fh:
+                payload = json.load(fh)
+            fail_reason = str(payload.get('exception_repr') or payload.get('exception_type') or '')
+        except Exception:
+            fail_reason = "failure_summary_parse_error"
     cluster_parts = []
     if cluster_embeddings_files:
         cluster_parts.append("embeddings found")
@@ -1164,9 +1180,13 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
     print(f"[DPRIME_DIAG] cluster_glob={cluster_embeddings_patterns[0] if cluster_embeddings_patterns else 'NA'}")
     print(f"[DPRIME_DIAG] final_cluster_status={cluster_status}")
     print(f"[DPRIME_DIAG] final_rl_status={rl_status}")
+    print(f"[DPRIME_DIAG] traceback_count={len(traceback_files)}")
+    print(f"[DPRIME_DIAG] failure_summary_count={len(failure_summary_files)}")
 
     status = "OK" if rl_status == "OK" and cluster_status == "OK" else "WARN"
     summary = f"DPrimeCluster={cluster_status} ({cluster_summary}); DPrimeRL={rl_status} ({rl_summary})"
+    if fail_reason:
+        summary += f"; failure_reason={fail_reason}"
 
     return {
         "status": status,
@@ -1192,6 +1212,13 @@ def _collect_dprime_artifacts(output_root: str, mode: str, symbol: str) -> dict[
             "searched": rl_state_patterns + cluster_embeddings_patterns + cluster_state_patterns + cluster_input_patterns,
             "rl_state_glob": rl_state_patterns,
             "cluster_glob": cluster_embeddings_patterns + cluster_state_patterns + cluster_input_patterns,
+            "traceback_count": len(traceback_files),
+            "traceback_files": [os.path.basename(x) for x in traceback_files],
+            "failure_summary_count": len(failure_summary_files),
+            "failure_summary_files": [os.path.basename(x) for x in failure_summary_files],
+            "failure_reason": fail_reason,
+            "traceback_glob": traceback_patterns,
+            "failure_summary_glob": failure_summary_patterns,
         },
     }
 
@@ -1704,6 +1731,11 @@ def render_summary(report: dict[str, Any]) -> str:
     lines.append(
         f"  rl_state_count={_fmt(ddet.get('rl_state_count'))} "
         f"rl_profiles_count={_fmt(ddet.get('rl_profiles_count'))}"
+    )
+    lines.append(
+        f"  traceback_count={_fmt(ddet.get('traceback_count'))} "
+        f"failure_summary_count={_fmt(ddet.get('failure_summary_count'))} "
+        f"failure_reason={_fmt(ddet.get('failure_reason'))}"
     )
 
     stepe = report.get("stepE", {})
