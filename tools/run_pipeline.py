@@ -1711,6 +1711,27 @@ def _timing_settings_from_config(app_config: Any) -> tuple[bool, bool]:
     return enabled, clear
 
 
+def _determine_run_type(*, steps: Sequence[str], reuse_output: bool, force_rebuild: bool, resolved_mode: str, retrain: str) -> str:
+    steps_upper = tuple(str(s).upper() for s in steps)
+    if str(resolved_mode).lower() == "live":
+        return "live_retrain_on" if str(retrain).lower() == "on" else "live_retrain_off"
+    if force_rebuild:
+        return "full_rebuild"
+    if not reuse_output:
+        return "full_rebuild"
+    if steps_upper == ("DPRIME", "E", "F"):
+        return "dprime_to_F"
+    if steps_upper == ("F",):
+        return "branch_only"
+    if "A" not in steps_upper:
+        return "reuse_up_to_A"
+    if "B" not in steps_upper:
+        return "reuse_up_to_B"
+    if "C" not in steps_upper:
+        return "reuse_up_to_C"
+    return "full_rebuild"
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
@@ -1995,6 +2016,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     timing_enabled = bool(int(args.timing)) if args.timing is not None else cfg_timing_enabled
     run_id = args.run_id or _auto_run_id()
     branch_id = args.branch_id or _auto_branch_id(steps, args.stepe_agents)
+    stepf_cfg_for_timing = app_config.get("stepF") if isinstance(app_config, dict) else getattr(app_config, "stepF", None)
+    stepf_retrain = str(getattr(stepf_cfg_for_timing, "retrain", "off") or "off")
+    run_type = _determine_run_type(
+        steps=steps,
+        reuse_output=reuse_output,
+        force_rebuild=force_rebuild,
+        resolved_mode=resolved_mode,
+        retrain=stepf_retrain,
+    )
     timing = TimingLogger(
         output_root=resolved_output_root,
         mode=resolved_mode,
@@ -2003,6 +2033,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         execution_mode=str(args.execution_mode or "sequential"),
         enabled=timing_enabled,
         clear=(bool(int(args.clear_timing)) if args.clear_timing is not None else cfg_timing_clear) and timing_enabled,
+        run_type=run_type,
+        symbol=symbol,
     )
     _set_timing_logger(app_config, timing)
     print(
@@ -2267,6 +2299,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("A"):
                     print(f"[StepA] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("A", "reuse")
+                    timing.mark_step_reused("A")
+                    timing.emit_instant(stage="stepA.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("A", 0.0)
                     _emit_step_status("A", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2445,6 +2479,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("B"):
                     print(f"[StepB] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("B", "reuse")
+                    timing.mark_step_reused("B")
+                    timing.emit_instant(stage="stepB.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("B", 0.0)
                     _emit_step_status("B", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2510,6 +2546,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("C"):
                     print(f"[StepC] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("C", "reuse")
+                    timing.mark_step_reused("C")
+                    timing.emit_instant(stage="stepC.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("C", 0.0)
                     _emit_step_status("C", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2542,6 +2580,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if _can_reuse_step("DPRIME"):
                     print(f"[StepDPrime] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("DPRIME", "reuse")
+                    timing.mark_step_reused("DPRIME")
+                    timing.emit_instant(stage="stepDPrime.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("DPRIME", 0.0)
                     _emit_step_status("DPRIME", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2652,6 +2692,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 raise RuntimeError("StepE partial completion; rerun will resume pending agents")
                             print(f"[StepE] status=reuse all {len(_all_agents)} agents complete signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                             _mark_step("E", "complete")
+                            timing.mark_step_reused("E")
+                            timing.emit_instant(stage="stepE.total", status="skipped", meta={"skipped": True})
                             _run_manifest.mark_step_elapsed("E", 0.0)
                             _run_manifest.mark_step_audit("E", "PASS")
                             _emit_step_status("E", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)
@@ -2741,6 +2783,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if step == "F" and _can_reuse_step("F"):
                     print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("F", "reuse")
+                    timing.mark_step_reused("F")
+                    timing.emit_instant(stage="stepF.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
                         _run_manifest.mark_step_elapsed("F", 0.0)
                     _emit_step_status("F", status="reuse", started_at=time.time(), ended_at=time.time(), validated=True)

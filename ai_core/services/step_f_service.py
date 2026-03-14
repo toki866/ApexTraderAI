@@ -269,7 +269,7 @@ class StepFService:
             primary_result: Optional[StepFResult] = None
             mode_records: List[StepFModeRunRecord] = []
             for reward_mode in reward_modes:
-                with timing.stage("stepF.reward_mode.total", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "stage_group": "reward_mode"}):
+                with timing.stage("stepF.reward_mode.total", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "stage_group": "reward_mode", "agent_kind": "reward_mode"}):
                     mode_cfg = deepcopy(cfg)
                     mode_cfg.reward_mode = reward_mode
                     persist_primary_outputs = primary_result is None
@@ -596,7 +596,7 @@ class StepFService:
                 phase2 = pd.read_csv(source_p)
                 phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
             else:
-                with timing.stage("stepF.phase2"):
+                with timing.stage("stepF.phase2", meta={"fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False)), "regime_id": "phase2", "cluster_id_stable": "phase2"}):
                     with warnings.catch_warnings():
                         warnings.filterwarnings("ignore", category=PerformanceWarning)
                         phase2 = self._build_phase2_state(
@@ -642,7 +642,7 @@ class StepFService:
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
 
-            with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode)}) :
+            with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}) :
                 daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
 
             if data_cutoff:
@@ -656,7 +656,7 @@ class StepFService:
             eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
-            with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode)}):
+            with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 if persist_primary_outputs:
                     daily.to_csv(log_router_path, index=False)
