@@ -395,7 +395,7 @@ class DPrimeRLService:
 
         with timing.stage("stepDPrimeRL.total"):
             for profile in cfg.profiles:
-                with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile), meta={"profile": str(profile), "stage_group": "rl_profile"}):
+                with timing.stage("stepDPrimeRL.profile.loop", agent_id=str(profile), meta={"profile": str(profile), "stage_group": "rl_profile", "agent_kind": "profile", "profile_name": str(profile)}):
                     fam = _infer_family(profile)
                     pred_type = _infer_pred_type(profile)
                     past_cols = all_cols if fam == "all_features" else (mix_cols if fam == "mix" else bnf_cols)
@@ -403,7 +403,7 @@ class DPrimeRLService:
 
                     pred_steps = [1] if pred_type == "h01" else ([1, 5, 10, 20] if pred_type == "h02" else list(range(1, cfg.pred_k + 1)))
 
-                    with timing.stage("stepDPrimeRL.profile.state_build", agent_id=str(profile), meta={"profile": str(profile)}):
+                    with timing.stage("stepDPrimeRL.profile.state_build", agent_id=str(profile), meta={"profile": str(profile), "agent_kind": "profile", "profile_name": str(profile)}):
                         pass
                     pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
 

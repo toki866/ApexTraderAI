@@ -47,3 +47,7 @@ stepF:
 timing:
   enable: true
   clear_on_run_start: true
+
+  live_start_budget:
+    buffer_floor_sec: 60
+    buffer_ratio: 0.2

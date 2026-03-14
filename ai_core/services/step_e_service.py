@@ -202,7 +202,7 @@ class StepEService:
 
     def _run_one(self, cfg: StepEConfig, date_range, symbol: str, mode: str) -> None:
         timing = self._timing()
-        with timing.stage("stepE.agent.total", agent_id=str(cfg.agent), meta={"stage_group": "stepE_agent", "mode": str(mode)}):
+        with timing.stage("stepE.agent.total", agent_id=str(cfg.agent), meta={"stage_group": "stepE_agent", "mode": str(mode), "agent_kind": "expert", "expert_name": str(cfg.agent)}):
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
             out_dir = out_root / "stepE" / mode
             model_dir = out_dir / "models"
@@ -216,7 +216,7 @@ class StepEService:
             print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed} device={cfg.device}")
 
         # Load & merge inputs (train+test)
-        with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent)):
+        with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
             df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
 
         # Split bounds
@@ -255,7 +255,7 @@ class StepEService:
                     )
 
         # Observation columns
-        with timing.stage("stepE.agent.select_obs", agent_id=str(cfg.agent)):
+        with timing.stage("stepE.agent.select_obs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
             obs_cols = self._select_obs_columns(cfg.obs_profile, df_all=df_all)
         if cfg.use_stepd_prime:
             obs_cols = self._prepend_dprime_cols(df_all=df_all) + [c for c in obs_cols if not c.startswith("dprime_")]
@@ -289,7 +289,7 @@ class StepEService:
             raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}")
         if policy_kind == "ppo":
             try:
-                with timing.stage("stepE.agent.train", agent_id=str(cfg.agent)):
+                with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
                     self._train_and_eval_ppo(
                     cfg=cfg,
                     symbol=symbol,
@@ -314,7 +314,7 @@ class StepEService:
                     rows_train=len(df_train),
                         rows_test=len(df_test),
                     )
-                timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo"})
+                timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)})
                 return
             except RuntimeError as e:
                 msg = str(e)
@@ -392,7 +392,7 @@ class StepEService:
             cost = torch.stack(cost_list, dim=0)
             return reward_next, pos, cost, gross
 
-        with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"policy": "diffpg"}):
+        with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"policy": "diffpg", "agent_kind": "expert", "expert_name": str(cfg.agent)}):
             for ep in range(1, int(cfg.epochs) + 1):
                 net.train()
                 opt.zero_grad()
@@ -479,8 +479,8 @@ class StepEService:
             df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
 
         eq_path = out_dir / f"stepE_equity_{cfg.agent}_{symbol}.csv"
-        with timing.stage("stepE.agent.eval", agent_id=str(cfg.agent), meta={"stage_group": "eval"}):
-            with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent)):
+        with timing.stage("stepE.agent.eval", agent_id=str(cfg.agent), meta={"stage_group": "eval", "agent_kind": "expert", "expert_name": str(cfg.agent)}):
+            with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
                 df_eq.to_csv(eq_path, index=False)
 
                 log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
