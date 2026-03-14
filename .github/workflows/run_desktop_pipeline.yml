@@ -1760,7 +1760,29 @@ jobs:
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
           catch { Add-Content $rp "[NG] step_dprime exception=$_" }
           finally { Write-Host "[StepDPrime] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_dprime rc=$rc"; Write-Error "StepDPrime failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) {
+            Add-Content $rp "[NG] step_dprime rc=$rc"
+            $stepDprimeDir = Join-Path (Join-Path $outRoot 'stepDprime') $env:MODE
+            if (Test-Path $stepDprimeDir) {
+              $tracebacks = Get-ChildItem -Path $stepDprimeDir -Filter ("stepDprime_traceback_{0}.log" -f $sym1) -ErrorAction SilentlyContinue
+              if (-not $tracebacks) {
+                $tracebacks = Get-ChildItem -Path $stepDprimeDir -Filter 'stepDprime_traceback_*.log' -ErrorAction SilentlyContinue
+              }
+              foreach ($tb in $tracebacks) {
+                Add-Content $rp ("[STEPDPRIME_FAIL] traceback_path={0}" -f $tb.FullName)
+                Add-Content $rp '[STEPDPRIME_FAIL_TRACEBACK_BEGIN]'
+                Get-Content -Path $tb.FullName | ForEach-Object { Add-Content $rp $_ }
+                Add-Content $rp '[STEPDPRIME_FAIL_TRACEBACK_END]'
+              }
+              $failureSummary = Join-Path $stepDprimeDir ("stepDprime_failure_summary_{0}.json" -f $sym1)
+              if (Test-Path $failureSummary) {
+                Add-Content $rp ("[STEPDPRIME_FAIL] failure_summary_path={0}" -f $failureSummary)
+                Get-Content -Path $failureSummary | ForEach-Object { Add-Content $rp $_ }
+              }
+            }
+            Write-Error "StepDPrime failed rc=$rc"
+            exit $rc
+          }
           Add-Content $rp '[OK] step_dprime'
 
       - name: StepE
@@ -5521,7 +5543,29 @@ jobs:
           try   { wsl.exe -d $env:WSL_DISTRO -- bash -c $c; $rc = $LASTEXITCODE }
           catch { Add-Content $rp "[NG] step_dprime exception=$_" }
           finally { Write-Host "[StepDPrime] rc=$rc" }
-          if ($rc -ne 0) { Add-Content $rp "[NG] step_dprime rc=$rc"; Write-Error "StepDPrime failed rc=$rc"; exit $rc }
+          if ($rc -ne 0) {
+            Add-Content $rp "[NG] step_dprime rc=$rc"
+            $stepDprimeDir = Join-Path (Join-Path $outRoot 'stepDprime') $env:MODE
+            if (Test-Path $stepDprimeDir) {
+              $tracebacks = Get-ChildItem -Path $stepDprimeDir -Filter ("stepDprime_traceback_{0}.log" -f $sym1) -ErrorAction SilentlyContinue
+              if (-not $tracebacks) {
+                $tracebacks = Get-ChildItem -Path $stepDprimeDir -Filter 'stepDprime_traceback_*.log' -ErrorAction SilentlyContinue
+              }
+              foreach ($tb in $tracebacks) {
+                Add-Content $rp ("[STEPDPRIME_FAIL] traceback_path={0}" -f $tb.FullName)
+                Add-Content $rp '[STEPDPRIME_FAIL_TRACEBACK_BEGIN]'
+                Get-Content -Path $tb.FullName | ForEach-Object { Add-Content $rp $_ }
+                Add-Content $rp '[STEPDPRIME_FAIL_TRACEBACK_END]'
+              }
+              $failureSummary = Join-Path $stepDprimeDir ("stepDprime_failure_summary_{0}.json" -f $sym1)
+              if (Test-Path $failureSummary) {
+                Add-Content $rp ("[STEPDPRIME_FAIL] failure_summary_path={0}" -f $failureSummary)
+                Get-Content -Path $failureSummary | ForEach-Object { Add-Content $rp $_ }
+              }
+            }
+            Write-Error "StepDPrime failed rc=$rc"
+            exit $rc
+          }
           Add-Content $rp '[OK] step_dprime'
 
       - name: StepE

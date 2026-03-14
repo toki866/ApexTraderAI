@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -99,6 +100,22 @@ def _read_pair(base: Path, stem: str, symbol: str) -> Tuple[pd.DataFrame, pd.Dat
     for df in (tr, te):
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
     return tr, te
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
 
 
 def _safe(df: pd.DataFrame, c: str, default: float = 0.0) -> pd.Series:
@@ -435,7 +452,19 @@ class DPrimeRLService:
                     Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
                     Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
 
-                    ref = data.set_index("Date")
+                    ref = (
+                        data.sort_values("Date")
+                        .dropna(subset=["Date"])
+                        .groupby("Date", as_index=True)
+                        .last()
+                    )
+
+                    def _scalar(date_value: pd.Timestamp, column: str, default: float = 0.0) -> float:
+                        ts = pd.to_datetime(date_value)
+                        if ts not in ref.index or column not in ref.columns:
+                            return float(default)
+                        val = pd.to_numeric(pd.Series([ref.at[ts, column]]), errors="coerce").iloc[0]
+                        return float(0.0 if pd.isna(val) else val)
 
                     def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
                         out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
@@ -443,11 +472,11 @@ class DPrimeRLService:
                             out[f"zp_{j:03d}"] = zp[:, j]
                         for j in range(zf.shape[1]):
                             out[f"zf_{j:03d}"] = zf[:, j]
-                        out["gap_atr"] = [float(ref.loc[pd.to_datetime(d), "gap_atr"]) for d in pd.to_datetime(ds)]
-                        out["ATR_norm"] = [float(ref.loc[pd.to_datetime(d), "ATR_norm"]) for d in pd.to_datetime(ds)]
-                        out["cluster_id_raw20"] = [int(ref.loc[pd.to_datetime(d), "cluster_id_raw20"]) for d in pd.to_datetime(ds)]
-                        out["cluster_id_stable"] = [int(ref.loc[pd.to_datetime(d), "cluster_id_stable"]) for d in pd.to_datetime(ds)]
-                        out["rare_flag_raw20"] = [int(ref.loc[pd.to_datetime(d), "rare_flag_raw20"]) for d in pd.to_datetime(ds)]
+                        out["gap_atr"] = [_scalar(d, "gap_atr", 0.0) for d in pd.to_datetime(ds)]
+                        out["ATR_norm"] = [_scalar(d, "ATR_norm", 0.0) for d in pd.to_datetime(ds)]
+                        out["cluster_id_raw20"] = [int(round(_scalar(d, "cluster_id_raw20", 0.0))) for d in pd.to_datetime(ds)]
+                        out["cluster_id_stable"] = [int(round(_scalar(d, "cluster_id_stable", 0.0))) for d in pd.to_datetime(ds)]
+                        out["rare_flag_raw20"] = [int(round(_scalar(d, "rare_flag_raw20", 0.0))) for d in pd.to_datetime(ds)]
                         out["pos_prev"] = 0.0
                         out["action_prev"] = 0.0
                         out["time_in_trade"] = 0.0
@@ -523,9 +552,16 @@ class StepDPrimeService:
         stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
         stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
         stepd_dir.mkdir(parents=True, exist_ok=True)
+        stage_reached = "init"
+        pred_source_selected = ""
+        pred_source_mode = ""
+        pred_available_horizons: List[int] = []
+        cluster_stage_reached = "not_started"
+        rl_stage_reached = "not_started"
         try:
             with timing.stage("stepDPrime.total"):
                 with timing.stage("stepDPrime.load_inputs"):
+                    stage_reached = "load_inputs"
                     split = _read_split_summary(stepa_dir, cfg.symbol)
                     pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
                     tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
@@ -536,6 +572,7 @@ class StepDPrimeService:
                 periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
                 with timing.stage("stepDPrime.build_features"):
+                    stage_reached = "build_features"
                     base = _compute_base_features(prices, tech)
                     all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
                     all_df["Close_anchor"] = _safe(prices, "Close")
@@ -556,10 +593,15 @@ class StepDPrimeService:
                     cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
                 )
                 with timing.stage("stepDPrimeCluster.run"):
+                    stage_reached = "cluster_run"
+                    cluster_stage_reached = "cluster_run"
                     cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
+                    cluster_stage_reached = "cluster_write"
 
                 rl_service = DPrimeRLService()
                 with timing.stage("stepDPrimeRL.run"):
+                    stage_reached = "rl_pred_load"
+                    rl_stage_reached = "rl_pred_load"
                     rl_out = rl_service.run(
                         cfg,
                         timing=timing,
@@ -570,9 +612,34 @@ class StepDPrimeService:
                         stepd_dir=stepd_dir,
                         cluster_daily=cluster_out["daily"],
                     )
+                    rl_stage_reached = "rl_write_outputs"
+                    pred_source_selected = str(rl_out.get("pred_source_selected", ""))
+                    pred_source_mode = str(rl_out.get("pred_source_mode", ""))
+                    pred_available_horizons = [int(x) for x in rl_out.get("pred_available_horizons", [])]
         except Exception:
             tb_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
-            tb_path.write_text(traceback.format_exc(), encoding="utf-8")
+            tb_text = traceback.format_exc()
+            tb_path.write_text(tb_text, encoding="utf-8")
+            failure_summary = {
+                "exception_type": str(type(sys.exc_info()[1]).__name__) if sys.exc_info()[1] else "Exception",
+                "exception_repr": repr(sys.exc_info()[1]),
+                "traceback_path": str(tb_path),
+                "stepb_dir": str(stepb_dir),
+                "pred_source_selected": pred_source_selected,
+                "pred_source_mode": pred_source_mode,
+                "pred_available_horizons": pred_available_horizons,
+                "cluster_stage_reached": cluster_stage_reached,
+                "rl_stage_reached": rl_stage_reached,
+                "last_stage": stage_reached,
+            }
+            summary_path = stepd_dir / f"stepDprime_failure_summary_{cfg.symbol}.json"
+            summary_path.write_text(json.dumps(_json_safe(failure_summary), indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"[STEPDPRIME_FAIL] exception_repr={failure_summary['exception_repr']}")
+            print(f"[STEPDPRIME_FAIL] traceback_path={tb_path}")
+            print(f"[STEPDPRIME_FAIL] failure_summary_path={summary_path}")
+            print("[STEPDPRIME_FAIL_TRACEBACK_BEGIN]")
+            print(tb_text.rstrip())
+            print("[STEPDPRIME_FAIL_TRACEBACK_END]")
             raise
 
         rl_out["dprime_cluster"] = cluster_out.get("summary", {})
@@ -592,7 +659,11 @@ class StepDPrimeService:
             "Workflow/CLI compatibility is preserved with external step name DPRIME.",
         ]
 
-        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(rl_out, indent=2, ensure_ascii=False), encoding="utf-8")
+        stage_reached = "summary_write"
+        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(
+            json.dumps(_json_safe(rl_out), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
         required_files = [
             stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv",
@@ -604,6 +675,7 @@ class StepDPrimeService:
         emb_exists = bool(list((stepd_dir / "embeddings").glob(f"stepDprime_*_{cfg.symbol}_embeddings_all.csv")))
         if not emb_exists:
             missing.append(str(stepd_dir / "embeddings" / f"stepDprime_*_{cfg.symbol}_embeddings_all.csv"))
+        stage_reached = "post_check"
         if missing:
             raise FileNotFoundError(f"StepDPrime post-check missing artifacts: {missing}")
         print("[StepDPrime] DPrimeCluster complete (cluster_id_raw20/cluster_id_stable/rare_flag_raw20)")
