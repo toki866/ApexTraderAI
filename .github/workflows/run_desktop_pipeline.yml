@@ -124,6 +124,7 @@ permissions:
 
 jobs:
   run_sim:
+    timeout-minutes: 1440
     if: ${{ inputs.run_sim }}
     env:
       MODE: sim
@@ -3995,6 +3996,7 @@ jobs:
           exit 1
 
   run_live:
+    timeout-minutes: 1440
     if: ${{ inputs.run_live }}
     env:
       MODE: live
