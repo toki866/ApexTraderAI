@@ -1696,6 +1696,21 @@ def _get_timing_logger(app_config: Any) -> TimingLogger:
     return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
 
+def _cfg_value(cfg: Any, key: str, default: Any = None) -> Any:
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
+
+def _timing_settings_from_config(app_config: Any) -> tuple[bool, bool]:
+    raw = _cfg_value(app_config, "timing", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = bool(raw.get("enable", False))
+    clear = bool(raw.get("clear_on_run_start", False))
+    return enabled, clear
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
@@ -1738,11 +1753,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--fail-on-audit", type=int, default=0, choices=[0, 1], help="If 1, fail pipeline when leak audit reports FAIL.")
     ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
     ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
-    ap.add_argument("--timing", type=int, default=0, choices=[0, 1], help="Enable timing event logging.")
+    ap.add_argument("--timing", type=int, default=None, choices=[0, 1], help="Enable timing event logging.")
     ap.add_argument("--run-id", dest="run_id", default=None, help="Optional run identifier for timing logs.")
     ap.add_argument("--branch-id", dest="branch_id", default=None, help="Optional branch identifier for timing logs.")
     ap.add_argument("--execution-mode", dest="execution_mode", default="sequential", help="Execution mode label for timing logs.")
-    ap.add_argument("--clear-timing", type=int, default=0, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
+    ap.add_argument("--clear-timing", type=int, default=None, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default=None, help="Optional CSV subset of StepE agents to run.")
     ap.add_argument("--reuse-output", dest="reuse_output", type=int, default=0, choices=[0, 1],
                     help="If 1, reuse artifacts from prior runs with matching signature (skip complete steps).")
@@ -1976,7 +1991,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "return_code": _return_code,
         }
 
-    timing_enabled = bool(int(args.timing))
+    cfg_timing_enabled, cfg_timing_clear = _timing_settings_from_config(app_config)
+    timing_enabled = bool(int(args.timing)) if args.timing is not None else cfg_timing_enabled
     run_id = args.run_id or _auto_run_id()
     branch_id = args.branch_id or _auto_branch_id(steps, args.stepe_agents)
     timing = TimingLogger(
@@ -1986,7 +2002,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         branch_id=branch_id,
         execution_mode=str(args.execution_mode or "sequential"),
         enabled=timing_enabled,
-        clear=bool(int(args.clear_timing)) and timing_enabled,
+        clear=(bool(int(args.clear_timing)) if args.clear_timing is not None else cfg_timing_clear) and timing_enabled,
     )
     _set_timing_logger(app_config, timing)
     print(
@@ -2856,10 +2872,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _final_status = _run_manifest.step_status(_final_step)
             if _final_status not in ("complete", "reuse"):
                 raise RuntimeError(f"final step incomplete: step={_final_step} status={_final_status}")
+        timing.write_summaries()
+        timings_csv = Path(resolved_output_root) / "timings.csv"
+        timing_events = Path(resolved_output_root) / "timing" / resolved_mode / "timing_events.jsonl"
+        timing_summary_step = Path(resolved_output_root) / "timing" / "summary_step_elapsed.csv"
+        timing_summary_agent = Path(resolved_output_root) / "timing" / "summary_agent_elapsed.csv"
+        print(f"[ONE_TAP][DIAG] timings_csv_exists={'yes' if timings_csv.exists() else 'no'}")
+        print(f"[ONE_TAP][DIAG] timing_events_exists={'yes' if timing_events.exists() else 'no'}")
+        print(f"[ONE_TAP][DIAG] timing_summary_step_exists={'yes' if timing_summary_step.exists() else 'no'}")
+        print(f"[ONE_TAP][DIAG] timing_summary_agent_exists={'yes' if timing_summary_agent.exists() else 'no'}")
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
         return 0
     except Exception as exc:
+        try:
+            timing.write_summaries()
+        except Exception:
+            pass
         print(f"[PIPELINE] status=failed steps={','.join(steps)} output_root={resolved_output_root}")
         print(f"[PIPELINE] exception={type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc()

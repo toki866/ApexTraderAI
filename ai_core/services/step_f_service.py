@@ -218,7 +218,9 @@ class StepFService:
         out_root: Optional[Path] = None
         stepf_dir: Optional[Path] = None
         try:
-            self._log_stepf_entry("[STEPF_ENTRY] begin")
+            timing = self._timing()
+            with timing.stage("stepF.total"):
+                self._log_stepf_entry("[STEPF_ENTRY] begin")
             pre_output_root = self._resolve_output_root(getattr(self.app_config, "output_root", "output"))
             pre_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
             if pre_mode in {"ops", "prod", "production", "real"}:
@@ -267,72 +269,73 @@ class StepFService:
             primary_result: Optional[StepFResult] = None
             mode_records: List[StepFModeRunRecord] = []
             for reward_mode in reward_modes:
-                mode_cfg = deepcopy(cfg)
-                mode_cfg.reward_mode = reward_mode
-                persist_primary_outputs = primary_result is None
-                self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
-                retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
-                mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
-                self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+                with timing.stage("stepF.reward_mode.total", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "stage_group": "reward_mode"}):
+                    mode_cfg = deepcopy(cfg)
+                    mode_cfg.reward_mode = reward_mode
+                    persist_primary_outputs = primary_result is None
+                    self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
+                    retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
+                    mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
 
-                try:
-                    self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
-                    mode_result = self._run_router(
-                        mode_cfg,
-                        date_range,
-                        symbol=symbol,
-                        mode=resolved_mode,
-                        persist_primary_outputs=persist_primary_outputs,
-                    )
-                    self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
-                    written_files = [
-                        f"stepF_equity_marl_{symbol}.csv",
-                        f"stepF_daily_log_router_{symbol}.csv",
-                        f"stepF_daily_log_marl_{symbol}.csv",
-                        f"stepF_summary_router_{symbol}.json",
-                    ]
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
-                    mode_records.append(
-                        StepFModeRunRecord(
-                            mode=reward_mode,
-                            status="SUCCESS",
-                            output_dir=str(mode_dir),
-                            step_e_root=str(step_e_root),
-                            step_e_daily_log_count=len(step_e_daily_logs),
-                            files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                    try:
+                        self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
+                        mode_result = self._run_router(
+                            mode_cfg,
+                            date_range,
+                            symbol=symbol,
+                            mode=resolved_mode,
+                            persist_primary_outputs=persist_primary_outputs,
                         )
-                    )
-                    if primary_result is None:
-                        primary_result = mode_result
-                except Exception as exc:
-                    mode_dir.mkdir(parents=True, exist_ok=True)
-                    tb_text = traceback.format_exc()
-                    traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
-                    traceback_path.write_text(tb_text, encoding="utf-8")
-                    files_present = [p.name for p in sorted(mode_dir.glob("*"))]
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
-                    print(tb_text)
-                    print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
-                    print(tb_text)
-                    print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
-                    mode_records.append(
-                        StepFModeRunRecord(
-                            mode=reward_mode,
-                            status="FAIL",
-                            output_dir=str(mode_dir),
-                            step_e_root=str(step_e_root),
-                            step_e_daily_log_count=len(step_e_daily_logs),
-                            traceback_path=str(traceback_path),
-                            error=f"{type(exc).__name__}: {exc}",
-                            files_present=files_present,
+                        self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
+                        written_files = [
+                            f"stepF_equity_marl_{symbol}.csv",
+                            f"stepF_daily_log_router_{symbol}.csv",
+                            f"stepF_daily_log_marl_{symbol}.csv",
+                            f"stepF_summary_router_{symbol}.json",
+                        ]
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
+                        mode_records.append(
+                            StepFModeRunRecord(
+                                mode=reward_mode,
+                                status="SUCCESS",
+                                output_dir=str(mode_dir),
+                                step_e_root=str(step_e_root),
+                                step_e_daily_log_count=len(step_e_daily_logs),
+                                files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                            )
                         )
-                    )
+                        if primary_result is None:
+                            primary_result = mode_result
+                    except Exception as exc:
+                        mode_dir.mkdir(parents=True, exist_ok=True)
+                        tb_text = traceback.format_exc()
+                        traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
+                        traceback_path.write_text(tb_text, encoding="utf-8")
+                        files_present = [p.name for p in sorted(mode_dir.glob("*"))]
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
+                        print(tb_text)
+                        print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
+                        print(tb_text)
+                        print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
+                        mode_records.append(
+                            StepFModeRunRecord(
+                                mode=reward_mode,
+                                status="FAIL",
+                                output_dir=str(mode_dir),
+                                step_e_root=str(step_e_root),
+                                step_e_daily_log_count=len(step_e_daily_logs),
+                                traceback_path=str(traceback_path),
+                                error=f"{type(exc).__name__}: {exc}",
+                                files_present=files_present,
+                            )
+                        )
 
             multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
             multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,7 +572,7 @@ class StepFService:
                 f"[STEPF_INPUT] symbol={symbol} mode={mode} input_mode={input_mode} "
                 f"output_root={out_root} agents={','.join(agents)}"
             )
-            with timing.stage("stepF.load_prices_logs"):
+            with timing.stage("stepF.load_inputs"):
                 prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
                 prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
                 logs_map = self._load_stepe_logs(selected_step_e_root, symbol, agents)
@@ -593,7 +596,7 @@ class StepFService:
                 phase2 = pd.read_csv(source_p)
                 phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
             else:
-                with timing.stage("stepF.build_phase2_state"):
+                with timing.stage("stepF.phase2"):
                     with warnings.catch_warnings():
                         warnings.filterwarnings("ignore", category=PerformanceWarning)
                         phase2 = self._build_phase2_state(
@@ -629,7 +632,7 @@ class StepFService:
             else:
                 with timing.stage("stepF.build_edge_table"):
                     edge_table = self._build_regime_edge_table(merged, agents, cfg)
-                with timing.stage("stepF.build_allowlist"):
+                with timing.stage("stepF.allowlist"):
                     allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
             edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
             edge_table.to_csv(edge_path, index=False)
@@ -639,7 +642,7 @@ class StepFService:
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
 
-            with timing.stage("stepF.router_sim"):
+            with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode)}) :
                 daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
 
             if data_cutoff:
@@ -653,7 +656,7 @@ class StepFService:
             eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
-            with timing.stage("stepF.persist_outputs"):
+            with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode)}):
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 if persist_primary_outputs:
                     daily.to_csv(log_router_path, index=False)

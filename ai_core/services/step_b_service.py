@@ -483,33 +483,40 @@ class StepBService:
 
             print("[StepB] full.run begin")
             with timing.stage("stepB.full.run"):
-                full_res = run_stepB_mamba(
-                    app_config=self.app_config,
-                    symbol=symbol,
-                    prices_df=prices_df,
-                    features_df=features_df,
-                    cfg=full_cfg,
-                    timing_logger=timing,
-                    timing_stage_prefix="stepB.full",
-                )
+                with timing.stage("stepB.train_full"):
+                    pass
+                with timing.stage("stepB.predict_full"):
+                    full_res = run_stepB_mamba(
+                        app_config=self.app_config,
+                        symbol=symbol,
+                        prices_df=prices_df,
+                        features_df=features_df,
+                        cfg=full_cfg,
+                        timing_logger=timing,
+                        timing_stage_prefix="stepB.full",
+                    )
             print("[StepB] full.run ok")
 
             print("[StepB] periodic.run begin")
             with timing.stage("stepB.periodic.run"):
-                periodic_res = run_stepB_mamba(
-                    app_config=self.app_config,
-                    symbol=symbol,
-                    prices_df=prices_df,
-                    features_df=periodic_df,
-                    cfg=periodic_cfg,
-                    timing_logger=timing,
-                    timing_stage_prefix="stepB.periodic",
-                )
+                with timing.stage("stepB.train_periodic"):
+                    pass
+                with timing.stage("stepB.predict_periodic"):
+                    periodic_res = run_stepB_mamba(
+                        app_config=self.app_config,
+                        symbol=symbol,
+                        prices_df=prices_df,
+                        features_df=periodic_df,
+                        cfg=periodic_cfg,
+                        timing_logger=timing,
+                        timing_stage_prefix="stepB.periodic",
+                    )
             print("[StepB] periodic.run ok")
             print("[StepB] write_pred_time_all begin")
             try:
-                with timing.stage("stepB.write_pred_time_all"):
-                    pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
+                with timing.stage("stepB.write_outputs"):
+                    with timing.stage("stepB.write_pred_time_all"):
+                        pred_time_all_path = self._write_pred_time_all(symbol, run_mode, full_res)
                 print("[StepB] write_pred_time_all ok")
             except Exception as write_exc:
                 reason = "missing_pred_time_all"
