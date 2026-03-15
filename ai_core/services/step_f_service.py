@@ -24,7 +24,7 @@ from pandas.errors import PerformanceWarning
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
-from ai_core.clusterers.ticc_clusterer import TICCClusterer
+from ai_core.clusterers.ticc_clusterer import TICCClusterer, TICCUnavailableError
 from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.utils.cluster_stats import compute_cluster_stats, derive_valid_and_rare_clusters
 from ai_core.utils.metrics_utils import compute_split_metrics
@@ -699,8 +699,13 @@ class StepFService:
                         "fallback_type": cluster_diag.get("fallback_type", ""),
                         "fallback_used": bool(cluster_diag.get("fallback_used", False)),
                         "fallback_reason": cluster_diag.get("fallback_reason", ""),
+                        "backend_resolved_name": cluster_diag.get("backend_resolved_name", ""),
+                        "backend_predict_methods": list(cluster_diag.get("backend_predict_methods", []) or []),
+                        "backend_methods": list(cluster_diag.get("backend_methods", []) or []),
+                        "diagnostic_stage": cluster_diag.get("diagnostic_stage", ""),
                         "raw20_num_clusters_requested": int(cluster_diag.get("raw20_num_clusters_requested", 0) or 0),
                         "raw20_regime_count": int(cluster_diag.get("raw20_regime_count", 0) or 0),
+                        "k_raw": int(cluster_diag.get("k_raw", cluster_diag.get("raw20_num_clusters_requested", 0)) or 0),
                         "k_valid": int(cluster_diag.get("k_valid", 0) or 0),
                         "k_eff": int(cluster_diag.get("k_eff", 0) or 0),
                         "k_eff_min": int(cluster_diag.get("k_eff_min", 0) or 0),
@@ -944,6 +949,9 @@ class StepFService:
         print(f"[STEPF_CLUSTER] fallback_type={diag['fallback_type']}")
         print(f"[STEPF_CLUSTER] fallback_triggered={str(diag['fallback_used']).lower()}")
         print(f"[STEPF_CLUSTER] fallback_reason={diag.get('fallback_reason', '')}")
+        print(f"[STEPF_CLUSTER] backend_resolved_name={diag.get('backend_resolved_name', '')}")
+        print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(diag.get('backend_predict_methods', []) or [])}")
+        print(f"[STEPF_CLUSTER] diagnostic_stage={diag.get('diagnostic_stage', '')}")
         print(f"[STEPF_CLUSTER] raw20_num_clusters_requested={diag.get('raw20_num_clusters_requested', 0)}")
         print(f"[STEPF_CLUSTER] raw20_regime_count={diag.get('raw20_regime_count', 0)}")
         print(f"[STEPF_CLUSTER] k_valid={diag.get('k_valid', 0)}")
@@ -965,83 +973,116 @@ class StepFService:
         fallback_reason = ""
         backend_resolved_name = ""
         backend_predict_methods: List[str] = []
+        backend_methods: List[str] = []
+        diagnostic_stage = "cluster_init"
         exception_type = ""
         exception_message = ""
         traceback_path = ""
 
         if requested in {"ticc_raw20_stable", "ticc"}:
-            try:
-                train_raw20, test_raw20, conf_raw20 = self._run_ticc_clusterer_with_k(
-                    cfg=cfg,
-                    x_train=x_train,
-                    x_test=x_test,
-                    num_clusters=int(getattr(cfg, "raw20_num_clusters", 20)),
-                )
-                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
-                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
-                raw_stats = compute_cluster_stats(train_raw20.astype(int).tolist())
-                valid_clusters, rare_clusters = derive_valid_and_rare_clusters(
-                    raw_stats,
-                    share_min=float(getattr(cfg, "cluster_share_min", 0.01)),
-                    mean_run_min=float(getattr(cfg, "cluster_mean_run_min", 3.0)),
-                )
-                k_valid = int(len(valid_clusters))
-                k_eff_min = int(getattr(cfg, "k_eff_min", 12))
-                k_eff = int(max(k_eff_min, k_valid))
-                train_stable, test_stable, conf_stable = self._run_ticc_clusterer_with_k(
-                    cfg=cfg,
-                    x_train=x_train,
-                    x_test=x_test,
-                    num_clusters=k_eff,
-                )
-                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
-                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
-                used = "raw20_stable"
-                main_source = str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower()
-                train_main = train_stable if main_source == "stable" else train_raw20
-                test_main = test_stable if main_source == "stable" else test_raw20
-                train_rare = np.isin(train_raw20.astype(int), list(set(rare_clusters))).astype(int)
-                test_rare = np.isin(test_raw20.astype(int), list(set(rare_clusters))).astype(int)
-                if not bool(getattr(cfg, "enable_raw20_monitor", True)):
-                    train_rare = np.zeros((x_train.shape[0],), dtype=int)
-                    test_rare = np.zeros((x_test.shape[0],), dtype=int)
-                out = {
-                    "train_main": train_main.astype(int),
-                    "test_main": test_main.astype(int),
-                    "train_stable": train_stable.astype(int),
-                    "test_stable": test_stable.astype(int),
-                    "train_raw20": train_raw20.astype(int),
-                    "test_raw20": test_raw20.astype(int),
-                    "train_conf_stable": np.ones((x_train.shape[0],), dtype=float),
-                    "test_conf_stable": conf_stable.astype(float),
-                    "train_conf_raw20": np.ones((x_train.shape[0],), dtype=float),
-                    "test_conf_raw20": conf_raw20.astype(float),
-                    "train_rare_raw20": train_rare,
-                    "test_rare_raw20": test_rare,
-                }
-            except Exception as exc:
-                print(f"[STEPF_CLUSTER] ticc_raw20_stable_unavailable={type(exc).__name__}: {exc}")
-                exception_type = type(exc).__name__
-                exception_message = str(exc)
-                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
-                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
-                fallback_reason = self._classify_ticc_failure_reason(exc)
-                tb_text = traceback.format_exc()
-                traceback_path = self._write_ticc_traceback(tb_text)
-                print(f"[STEPF_CLUSTER] backend_resolved={backend_resolved_name or 'unknown'}")
-                print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(backend_predict_methods)}")
-                print(f"[STEPF_CLUSTER][WARN] requested=ticc_raw20_stable but fallback=none reason={fallback_reason}")
-                if traceback_path:
-                    print(f"[STEPF_CLUSTER][WARN] traceback_path={traceback_path}")
+            preflight_diag = self._preflight_ticc_backend()
+            backend_resolved_name = str(preflight_diag.get("backend_resolved_name", "") or backend_resolved_name)
+            backend_predict_methods = list(preflight_diag.get("backend_predict_methods", []) or backend_predict_methods)
+            backend_methods = list(preflight_diag.get("backend_methods", []) or backend_methods)
+            if not backend_resolved_name:
                 fallback_used = True
-                out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=fallback_reason)
+                diagnostic_stage = "preflight_failed"
+                fallback_reason = "ticc_failure:TICCBackendPreflightFailed"
+                exception_type = "TICCUnavailableError"
+                exception_message = str(preflight_diag.get("backend_resolve_error", "") or "TICC backend unresolved during preflight")
+                out, used, fallback_reason = self._run_cluster_fallback_dual(
+                    x_train=x_train,
+                    x_test=x_test,
+                    fallback_reason=fallback_reason,
+                )
                 raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
                 valid_clusters = []
                 rare_clusters = []
                 k_valid = 0
                 k_eff_min = int(getattr(cfg, "k_eff_min", 12))
                 k_eff = k_eff_min
+            else:
+                try:
+                    diagnostic_stage = "ticc_train_raw20"
+                    train_raw20, test_raw20, conf_raw20 = self._run_ticc_clusterer_with_k(
+                        cfg=cfg,
+                        x_train=x_train,
+                        x_test=x_test,
+                        num_clusters=int(getattr(cfg, "raw20_num_clusters", 20)),
+                    )
+                    backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                    backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
+                    backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    raw_stats = compute_cluster_stats(train_raw20.astype(int).tolist())
+                    valid_clusters, rare_clusters = derive_valid_and_rare_clusters(
+                        raw_stats,
+                        share_min=float(getattr(cfg, "cluster_share_min", 0.01)),
+                        mean_run_min=float(getattr(cfg, "cluster_mean_run_min", 3.0)),
+                    )
+                    k_valid = int(len(valid_clusters))
+                    k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+                    k_eff = int(max(k_eff_min, k_valid))
+
+                    diagnostic_stage = "ticc_train_stable"
+                    train_stable, test_stable, conf_stable = self._run_ticc_clusterer_with_k(
+                        cfg=cfg,
+                        x_train=x_train,
+                        x_test=x_test,
+                        num_clusters=k_eff,
+                    )
+                    backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                    backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
+                    backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    used = "ticc_raw20_stable"
+                    diagnostic_stage = "ticc_success"
+                    main_source = str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower()
+                    train_main = train_stable if main_source == "stable" else train_raw20
+                    test_main = test_stable if main_source == "stable" else test_raw20
+                    train_rare = np.isin(train_raw20.astype(int), list(set(rare_clusters))).astype(int)
+                    test_rare = np.isin(test_raw20.astype(int), list(set(rare_clusters))).astype(int)
+                    if not bool(getattr(cfg, "enable_raw20_monitor", True)):
+                        train_rare = np.zeros((x_train.shape[0],), dtype=int)
+                        test_rare = np.zeros((x_test.shape[0],), dtype=int)
+                    out = {
+                        "train_main": train_main.astype(int),
+                        "test_main": test_main.astype(int),
+                        "train_stable": train_stable.astype(int),
+                        "test_stable": test_stable.astype(int),
+                        "train_raw20": train_raw20.astype(int),
+                        "test_raw20": test_raw20.astype(int),
+                        "train_conf_stable": np.ones((x_train.shape[0],), dtype=float),
+                        "test_conf_stable": conf_stable.astype(float),
+                        "train_conf_raw20": np.ones((x_train.shape[0],), dtype=float),
+                        "test_conf_raw20": conf_raw20.astype(float),
+                        "train_rare_raw20": train_rare,
+                        "test_rare_raw20": test_rare,
+                    }
+                except Exception as exc:
+                    print(f"[STEPF_CLUSTER] ticc_raw20_stable_unavailable={type(exc).__name__}: {exc}")
+                    diagnostic_stage = "ticc_exception"
+                    exception_type = type(exc).__name__
+                    exception_message = str(exc)
+                    backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                    backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
+                    backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    fallback_reason = self._classify_ticc_failure_reason(exc)
+                    tb_text = traceback.format_exc()
+                    traceback_path = self._write_ticc_traceback(tb_text)
+                    print(f"[STEPF_CLUSTER] backend_resolved={backend_resolved_name or 'unknown'}")
+                    print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(backend_predict_methods)}")
+                    print(f"[STEPF_CLUSTER][WARN] requested=ticc_raw20_stable but fallback=none reason={fallback_reason}")
+                    if traceback_path:
+                        print(f"[STEPF_CLUSTER][WARN] traceback_path={traceback_path}")
+                    fallback_used = True
+                    out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=fallback_reason)
+                    raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
+                    valid_clusters = []
+                    rare_clusters = []
+                    k_valid = 0
+                    k_eff_min = int(getattr(cfg, "k_eff_min", 12))
+                    k_eff = k_eff_min
         elif requested == "none":
+            diagnostic_stage = "fallback_none_requested"
             out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test)
             raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
             valid_clusters = []
@@ -1051,6 +1092,7 @@ class StepFService:
             k_eff = k_eff_min
         else:
             fallback_used = True
+            diagnostic_stage = "fallback_unknown_requested"
             out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason="ticc_unavailable")
             raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
             valid_clusters = []
@@ -1067,6 +1109,8 @@ class StepFService:
             "clusterer_type_used": used,
             "backend_resolved_name": backend_resolved_name,
             "backend_predict_methods": backend_predict_methods,
+            "backend_methods": backend_methods,
+            "diagnostic_stage": diagnostic_stage,
             "fallback_type": fallback,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
@@ -1074,6 +1118,7 @@ class StepFService:
             "exception_message": exception_message,
             "traceback_path": traceback_path,
             "raw20_num_clusters_requested": int(getattr(cfg, "raw20_num_clusters", 20)),
+            "k_raw": int(getattr(cfg, "raw20_num_clusters", 20)),
             "raw20_regime_count": int(len(pd.unique(out["train_raw20"]))),
             "k_valid": int(k_valid),
             "k_eff": int(k_eff),
@@ -1121,6 +1166,7 @@ class StepFService:
         diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
         self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or "")
         self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or [])
+        self._last_ticc_backend_methods = list(diag.get("backend_methods", []) or [])
         if self._last_ticc_backend_name:
             print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
         if self._last_ticc_backend_predict_methods:
@@ -1129,6 +1175,7 @@ class StepFService:
         diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
         self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or self._last_ticc_backend_name)
         self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or self._last_ticc_backend_predict_methods)
+        self._last_ticc_backend_methods = list(diag.get("backend_methods", []) or self._last_ticc_backend_methods)
         if self._last_ticc_backend_name:
             print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
         if self._last_ticc_backend_predict_methods:
@@ -1136,19 +1183,51 @@ class StepFService:
         test_labels, strengths = clusterer.predict_test(x_test)
         return train_labels.astype(int), test_labels.astype(int), strengths.astype(float)
 
+    def _preflight_ticc_backend(self) -> Dict[str, object]:
+        clusterer = TICCClusterer(
+            num_clusters=2,
+            window_size=2,
+            lambda_parameter=0.11,
+            beta=600.0,
+            max_iter=1,
+            threshold=2e-5,
+        )
+        diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
+        backend_name = str(diag.get("backend_resolved_name", "") or "")
+        backend_error = str(diag.get("backend_resolve_error", "") or "")
+        backend_methods = list(diag.get("backend_methods", []) or [])
+        backend_predict_methods = list(diag.get("backend_predict_methods", []) or [])
+        self._last_ticc_backend_name = backend_name
+        self._last_ticc_backend_methods = backend_methods
+        self._last_ticc_backend_predict_methods = backend_predict_methods
+        return {
+            "backend_resolved_name": backend_name,
+            "backend_resolve_error": backend_error,
+            "backend_methods": backend_methods,
+            "backend_predict_methods": backend_predict_methods,
+        }
+
     @staticmethod
     def _classify_ticc_failure_reason(exc: Exception) -> str:
         name = type(exc).__name__
         message = str(exc).lower()
+        stage = "unknown"
+        if "stage=" in message:
+            try:
+                stage = message.split("stage=", 1)[1].split()[0].split(",")[0]
+            except Exception:
+                stage = "unknown"
+        if isinstance(exc, TICCUnavailableError):
+            if "missing_method" in message:
+                return f"ticc_failure:PredictMethodMissing:stage={stage}"
+            if "api mismatch" in message:
+                return f"ticc_failure:BackendAPIMismatch:stage={stage}"
+            return f"ticc_failure:TICCUnavailableError:stage={stage}"
         if name in {"ImportError", "ModuleNotFoundError"}:
-            return f"ticc_failure:ImportError"
-        if "missing_method" in message:
-            return "ticc_failure:PredictMethodMissing"
-        if "api mismatch" in message:
-            return "ticc_failure:BackendAPIMismatch"
+            return f"ticc_failure:ImportError:stage={stage}"
         if name == "ValueError":
-            return "ticc_failure:ValueError"
-        return f"ticc_failure:{name}"
+            return f"ticc_failure:ValueError:stage={stage}"
+        return f"ticc_failure:{name}:stage={stage}"
 
     @staticmethod
     def _write_ticc_traceback(tb_text: str) -> str:

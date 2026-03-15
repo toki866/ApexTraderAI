@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ai_core.clusterers.ticc_clusterer import TICCClusterer
+
 import numpy as np
 import pandas as pd
 
@@ -68,7 +70,7 @@ class ClusterFeatureBuilder:
 
 
 class ClusterMonthlyTrainer:
-    """Monthly refit facade: raw20 fit -> small-cluster detection -> stable fit (placeholder backend)."""
+    """Monthly refit facade using TICC backend for raw20 labels and stable map."""
 
     def train(self, features: pd.DataFrame, cfg: ClusterRuntimeConfig) -> Dict[str, object]:
         raw_k = int(cfg.cluster_raw_k)
@@ -76,12 +78,17 @@ class ClusterMonthlyTrainer:
         th_run = float(cfg.cluster_small_mean_run_threshold)
         k_eff_min = int(cfg.cluster_k_eff_min)
 
-        score = pd.to_numeric(features.get("cluster_short_signal", 0.0), errors="coerce").fillna(0.0)
-        try:
-            bins = pd.qcut(score.rank(method="first"), q=max(2, raw_k), labels=False, duplicates="drop")
-            raw_id = pd.to_numeric(bins, errors="coerce").fillna(0).astype(int)
-        except Exception:
-            raw_id = pd.Series(0, index=features.index, dtype=int)
+        numeric_cols = [c for c in features.columns if c != "Date" and pd.api.types.is_numeric_dtype(features[c])]
+        x_train = features[numeric_cols].to_numpy(dtype=float) if numeric_cols else np.zeros((len(features), 1), dtype=float)
+        clusterer = TICCClusterer(
+            num_clusters=max(2, raw_k),
+            window_size=5,
+            lambda_parameter=0.11,
+            beta=600.0,
+            max_iter=100,
+            threshold=2e-5,
+        )
+        raw_id = pd.Series(clusterer.fit_predict_train(x_train), index=features.index, dtype=int)
 
         train_df = features[["Date"]].copy()
         train_df["cluster_id_raw20"] = raw_id.astype(int)
@@ -109,13 +116,16 @@ class ClusterMonthlyTrainer:
             "k_valid": len(valid_clusters),
             "k_eff": int(k_eff),
             "stable_map": stable_map,
-            "status": "placeholder",
-            "note": "TICC backend planned; current monthly trainer uses quantile-bin placeholder.",
+            "status": "live",
+            "note": "TICC backend active for monthly raw20 fitting and stable mapping.",
+            "backend_resolved_name": str(clusterer.get_diagnostics().get("backend_resolved_name", "") or ""),
+            "backend_predict_methods": list(clusterer.get_diagnostics().get("backend_predict_methods", []) or []),
+            "backend_methods": list(clusterer.get_diagnostics().get("backend_methods", []) or []),
         }
 
 
 class ClusterDailyAssigner:
-    """Assign daily raw20/stable labels from latest windows (placeholder backend)."""
+    """Assign daily raw20/stable labels from latest windows."""
 
     def assign(self, features: pd.DataFrame, monthly: Dict[str, object], cfg: ClusterRuntimeConfig) -> pd.DataFrame:
         out = features[["Date"]].copy()
@@ -164,7 +174,7 @@ class ClusterArtifactManager:
                 "long_months": int(cfg.cluster_long_window_months),
                 "enable_8y_context": bool(cfg.cluster_enable_8y_context),
             },
-            "status": "placeholder",
+            "status": "live",
         }
         manifest_path.write_text(json.dumps(feature_manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -172,8 +182,8 @@ class ClusterArtifactManager:
             "symbol": self.symbol,
             "mode": self.mode,
             "cluster_backend": cfg.cluster_backend,
-            "status": monthly.get("status", "placeholder"),
-            "note": monthly.get("note", "not yet wired"),
+            "status": monthly.get("status", "live"),
+            "note": monthly.get("note", ""),
             "k_raw": int(cfg.cluster_raw_k),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
@@ -230,12 +240,15 @@ class DPrimeClusterService:
 
         summary = {
             "cluster_backend": cfg.cluster_backend,
-            "status": "placeholder",
-            "planned": "monthly refit + daily assign (TICC backend not yet wired)",
+            "status": str(monthly.get("status", "live")),
+            "note": str(monthly.get("note", "")),
             "k_raw": int(cfg.cluster_raw_k),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_clusters": list(monthly.get("small_clusters", [])),
+            "backend_resolved_name": str(monthly.get("backend_resolved_name", "") or ""),
+            "backend_predict_methods": list(monthly.get("backend_predict_methods", []) or []),
+            "backend_methods": list(monthly.get("backend_methods", []) or []),
             "outputs": paths,
         }
         return {"daily": daily, "summary": summary}
