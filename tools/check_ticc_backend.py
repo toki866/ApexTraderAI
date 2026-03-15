@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -14,6 +15,14 @@ if str(REPO_ROOT) not in sys.path:
 from ai_core.clusterers.ticc_clusterer import TICCClusterer
 
 
+FUNCTION_CANDIDATES = ("ticc_labels", "fit_predict", "run_ticc", "ticc", "cluster")
+CLASS_HINTS = ("TICC", "FastTICC")
+
+
+def _short_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
 def main() -> int:
     print(f"python_executable={sys.executable}")
 
@@ -22,17 +31,40 @@ def main() -> int:
     print(f"find_spec_fast_ticc={fast_spec}")
     print(f"find_spec_TICC_solver={solver_spec}")
 
-    fast_version = ""
-    fast_api = []
+    fast_mod = None
     try:
         fast_mod = importlib.import_module("fast_ticc")
-        fast_version = str(getattr(fast_mod, "__version__", ""))
-        fast_api = sorted([name for name in dir(fast_mod) if not name.startswith("_")])
         print("import_fast_ticc=ok")
     except Exception as exc:
-        print(f"import_fast_ticc=ng error={type(exc).__name__}: {exc}")
-    print(f"fast_ticc_version={fast_version}")
-    print("fast_ticc_public_api=" + json.dumps(fast_api, ensure_ascii=False))
+        print(f"import_fast_ticc=ng error={_short_error(exc)}")
+
+    entries = []
+    if fast_mod is not None:
+        fast_version = str(getattr(fast_mod, "__version__", ""))
+        print(f"fast_ticc_version={fast_version}")
+        for name in FUNCTION_CANDIDATES:
+            obj = getattr(fast_mod, name, None)
+            if not callable(obj):
+                continue
+            try:
+                sig = str(inspect.signature(obj))
+            except Exception as exc:
+                sig = f"<signature unavailable: {_short_error(exc)}>"
+            entries.append({"name": f"fast_ticc.{name}", "kind": "function", "signature": sig})
+
+        for name in sorted(n for n in dir(fast_mod) if not n.startswith("_")):
+            obj = getattr(fast_mod, name, None)
+            if not inspect.isclass(obj):
+                continue
+            lowered = name.lower()
+            if name in CLASS_HINTS or "ticc" in lowered:
+                try:
+                    sig = str(inspect.signature(obj))
+                except Exception as exc:
+                    sig = f"<signature unavailable: {_short_error(exc)}>"
+                entries.append({"name": f"fast_ticc.{name}", "kind": "class", "signature": sig})
+
+    print("fast_ticc_entrypoints=" + json.dumps(entries, ensure_ascii=False))
 
     clusterer = TICCClusterer(
         num_clusters=2,
@@ -42,7 +74,12 @@ def main() -> int:
         max_iter=1,
         threshold=2e-5,
     )
-    diag = clusterer.get_diagnostics()
+    try:
+        diag = clusterer.get_diagnostics()
+    except Exception as exc:
+        print(f"ticc_clusterer_diagnostics=ng error={_short_error(exc)}")
+        return 3
+
     print("ticc_clusterer_diagnostics=" + json.dumps(diag, ensure_ascii=False))
     print(f"resolved_backend_name={diag.get('backend_resolved_name', '')}")
     print(f"resolved_entrypoint={diag.get('backend_entrypoint_name', '')}")

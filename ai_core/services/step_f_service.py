@@ -974,6 +974,9 @@ class StepFService:
         backend_resolved_name = ""
         backend_predict_methods: List[str] = []
         backend_methods: List[str] = []
+        backend_entrypoint_name = ""
+        backend_entrypoint_kind = ""
+        backend_api_candidates: List[str] = []
         diagnostic_stage = "cluster_init"
         exception_type = ""
         exception_message = ""
@@ -984,6 +987,9 @@ class StepFService:
             backend_resolved_name = str(preflight_diag.get("backend_resolved_name", "") or backend_resolved_name)
             backend_predict_methods = list(preflight_diag.get("backend_predict_methods", []) or backend_predict_methods)
             backend_methods = list(preflight_diag.get("backend_methods", []) or backend_methods)
+            backend_entrypoint_name = str(preflight_diag.get("backend_entrypoint_name", "") or backend_entrypoint_name)
+            backend_entrypoint_kind = str(preflight_diag.get("backend_entrypoint_kind", "") or backend_entrypoint_kind)
+            backend_api_candidates = list(preflight_diag.get("backend_api_candidates", []) or backend_api_candidates)
             if not backend_resolved_name:
                 diagnostic_stage = "preflight_failed"
                 exception_type = "TICCUnavailableError"
@@ -1005,6 +1011,9 @@ class StepFService:
                     backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
                     backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
                     backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    backend_entrypoint_name = str(getattr(self, "_last_ticc_backend_entrypoint_name", "") or backend_entrypoint_name)
+                    backend_entrypoint_kind = str(getattr(self, "_last_ticc_backend_entrypoint_kind", "") or backend_entrypoint_kind)
+                    backend_api_candidates = list(getattr(self, "_last_ticc_backend_api_candidates", []) or backend_api_candidates)
                     raw_stats = compute_cluster_stats(train_raw20.astype(int).tolist())
                     valid_clusters, rare_clusters = derive_valid_and_rare_clusters(
                         raw_stats,
@@ -1025,6 +1034,9 @@ class StepFService:
                     backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
                     backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
                     backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    backend_entrypoint_name = str(getattr(self, "_last_ticc_backend_entrypoint_name", "") or backend_entrypoint_name)
+                    backend_entrypoint_kind = str(getattr(self, "_last_ticc_backend_entrypoint_kind", "") or backend_entrypoint_kind)
+                    backend_api_candidates = list(getattr(self, "_last_ticc_backend_api_candidates", []) or backend_api_candidates)
                     used = "ticc_raw20_stable"
                     diagnostic_stage = "ticc_success"
                     main_source = str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower()
@@ -1057,6 +1069,9 @@ class StepFService:
                     backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
                     backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
                     backend_methods = list(getattr(self, "_last_ticc_backend_methods", []) or backend_methods)
+                    backend_entrypoint_name = str(getattr(self, "_last_ticc_backend_entrypoint_name", "") or backend_entrypoint_name)
+                    backend_entrypoint_kind = str(getattr(self, "_last_ticc_backend_entrypoint_kind", "") or backend_entrypoint_kind)
+                    backend_api_candidates = list(getattr(self, "_last_ticc_backend_api_candidates", []) or backend_api_candidates)
                     fallback_reason = self._classify_ticc_failure_reason(exc)
                     tb_text = traceback.format_exc()
                     traceback_path = self._write_ticc_traceback(tb_text)
@@ -1099,6 +1114,9 @@ class StepFService:
             "backend_resolved_name": backend_resolved_name,
             "backend_predict_methods": backend_predict_methods,
             "backend_methods": backend_methods,
+            "backend_entrypoint_name": backend_entrypoint_name,
+            "backend_entrypoint_kind": backend_entrypoint_kind,
+            "backend_api_candidates": backend_api_candidates,
             "diagnostic_stage": diagnostic_stage,
             "fallback_type": fallback,
             "fallback_used": fallback_used,
@@ -1156,6 +1174,9 @@ class StepFService:
         self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or "")
         self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or [])
         self._last_ticc_backend_methods = list(diag.get("backend_methods", []) or [])
+        self._last_ticc_backend_entrypoint_name = str(diag.get("backend_entrypoint_name", "") or "")
+        self._last_ticc_backend_entrypoint_kind = str(diag.get("backend_entrypoint_kind", "") or "")
+        self._last_ticc_backend_api_candidates = list(diag.get("backend_api_candidates", []) or [])
         if self._last_ticc_backend_name:
             print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
         if self._last_ticc_backend_predict_methods:
@@ -1165,6 +1186,9 @@ class StepFService:
         self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or self._last_ticc_backend_name)
         self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or self._last_ticc_backend_predict_methods)
         self._last_ticc_backend_methods = list(diag.get("backend_methods", []) or self._last_ticc_backend_methods)
+        self._last_ticc_backend_entrypoint_name = str(diag.get("backend_entrypoint_name", "") or getattr(self, "_last_ticc_backend_entrypoint_name", ""))
+        self._last_ticc_backend_entrypoint_kind = str(diag.get("backend_entrypoint_kind", "") or getattr(self, "_last_ticc_backend_entrypoint_kind", ""))
+        self._last_ticc_backend_api_candidates = list(diag.get("backend_api_candidates", []) or getattr(self, "_last_ticc_backend_api_candidates", []))
         if self._last_ticc_backend_name:
             print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
         if self._last_ticc_backend_predict_methods:
@@ -1184,16 +1208,27 @@ class StepFService:
         diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
         backend_name = str(diag.get("backend_resolved_name", "") or "")
         backend_error = str(diag.get("backend_resolve_error", "") or "")
+        if not backend_name and not backend_error and not hasattr(clusterer, "get_diagnostics"):
+            backend_name = type(clusterer).__name__
         backend_methods = list(diag.get("backend_methods", []) or [])
         backend_predict_methods = list(diag.get("backend_predict_methods", []) or [])
+        backend_entrypoint_name = str(diag.get("backend_entrypoint_name", "") or "")
+        backend_entrypoint_kind = str(diag.get("backend_entrypoint_kind", "") or "")
+        backend_api_candidates = list(diag.get("backend_api_candidates", []) or [])
         self._last_ticc_backend_name = backend_name
         self._last_ticc_backend_methods = backend_methods
         self._last_ticc_backend_predict_methods = backend_predict_methods
+        self._last_ticc_backend_entrypoint_name = backend_entrypoint_name
+        self._last_ticc_backend_entrypoint_kind = backend_entrypoint_kind
+        self._last_ticc_backend_api_candidates = backend_api_candidates
         return {
             "backend_resolved_name": backend_name,
             "backend_resolve_error": backend_error,
             "backend_methods": backend_methods,
             "backend_predict_methods": backend_predict_methods,
+            "backend_entrypoint_name": backend_entrypoint_name,
+            "backend_entrypoint_kind": backend_entrypoint_kind,
+            "backend_api_candidates": backend_api_candidates,
         }
 
     @staticmethod
