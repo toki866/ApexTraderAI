@@ -43,6 +43,7 @@ class TICCClusterer:
         self.threshold = float(threshold)
         self._model: Optional[Any] = None
         self._backend_name: str = ""
+        self._backend_resolve_error: str = ""
         self._backend_methods: Tuple[str, ...] = tuple()
         self._train_centroids: Optional[np.ndarray] = None
         self._centroid_cluster_ids: Optional[np.ndarray] = None
@@ -50,6 +51,7 @@ class TICCClusterer:
     def fit_predict_train(self, x_train: np.ndarray) -> np.ndarray:
         backend = self._resolve_backend()
         self._backend_name = backend.name
+        self._backend_resolve_error = ""
         x_train = np.asarray(x_train, dtype=float)
         if x_train.ndim != 2 or x_train.shape[0] == 0:
             raise ValueError("x_train must be a non-empty 2D array")
@@ -115,8 +117,18 @@ class TICCClusterer:
         return labels, confidence
 
     def get_diagnostics(self) -> Dict[str, object]:
+        backend_name = self._backend_name
+        backend_error = self._backend_resolve_error
+        if not backend_name and not backend_error:
+            try:
+                backend = self._resolve_backend()
+                backend_name = backend.name
+            except Exception as exc:
+                backend_error = f"{type(exc).__name__}: {exc}"
+                self._backend_resolve_error = backend_error
         return {
-            "backend_resolved_name": self._backend_name,
+            "backend_resolved_name": backend_name,
+            "backend_resolve_error": backend_error,
             "backend_predict_methods": [
                 name for name in self._backend_methods if name in {"predict", "predict_clusters", "transform"}
             ],

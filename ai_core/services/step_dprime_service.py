@@ -628,7 +628,7 @@ class DPrimeRLService:
                         {"key": "pred_available_horizons", "value": "|".join(str(x) for x in available)},
                         {"key": "pred_missing_horizons_filled", "value": json.dumps(missing_filled, ensure_ascii=False)},
                         {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
-                        {"key": "dprime_cluster_status", "value": "placeholder_or_live"},
+                        {"key": "dprime_cluster_status", "value": str(cluster_out.get("summary", {}).get("status", "unknown"))},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
                         {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
                     ]).to_csv(s_path, index=False)
@@ -792,7 +792,7 @@ class StepDPrimeService:
         ]
         rl_out["notes"] = [
             "DPrimeCluster uses StepA-derived inputs only (no StepB prediction leakage).",
-            "cluster backend ticc is planned; current raw20/stable assignment is placeholder scaffold.",
+            "cluster backend ticc is connected to live path for raw20/stable assignment.",
             "Workflow/CLI compatibility is preserved with external step name DPRIME.",
         ]
 
