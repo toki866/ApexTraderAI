@@ -89,6 +89,7 @@ class ClusterMonthlyTrainer:
             threshold=2e-5,
         )
         raw_id = pd.Series(clusterer.fit_predict_train(x_train), index=features.index, dtype=int)
+        backend_diag = clusterer.get_diagnostics()
 
         train_df = features[["Date"]].copy()
         train_df["cluster_id_raw20"] = raw_id.astype(int)
@@ -118,9 +119,12 @@ class ClusterMonthlyTrainer:
             "stable_map": stable_map,
             "status": "live",
             "note": "TICC backend active for monthly raw20 fitting and stable mapping.",
-            "backend_resolved_name": str(clusterer.get_diagnostics().get("backend_resolved_name", "") or ""),
-            "backend_predict_methods": list(clusterer.get_diagnostics().get("backend_predict_methods", []) or []),
-            "backend_methods": list(clusterer.get_diagnostics().get("backend_methods", []) or []),
+            "backend_resolved_name": str(backend_diag.get("backend_resolved_name", "") or ""),
+            "backend_entrypoint_name": str(backend_diag.get("backend_entrypoint_name", "") or ""),
+            "backend_entrypoint_kind": str(backend_diag.get("backend_entrypoint_kind", "") or ""),
+            "backend_api_candidates": list(backend_diag.get("backend_api_candidates", []) or []),
+            "backend_predict_methods": list(backend_diag.get("backend_predict_methods", []) or []),
+            "backend_methods": list(backend_diag.get("backend_methods", []) or []),
         }
 
 
@@ -220,6 +224,13 @@ class DPrimeClusterService:
         print(f"[DPrimeCluster] unique_dates={int(features['Date'].nunique()) if 'Date' in features.columns else 0}")
         print(f"[DPrimeCluster] raw20 training start k_raw={cfg.cluster_raw_k}")
         monthly = trainer.train(features, cfg)
+        monthly_status = str(monthly.get("status", "")).strip().lower()
+        monthly_note = str(monthly.get("note", ""))
+        if monthly_status in {"placeholder", "not_wired", "planned"}:
+            raise RuntimeError(
+                "DPrime cluster path returned non-live status. "
+                f"status={monthly_status} note={monthly_note}"
+            )
         print(
             f"[DPrimeCluster] raw20 training end k_valid={monthly.get('k_valid')} small={monthly.get('small_clusters')}"
         )
@@ -247,6 +258,9 @@ class DPrimeClusterService:
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_clusters": list(monthly.get("small_clusters", [])),
             "backend_resolved_name": str(monthly.get("backend_resolved_name", "") or ""),
+            "backend_entrypoint_name": str(monthly.get("backend_entrypoint_name", "") or ""),
+            "backend_entrypoint_kind": str(monthly.get("backend_entrypoint_kind", "") or ""),
+            "backend_api_candidates": list(monthly.get("backend_api_candidates", []) or []),
             "backend_predict_methods": list(monthly.get("backend_predict_methods", []) or []),
             "backend_methods": list(monthly.get("backend_methods", []) or []),
             "outputs": paths,

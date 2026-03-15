@@ -1675,6 +1675,21 @@ jobs:
           if ($rc -ne 0) { Add-Content $rp "[NG] step_c rc=$rc"; Write-Error "StepC failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_c'
 
+      - name: TICC backend diagnostics (before StepDPrime)
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_c.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] ticc_backend_diagnostics_before_stepdprime'
+          $cmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_ticc_backend.py"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $cmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          Add-Content $rp ("[WSL_TICC] check_ticc_backend_rc={0}" -f $LASTEXITCODE)
+
       - name: StepDPrime
         id: step_dprime
         if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_c.outcome == 'success' }}
@@ -1994,6 +2009,10 @@ jobs:
           $pipShowRc = $LASTEXITCODE
           Add-Content $rp ("[WSL_TICC] pip_show_fast_ticc_rc={0}" -f $pipShowRc)
           Write-Host "[WSL_TICC] pip_show_fast_ticc_rc=$pipShowRc"
+
+          $checkCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_ticc_backend.py"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $checkCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          Add-Content $rp ("[WSL_TICC] check_ticc_backend_rc={0}" -f $LASTEXITCODE)
 
       - name: StepF
         id: step_f
@@ -5566,6 +5585,21 @@ jobs:
           if ($rc -ne 0) { Add-Content $rp "[NG] step_c rc=$rc"; Write-Error "StepC failed rc=$rc"; exit $rc }
           Add-Content $rp '[OK] step_c'
 
+      - name: TICC backend diagnostics (before StepDPrime)
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_c.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] ticc_backend_diagnostics_before_stepdprime'
+          $cmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_ticc_backend.py"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $cmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          Add-Content $rp ("[WSL_TICC] check_ticc_backend_rc={0}" -f $LASTEXITCODE)
+
       - name: StepDPrime
         id: step_dprime
         if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
@@ -5820,6 +5854,10 @@ jobs:
           $pipShowRc = $LASTEXITCODE
           Add-Content $rp ("[WSL_TICC] pip_show_fast_ticc_rc={0}" -f $pipShowRc)
           Write-Host "[WSL_TICC] pip_show_fast_ticc_rc=$pipShowRc"
+
+          $checkCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/check_ticc_backend.py"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $checkCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          Add-Content $rp ("[WSL_TICC] check_ticc_backend_rc={0}" -f $LASTEXITCODE)
 
       - name: StepF
         id: step_f
