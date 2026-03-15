@@ -30,7 +30,7 @@ class _FakeBackendNoPredict:
 
 
 def test_predict_fallback_assignment_when_predict_missing(monkeypatch) -> None:
-    monkeypatch.setattr(tc_mod.TICCClusterer, "_resolve_backend", staticmethod(lambda: tc_mod._BackendSpec(name="fast_ticc", cls=_FakeBackendNoPredict)))
+    monkeypatch.setattr(tc_mod.TICCClusterer, "_resolve_backend", staticmethod(lambda: tc_mod._BackendSpec(name="fast_ticc", entrypoint=_FakeBackendNoPredict, entrypoint_name="fast_ticc.Fake", entrypoint_kind="class")))
     c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
     train = np.array([[0.0, 0.0], [10.0, 10.0], [0.1, -0.2], [9.8, 10.2]], dtype=float)
     train_labels = c.fit_predict_train(train)
@@ -55,9 +55,55 @@ class _FakeBackendWithPredict:
 
 
 def test_predict_path_uses_backend_predict(monkeypatch) -> None:
-    monkeypatch.setattr(tc_mod.TICCClusterer, "_resolve_backend", staticmethod(lambda: tc_mod._BackendSpec(name="fast_ticc", cls=_FakeBackendWithPredict)))
+    monkeypatch.setattr(tc_mod.TICCClusterer, "_resolve_backend", staticmethod(lambda: tc_mod._BackendSpec(name="fast_ticc", entrypoint=_FakeBackendWithPredict, entrypoint_name="fast_ticc.Fake", entrypoint_kind="class")))
     c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
     c.fit_predict_train(np.ones((6, 2), dtype=float))
     labels, conf = c.predict_test(np.ones((3, 2), dtype=float))
     assert labels.tolist() == [1, 1, 1]
     assert conf.tolist() == [1.0, 1.0, 1.0]
+
+
+
+def test_function_backend_data_series_keyword(monkeypatch) -> None:
+    def _ticc_labels(*, data_series, window_size, number_of_clusters):
+        assert data_series.shape == (5, 2)
+        assert window_size == 3
+        assert number_of_clusters == 2
+        return {"labels": np.arange(len(data_series)) % 2}
+
+    monkeypatch.setattr(
+        tc_mod.TICCClusterer,
+        "_resolve_backend",
+        staticmethod(
+            lambda: tc_mod._BackendSpec(
+                name="fast_ticc",
+                entrypoint=_ticc_labels,
+                entrypoint_name="fast_ticc.ticc_labels",
+                entrypoint_kind="function",
+            )
+        ),
+    )
+    c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
+    labels = c.fit_predict_train(np.ones((5, 2), dtype=float))
+    assert labels.shape == (5,)
+
+
+def test_function_backend_tuple_result_extracts_labels(monkeypatch) -> None:
+    def _ticc_labels(*, data_series, **kwargs):
+        return ("meta", np.array([0, 1, 0, 1], dtype=int), {"x": 1})
+
+    monkeypatch.setattr(
+        tc_mod.TICCClusterer,
+        "_resolve_backend",
+        staticmethod(
+            lambda: tc_mod._BackendSpec(
+                name="fast_ticc",
+                entrypoint=_ticc_labels,
+                entrypoint_name="fast_ticc.ticc_labels",
+                entrypoint_kind="function",
+            )
+        ),
+    )
+    c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
+    labels = c.fit_predict_train(np.ones((4, 2), dtype=float))
+    assert labels.tolist() == [0, 1, 0, 1]

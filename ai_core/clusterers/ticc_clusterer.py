@@ -171,22 +171,90 @@ class TICCClusterer:
 
     def _call_function_backend_fit_predict(self, *, backend: _BackendSpec, x: np.ndarray) -> Any:
         fn = backend.entrypoint
-        kwargs_all = {"x": x, "X": x, "data": x, "series": x}
-        kwargs_all.update(self._ticc_common_kwargs())
         sig = inspect.signature(fn)
-        kwargs = {k: v for k, v in kwargs_all.items() if k in sig.parameters}
-        if not kwargs:
+        params = sig.parameters
+        data_arg_candidates = ("data_series", "time_series", "observations", "input_data", "x", "X", "data", "series")
+        common_kwargs = self._ticc_common_kwargs()
+        alias_kwargs = {
+            "num_clusters": self.num_clusters,
+            "sparsity_weight": self.lambda_parameter,
+            "label_switching_cost": self.beta,
+            "iteration_limit": self.max_iter,
+        }
+        kwargs_all = {**common_kwargs, **alias_kwargs}
+        kwargs = {k: v for k, v in kwargs_all.items() if k in params}
+        selected_data_kw: Optional[str] = None
+        for key in data_arg_candidates:
+            if key in params:
+                kwargs[key] = x
+                selected_data_kw = key
+                break
+
+        positional_args: List[Any] = []
+        if selected_data_kw is None:
+            required_positional = [
+                p
+                for p in params.values()
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                and p.default is inspect._empty
+            ]
+            if required_positional:
+                positional_args = [x]
+
+        if selected_data_kw is None and not positional_args:
             raise TICCUnavailableError(
-                "TICC function backend cannot be called safely "
-                f"backend={backend.name} entrypoint={backend.entrypoint_name} "
-                "because no compatible arguments were found in function signature"
+                "TICC function backend API mismatch: no compatible data input argument was found "
+                f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
+                f"supported_data_arg_candidates={list(data_arg_candidates)} accepted_kwargs={sorted(kwargs.keys())}"
             )
-        result = fn(**kwargs)
+
+        try:
+            result = fn(*positional_args, **kwargs)
+        except Exception as exc:
+            raise TICCUnavailableError(
+                "TICC function backend invocation failed "
+                f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
+                f"passed_positional={len(positional_args)} passed_keyword_names={sorted(kwargs.keys())} "
+                f"error={type(exc).__name__}: {exc}"
+            ) from exc
+
         if isinstance(result, dict):
-            for key in ("labels", "cluster_assignment", "assignments", "y", "clusters"):
+            for key in ("labels", "cluster_assignment", "assignments", "y", "clusters", "point_labels"):
                 if key in result:
                     return result[key]
+        if isinstance(result, (tuple, list)):
+            if self._is_label_like_array(result, expected_len=x.shape[0]):
+                return result
+            for item in result:
+                if self._is_label_like_array(item, expected_len=x.shape[0]):
+                    return item
+        for attr_name in ("labels", "cluster_assignment", "assignments", "y", "clusters", "point_labels"):
+            if hasattr(result, attr_name):
+                attr = getattr(result, attr_name)
+                if self._is_label_like_array(attr, expected_len=x.shape[0]):
+                    return attr
+        if not self._is_label_like_array(result, expected_len=x.shape[0]):
+            raise TICCUnavailableError(
+                "TICC function backend returned unsupported output for label extraction "
+                f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
+                f"passed_positional={len(positional_args)} passed_keyword_names={sorted(kwargs.keys())} "
+                f"result_type={type(result).__name__}"
+            )
         return result
+
+    @staticmethod
+    def _is_label_like_array(value: Any, *, expected_len: int) -> bool:
+        try:
+            arr = np.asarray(value)
+        except Exception:
+            return False
+        if arr.ndim == 0:
+            return False
+        if arr.ndim == 1:
+            return int(arr.shape[0]) == int(expected_len)
+        if arr.ndim >= 2:
+            return int(arr.shape[0]) == int(expected_len)
+        return False
 
     @staticmethod
     def _call_first_available(model: Any, *, stage: str, x: np.ndarray, candidates: Tuple[str, ...]) -> Any:
