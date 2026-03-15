@@ -946,6 +946,18 @@ jobs:
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipReqRc
           }
 
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check begin'; Write-Host '[PREPARE_ENV] dependency_target_check begin'
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'
+          $wslPipVersionCmd = "'$env:WSL_PYTHON' -m pip --version"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipVersionCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $wslPipVersionRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] dependency_target_check wsl_pip_version_rc=$wslPipVersionRc"; Write-Host "[PREPARE_ENV] dependency_target_check wsl_pip_version_rc=$wslPipVersionRc"
+          $wslPipShowCmd = "'$env:WSL_PYTHON' -m pip show fast-ticc"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipShowCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $wslPipShowRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] dependency_target_check wsl_pip_show_fast_ticc_rc=$wslPipShowRc"; Write-Host "[PREPARE_ENV] dependency_target_check wsl_pip_show_fast_ticc_rc=$wslPipShowRc"
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check note=diagnostics_only_no_wsl_install_performed'; Write-Host '[PREPARE_ENV] dependency_target_check note=diagnostics_only_no_wsl_install_performed'
+
           # [C][E] prepare_data — try/finally で rc を必ず記録
           $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
           $prepBegin = "[PREPARE_ENV] prepare_data begin prepCmd=$prepCmd"
@@ -1930,6 +1942,59 @@ jobs:
           }
           Add-Content $rp '[OK] step_e'
 
+      - name: WSL Python TICC diagnostics
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_e.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] wsl_ticc_diagnostics'
+          Write-Host '[STEP] wsl_ticc_diagnostics'
+
+          $pythonExec = ''
+          $pythonExecCmd = "'$env:WSL_PYTHON' -c ""import sys; print(sys.executable)"""
+          try {
+            $pythonExecOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $pythonExecCmd 2>&1
+            $pythonExecOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            if ($pythonExecOut) { $pythonExec = ($pythonExecOut | Select-Object -Last 1).ToString().Trim() }
+          } catch {
+            Write-Warning "wsl_ticc_diagnostics python_executable exception=$_"
+          }
+          Add-Content $rp ("[WSL_TICC] python_executable={0}" -f $pythonExec)
+
+          $specFast = ''
+          $specSolver = ''
+          $specCmd = "'$env:WSL_PYTHON' -c ""import importlib.util as u; print('fast_ticc =', u.find_spec('fast_ticc')); print('TICC_solver =', u.find_spec('TICC_solver'))"""
+          try {
+            $specOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $specCmd 2>&1
+            $specOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            foreach ($line in $specOut) {
+              $text = "$line"
+              if ($text.StartsWith('fast_ticc =')) { $specFast = $text.Substring('fast_ticc ='.Length).Trim() }
+              if ($text.StartsWith('TICC_solver =')) { $specSolver = $text.Substring('TICC_solver ='.Length).Trim() }
+            }
+          } catch {
+            Write-Warning "wsl_ticc_diagnostics find_spec exception=$_"
+          }
+          Add-Content $rp ("[WSL_TICC] fast_ticc_spec={0}" -f $specFast)
+          Add-Content $rp ("[WSL_TICC] ticc_solver_spec={0}" -f $specSolver)
+
+          $importCmd = "'$env:WSL_PYTHON' -c ""import fast_ticc; print('fast_ticc ok')"""
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $importCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          $importRc = $LASTEXITCODE
+          Add-Content $rp ("[WSL_TICC] import_fast_ticc_rc={0}" -f $importRc)
+          Write-Host "[WSL_TICC] import_fast_ticc_rc=$importRc"
+
+          $pipShowCmd = "'$env:WSL_PYTHON' -m pip show fast-ticc"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $pipShowCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          $pipShowRc = $LASTEXITCODE
+          Add-Content $rp ("[WSL_TICC] pip_show_fast_ticc_rc={0}" -f $pipShowRc)
+          Write-Host "[WSL_TICC] pip_show_fast_ticc_rc=$pipShowRc"
+
       - name: StepF
         id: step_f
         if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_e.outcome == 'success' }}
@@ -1966,6 +2031,22 @@ jobs:
           Add-Content $rp '[STEPF_ENTRY] before_config_load'
           Add-Content $rp '[STEPF_ENTRY] after_config_load'
           Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
+          Add-Content $rp ("[STEPF_ENV] WSL_PYTHON={0}" -f $env:WSL_PYTHON)
+          Add-Content $rp ("[STEPF_ENV] WSL_DISTRO={0}" -f $env:WSL_DISTRO)
+          $stepFFastTiccVisible = 'false'
+          $stepFSpecCmd = "'$env:WSL_PYTHON' -c ""import importlib.util as u; print(u.find_spec('fast_ticc') is not None)"""
+          try {
+            $stepFSpecOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $stepFSpecCmd 2>&1
+            $stepFSpecOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            if ($stepFSpecOut) {
+              $lastSpec = ($stepFSpecOut | Select-Object -Last 1).ToString().Trim().ToLowerInvariant()
+              if ($lastSpec -eq 'true') { $stepFFastTiccVisible = 'true' }
+            }
+          } catch {
+            Write-Warning "stepf fast_ticc visibility check exception=$_"
+            Add-Content $rp ("[STEPF_ENV] fast_ticc_visibility_exception={0}" -f $_)
+          }
+          Add-Content $rp ("[STEPF_ENV] fast_ticc_visible={0}" -f $stepFFastTiccVisible)
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
@@ -4818,6 +4899,18 @@ jobs:
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipReqRc
           }
 
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check begin'; Write-Host '[PREPARE_ENV] dependency_target_check begin'
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'
+          $wslPipVersionCmd = "'$env:WSL_PYTHON' -m pip --version"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipVersionCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $wslPipVersionRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] dependency_target_check wsl_pip_version_rc=$wslPipVersionRc"; Write-Host "[PREPARE_ENV] dependency_target_check wsl_pip_version_rc=$wslPipVersionRc"
+          $wslPipShowCmd = "'$env:WSL_PYTHON' -m pip show fast-ticc"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipShowCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          $wslPipShowRc = $LASTEXITCODE
+          Add-Content $rp "[PREPARE_ENV] dependency_target_check wsl_pip_show_fast_ticc_rc=$wslPipShowRc"; Write-Host "[PREPARE_ENV] dependency_target_check wsl_pip_show_fast_ticc_rc=$wslPipShowRc"
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check note=diagnostics_only_no_wsl_install_performed'; Write-Host '[PREPARE_ENV] dependency_target_check note=diagnostics_only_no_wsl_install_performed'
+
           # [C][E] prepare_data — try/finally で rc を必ず記録
           $prepCmd = "cd '$wslRepoRoot' && '$env:WSL_PYTHON' tools/run_with_python.py tools/prepare_data.py --symbols $env:SYMBOLS --start $env:DATA_START --end $env:DATA_END --force --data-dir '$wslDataDir'"
           $prepBegin = "[PREPARE_ENV] prepare_data begin prepCmd=$prepCmd"
@@ -5675,6 +5768,59 @@ jobs:
           }
           Add-Content $rp '[OK] step_e'
 
+      - name: WSL Python TICC diagnostics
+        if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_e.outcome == 'success' }}
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        env:
+          WSL_DISTRO: Ubuntu
+          WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          Add-Content $rp '[STEP] wsl_ticc_diagnostics'
+          Write-Host '[STEP] wsl_ticc_diagnostics'
+
+          $pythonExec = ''
+          $pythonExecCmd = "'$env:WSL_PYTHON' -c ""import sys; print(sys.executable)"""
+          try {
+            $pythonExecOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $pythonExecCmd 2>&1
+            $pythonExecOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            if ($pythonExecOut) { $pythonExec = ($pythonExecOut | Select-Object -Last 1).ToString().Trim() }
+          } catch {
+            Write-Warning "wsl_ticc_diagnostics python_executable exception=$_"
+          }
+          Add-Content $rp ("[WSL_TICC] python_executable={0}" -f $pythonExec)
+
+          $specFast = ''
+          $specSolver = ''
+          $specCmd = "'$env:WSL_PYTHON' -c ""import importlib.util as u; print('fast_ticc =', u.find_spec('fast_ticc')); print('TICC_solver =', u.find_spec('TICC_solver'))"""
+          try {
+            $specOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $specCmd 2>&1
+            $specOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            foreach ($line in $specOut) {
+              $text = "$line"
+              if ($text.StartsWith('fast_ticc =')) { $specFast = $text.Substring('fast_ticc ='.Length).Trim() }
+              if ($text.StartsWith('TICC_solver =')) { $specSolver = $text.Substring('TICC_solver ='.Length).Trim() }
+            }
+          } catch {
+            Write-Warning "wsl_ticc_diagnostics find_spec exception=$_"
+          }
+          Add-Content $rp ("[WSL_TICC] fast_ticc_spec={0}" -f $specFast)
+          Add-Content $rp ("[WSL_TICC] ticc_solver_spec={0}" -f $specSolver)
+
+          $importCmd = "'$env:WSL_PYTHON' -c ""import fast_ticc; print('fast_ticc ok')"""
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $importCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          $importRc = $LASTEXITCODE
+          Add-Content $rp ("[WSL_TICC] import_fast_ticc_rc={0}" -f $importRc)
+          Write-Host "[WSL_TICC] import_fast_ticc_rc=$importRc"
+
+          $pipShowCmd = "'$env:WSL_PYTHON' -m pip show fast-ticc"
+          wsl.exe -d $env:WSL_DISTRO -- bash -lc $pipShowCmd 2>&1 | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+          $pipShowRc = $LASTEXITCODE
+          Add-Content $rp ("[WSL_TICC] pip_show_fast_ticc_rc={0}" -f $pipShowRc)
+          Write-Host "[WSL_TICC] pip_show_fast_ticc_rc=$pipShowRc"
+
       - name: StepF
         id: step_f
         if: ${{ always() && steps.prep_repo.outcome == 'success' && steps.prepare_env.outcome == 'success' && steps.step_b.outcome == 'success' }}
@@ -5709,6 +5855,22 @@ jobs:
           Add-Content $rp '[STEPF_ENTRY] before_config_load'
           Add-Content $rp '[STEPF_ENTRY] after_config_load'
           Add-Content $rp '[STEPF_ENTRY] before_stepe_daily_logs_resolve'
+          Add-Content $rp ("[STEPF_ENV] WSL_PYTHON={0}" -f $env:WSL_PYTHON)
+          Add-Content $rp ("[STEPF_ENV] WSL_DISTRO={0}" -f $env:WSL_DISTRO)
+          $stepFFastTiccVisible = 'false'
+          $stepFSpecCmd = "'$env:WSL_PYTHON' -c ""import importlib.util as u; print(u.find_spec('fast_ticc') is not None)"""
+          try {
+            $stepFSpecOut = wsl.exe -d $env:WSL_DISTRO -- bash -lc $stepFSpecCmd 2>&1
+            $stepFSpecOut | ForEach-Object { Write-Host $_; Add-Content $rp $_ }
+            if ($stepFSpecOut) {
+              $lastSpec = ($stepFSpecOut | Select-Object -Last 1).ToString().Trim().ToLowerInvariant()
+              if ($lastSpec -eq 'true') { $stepFFastTiccVisible = 'true' }
+            }
+          } catch {
+            Write-Warning "stepf fast_ticc visibility check exception=$_"
+            Add-Content $rp ("[STEPF_ENV] fast_ticc_visibility_exception={0}" -f $_)
+          }
+          Add-Content $rp ("[STEPF_ENV] fast_ticc_visible={0}" -f $stepFFastTiccVisible)
           $status = 'run'
           $reuseDecision = @{ status='run'; reason='reuse_disabled_or_forced'; manifest_reuse=$false; artifact_reuse=$false; run_id='' }
           if ($env:REUSE_OUTPUT -eq '1' -and -not ($env:FORCE_REBUILD -eq '1')) {
