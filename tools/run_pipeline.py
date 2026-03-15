@@ -38,6 +38,7 @@ import shutil
 import sys
 import time
 import traceback
+import subprocess
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1711,6 +1712,20 @@ def _timing_settings_from_config(app_config: Any) -> tuple[bool, bool]:
     return enabled, clear
 
 
+def _preflight_ticc_backend_if_needed(*, steps: Sequence[str]) -> None:
+    if "F" not in tuple(str(s).upper() for s in steps):
+        return
+    cmd = [sys.executable, str(_REPO_ROOT / "tools" / "check_ticc_backend.py")]
+    print(f"[headless] TICC preflight command={' '.join(cmd)}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.stdout:
+        print(proc.stdout.rstrip())
+    if proc.stderr:
+        print(proc.stderr.rstrip(), file=sys.stderr)
+    if int(proc.returncode) != 0:
+        raise RuntimeError(f"TICC backend preflight failed rc={proc.returncode}")
+
+
 def _determine_run_type(*, steps: Sequence[str], reuse_output: bool, force_rebuild: bool, resolved_mode: str, retrain: str) -> str:
     steps_upper = tuple(str(s).upper() for s in steps)
     if str(resolved_mode).lower() == "live":
@@ -1794,6 +1809,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     symbol = args.symbol or _env_get("AUTODEBUG_SYMBOL", "AUTO_DEBUG_SYMBOL") or "SOXL"
     steps = _parse_steps(args.steps)
+    _preflight_ticc_backend_if_needed(steps=steps)
     skip_stepe_env = str(_env_get("SKIP_STEPE") or "").strip().lower() in {"1", "true", "yes", "on"}
     skip_stepe = bool(args.skip_stepe or skip_stepe_env)
     if skip_stepe and "E" in steps:
