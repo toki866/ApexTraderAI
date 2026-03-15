@@ -985,22 +985,14 @@ class StepFService:
             backend_predict_methods = list(preflight_diag.get("backend_predict_methods", []) or backend_predict_methods)
             backend_methods = list(preflight_diag.get("backend_methods", []) or backend_methods)
             if not backend_resolved_name:
-                fallback_used = True
                 diagnostic_stage = "preflight_failed"
-                fallback_reason = "ticc_failure:TICCBackendPreflightFailed"
                 exception_type = "TICCUnavailableError"
                 exception_message = str(preflight_diag.get("backend_resolve_error", "") or "TICC backend unresolved during preflight")
-                out, used, fallback_reason = self._run_cluster_fallback_dual(
-                    x_train=x_train,
-                    x_test=x_test,
-                    fallback_reason=fallback_reason,
+                fallback_reason = self._classify_ticc_failure_reason(TICCUnavailableError(exception_message))
+                raise RuntimeError(
+                    "StepF requested TICC clustering but preflight failed. "
+                    f"fallback_reason={fallback_reason} backend_error={exception_message}"
                 )
-                raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
-                valid_clusters = []
-                rare_clusters = []
-                k_valid = 0
-                k_eff_min = int(getattr(cfg, "k_eff_min", 12))
-                k_eff = k_eff_min
             else:
                 try:
                     diagnostic_stage = "ticc_train_raw20"
@@ -1070,17 +1062,14 @@ class StepFService:
                     traceback_path = self._write_ticc_traceback(tb_text)
                     print(f"[STEPF_CLUSTER] backend_resolved={backend_resolved_name or 'unknown'}")
                     print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(backend_predict_methods)}")
-                    print(f"[STEPF_CLUSTER][WARN] requested=ticc_raw20_stable but fallback=none reason={fallback_reason}")
+                    print(f"[STEPF_CLUSTER][ERROR] requested=ticc_raw20_stable failed reason={fallback_reason}")
                     if traceback_path:
-                        print(f"[STEPF_CLUSTER][WARN] traceback_path={traceback_path}")
-                    fallback_used = True
-                    out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=fallback_reason)
-                    raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
-                    valid_clusters = []
-                    rare_clusters = []
-                    k_valid = 0
-                    k_eff_min = int(getattr(cfg, "k_eff_min", 12))
-                    k_eff = k_eff_min
+                        print(f"[STEPF_CLUSTER][ERROR] traceback_path={traceback_path}")
+                    raise RuntimeError(
+                        "StepF requested TICC clustering but execution failed. "
+                        f"fallback_reason={fallback_reason} exception={exception_type}: {exception_message} "
+                        f"traceback_path={traceback_path}"
+                    ) from exc
         elif requested == "none":
             diagnostic_stage = "fallback_none_requested"
             out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test)
@@ -1093,7 +1082,7 @@ class StepFService:
         else:
             fallback_used = True
             diagnostic_stage = "fallback_unknown_requested"
-            out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason="ticc_unavailable")
+            out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason="ticc_failure:UnknownClustererType")
             raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
             valid_clusters = []
             rare_clusters = []
@@ -1218,10 +1207,16 @@ class StepFService:
             except Exception:
                 stage = "unknown"
         if isinstance(exc, TICCUnavailableError):
+            if "placeholder" in message:
+                return f"ticc_failure:PlaceholderArtifact:stage={stage}"
+            if "not_wired" in message or "not yet wired" in message:
+                return f"ticc_failure:NotWired:stage={stage}"
             if "missing_method" in message:
                 return f"ticc_failure:PredictMethodMissing:stage={stage}"
-            if "api mismatch" in message:
+            if "api mismatch" in message or "entrypoint" in message:
                 return f"ticc_failure:BackendAPIMismatch:stage={stage}"
+            if "import fast_ticc failed" in message or "ticc_solver" in message:
+                return f"ticc_failure:BackendUnavailable:stage={stage}"
             return f"ticc_failure:TICCUnavailableError:stage={stage}"
         if name in {"ImportError", "ModuleNotFoundError"}:
             return f"ticc_failure:ImportError:stage={stage}"
