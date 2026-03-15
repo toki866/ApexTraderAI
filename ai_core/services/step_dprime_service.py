@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.utils.extmath import randomized_svd
 
 from ai_core.utils.timing_logger import TimingLogger
@@ -18,6 +21,21 @@ from ai_core.services.dprime_cluster_components import (
 )
 
 _LAST_DPRIME_PROFILE = ""
+_DPRIME_LOGGER = logging.getLogger(__name__)
+
+
+def _log_dprime(msg: str) -> None:
+    _DPRIME_LOGGER.info(msg)
+    print(msg)
+
+
+def _log_timing(label: str, started_at: float) -> None:
+    elapsed = time.perf_counter() - started_at
+    _log_dprime(f"[DPRIME][TIMING] {label}={elapsed:.4f}s")
+
+
+def _cuda_available() -> bool:
+    return bool(torch.cuda.is_available())
 
 _PROFILES: Tuple[str, ...] = (
     "dprime_bnf_h01",
@@ -252,11 +270,20 @@ def _fit_pca(train: np.ndarray, dim: int) -> Tuple[np.ndarray, int, Dict[str, An
     method = "numpy_svd"
     fallback_used = False
     try:
-        _, _, vt = np.linalg.svd(x_reduced, full_matrices=False)
-        comp_reduced = vt[:d].T.astype(float)
-    except np.linalg.LinAlgError:
+        use_cuda = _cuda_available() and int(x_reduced.size) >= 200_000
+        if use_cuda:
+            _log_dprime("[DPRIME][DEVICE] pca_device=cuda")
+            xt = torch.as_tensor(x_reduced, dtype=torch.float64, device="cuda")
+            _, _, vt = torch.linalg.svd(xt, full_matrices=False)
+            comp_reduced = vt[:d, :].transpose(0, 1).detach().cpu().numpy().astype(float)
+            method = "torch_cuda_svd"
+        else:
+            _, _, vt = np.linalg.svd(x_reduced, full_matrices=False)
+            comp_reduced = vt[:d].T.astype(float)
+    except Exception as exc:
         fallback_used = True
         method = "randomized_svd"
+        _log_dprime(f"[DPRIME][DEVICE] PCA fallback to CPU randomized_svd reason={type(exc).__name__}: {exc}")
         _, _, vt = randomized_svd(x_reduced, n_components=d, random_state=42)
         comp_reduced = vt.T.astype(float)
 
@@ -283,7 +310,18 @@ def _project(x: np.ndarray, mu: np.ndarray, sd: np.ndarray, comp: np.ndarray) ->
     comp_san, _ = _sanitize_matrix(comp, name="project.comp", clip_abs=1e6)
     xn = (x_san - mu_san) / sd_san
     xn, _ = _sanitize_matrix(xn, name="project.xn", clip_abs=1e6)
-    out = xn @ comp_san
+    use_cuda = _cuda_available() and int(xn.size + comp_san.size) >= 200_000
+    if use_cuda:
+        try:
+            _log_dprime("[DPRIME][DEVICE] projection_device=cuda")
+            xn_t = torch.as_tensor(xn, dtype=torch.float64, device="cuda")
+            comp_t = torch.as_tensor(comp_san, dtype=torch.float64, device="cuda")
+            out = (xn_t @ comp_t).detach().cpu().numpy()
+        except Exception as exc:
+            _log_dprime(f"[DPRIME][DEVICE] projection fallback to CPU reason={type(exc).__name__}: {exc}")
+            out = xn @ comp_san
+    else:
+        out = xn @ comp_san
     out, _ = _sanitize_matrix(out, name="project.out", clip_abs=1e6)
     return out
 
@@ -423,11 +461,13 @@ class DPrimeRLService:
         stepd_dir: Path,
         cluster_daily: pd.DataFrame,
     ) -> Dict[str, object]:
+        t_pred_load = time.perf_counter()
         tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
         te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
 
         pred_df, pred_meta = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
         pred_time_df, pred_time_src = _load_pred_time_priority(stepc_dir, stepb_dir, cfg.symbol)
+        _log_timing("rl_pred_source_load", t_pred_load)
         print(f"[STEPDPRIME_INPUT] stepb_dir={stepb_dir}")
         print(f"[STEPDPRIME_INPUT] pred_source_candidate_files={pred_meta['pred_source_candidate_files']}")
         print(f"[STEPDPRIME_INPUT] pred_source_selected={pred_meta['pred_source_selected']}")
@@ -451,6 +491,7 @@ class DPrimeRLService:
                 pred_df[c] = 0.0
                 missing_filled[f"h{h:02d}"] = "zero_fill"
         print(f"[STEPDPRIME_INPUT] pred_missing_horizons_filled={missing_filled}")
+        t_merge = time.perf_counter()
         data = data.merge(pred_df[["Date"] + pred_cols], on="Date", how="left")
 
         if pred_time_df is not None:
@@ -464,6 +505,7 @@ class DPrimeRLService:
                 pred_meta["pred_source_selected"] = pred_time_src + "|" + str(pred_meta.get("pred_source_selected", ""))
 
         data = data.merge(cluster_daily[["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"]], on="Date", how="left")
+        _log_timing("rl_dataframe_merge", t_merge)
         data["cluster_id_raw20"] = pd.to_numeric(data.get("cluster_id_raw20"), errors="coerce").fillna(0).astype(int)
         data["cluster_id_stable"] = pd.to_numeric(data.get("cluster_id_stable"), errors="coerce").fillna(0).astype(int)
         data["rare_flag_raw20"] = pd.to_numeric(data.get("rare_flag_raw20"), errors="coerce").fillna(0).astype(int)
@@ -501,6 +543,7 @@ class DPrimeRLService:
         last_profile = ""
         with timing.stage("stepDPrimeRL.total"):
             for profile in cfg.profiles:
+                t_profile_total = time.perf_counter()
                 last_profile = profile
                 global _LAST_DPRIME_PROFILE
                 _LAST_DPRIME_PROFILE = profile
@@ -531,8 +574,10 @@ class DPrimeRLService:
                                 xf.append(data.iloc[i][pred_use_cols].to_numpy(dtype=float))
                         return np.asarray(xp, float), np.asarray(xf, float), ds
 
+                    t_state_rows = time.perf_counter()
                     Xp_tr, Xf_tr, Dtr = _build_rows(idx_train)
                     Xp_te, Xf_te, Dte = _build_rows(idx_test)
+                    _log_timing(f"profile_{profile}.state_generation", t_state_rows)
                     if len(Dtr) == 0 or len(Dte) == 0:
                         raise RuntimeError(f"profile={profile}: no rows for train/test")
 
@@ -548,11 +593,16 @@ class DPrimeRLService:
                     Xp_tr_n, _ = _sanitize_matrix((Xp_tr - mu_p) / sd_p, name=f"{profile}.Xp_tr_norm", clip_abs=1e6)
                     Xf_tr_n, _ = _sanitize_matrix((Xf_tr - mu_f) / sd_f, name=f"{profile}.Xf_tr_norm", clip_abs=1e6)
 
+                    t_pca_fit = time.perf_counter()
                     comp_p, d_p, pca_p_diag = _fit_pca(Xp_tr_n, cfg.z_past_dim)
                     pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
                     comp_f, d_f, pca_f_diag = _fit_pca(Xf_tr_n, pred_dim)
+                    _log_timing(f"profile_{profile}.pca_fit", t_pca_fit)
+
+                    t_proj = time.perf_counter()
                     Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
                     Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
+                    _log_timing(f"profile_{profile}.projection", t_proj)
 
                     pca_diag = {
                         "profile": profile,
@@ -579,12 +629,14 @@ class DPrimeRLService:
                     print(f"[STEPDPRIME_PCA] method={pca_p_diag['pca_method_used']} fallback_used={pca_p_diag['fallback_used']}")
                     print(f"[STEPDPRIME_PCA] z_past_dim_used={d_p} z_pred_dim_used={d_f}")
 
+                    t_groupby = time.perf_counter()
                     ref = (
                         data.sort_values("Date")
                         .dropna(subset=["Date"])
                         .groupby("Date", as_index=True)
                         .last()
                     )
+                    _log_timing(f"profile_{profile}.groupby_last", t_groupby)
 
                     def _scalar(date_value: pd.Timestamp, column: str, default: float = 0.0) -> float:
                         ts = pd.to_datetime(date_value)
@@ -613,6 +665,7 @@ class DPrimeRLService:
                     p_tr = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
                     p_te = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
                     s_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
+                    t_save = time.perf_counter()
                     df_tr.to_csv(p_tr, index=False)
                     df_te.to_csv(p_te, index=False)
                     pd.DataFrame([
@@ -664,6 +717,9 @@ class DPrimeRLService:
 
                     ep_all_named = emb_dir / f"stepDprime_{fam}_{pred_type}_{cfg.symbol}_embeddings_all.csv"
                     df_emb_all.to_csv(ep_all_named, index=False)
+                    _log_timing(f"profile_{profile}.csv_save", t_save)
+
+                    _log_timing(f"profile_{profile}.total", t_profile_total)
 
                     results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
 
@@ -676,7 +732,11 @@ class DPrimeRLService:
 
 class StepDPrimeService:
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
+        t_total = time.perf_counter()
         timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
+        _log_dprime(f"[DPRIME][DEVICE] torch_cuda_available={_cuda_available()}")
+        if not _cuda_available():
+            _log_dprime("[DPRIME][DEVICE] CUDA unavailable, fallback to CPU")
         mode = _normalize_mode(cfg.mode)
         out_root = Path(cfg.output_root)
         stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
@@ -692,17 +752,20 @@ class StepDPrimeService:
         try:
             with timing.stage("stepDPrime.total"):
                 with timing.stage("stepDPrime.load_inputs"):
+                    t_load_inputs = time.perf_counter()
                     stage_reached = "load_inputs"
                     split = _read_split_summary(stepa_dir, cfg.symbol)
                     pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
                     tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
                     pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+                    _log_timing("load_input_csv", t_load_inputs)
 
                 prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
                 tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
                 periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
                 with timing.stage("stepDPrime.build_features"):
+                    t_features = time.perf_counter()
                     stage_reached = "build_features"
                     base = _compute_base_features(prices, tech)
                     all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
@@ -712,6 +775,7 @@ class StepDPrimeService:
                             continue
                         all_df[c] = pd.to_numeric(all_df[c], errors="coerce")
                         all_df[c] = all_df[c].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                    _log_timing("feature_build", t_features)
 
                 cluster_service = DPrimeClusterService()
                 cluster_runtime_cfg = ClusterRuntimeConfig(
@@ -729,13 +793,16 @@ class StepDPrimeService:
                     cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
                 )
                 with timing.stage("stepDPrimeCluster.run"):
+                    t_cluster = time.perf_counter()
                     stage_reached = "cluster_run"
                     cluster_stage_reached = "cluster_run"
                     cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
                     cluster_stage_reached = "cluster_write"
+                    _log_timing("cluster_ticc", t_cluster)
 
                 rl_service = DPrimeRLService()
                 with timing.stage("stepDPrimeRL.run"):
+                    t_rl = time.perf_counter()
                     stage_reached = "rl_pred_load"
                     rl_stage_reached = "rl_pred_load"
                     rl_out = rl_service.run(
@@ -752,6 +819,7 @@ class StepDPrimeService:
                     pred_source_selected = str(rl_out.get("pred_source_selected", ""))
                     pred_source_mode = str(rl_out.get("pred_source_mode", ""))
                     pred_available_horizons = [int(x) for x in rl_out.get("pred_available_horizons", [])]
+                    _log_timing("state_generation", t_rl)
         except Exception:
             tb_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
             tb_text = traceback.format_exc()
@@ -817,4 +885,5 @@ class StepDPrimeService:
             raise FileNotFoundError(f"StepDPrime post-check missing artifacts: {missing}")
         print("[StepDPrime] DPrimeCluster complete (cluster_id_raw20/cluster_id_stable/rare_flag_raw20)")
         print("[StepDPrime] DPrimeRL complete (RL state with cluster integration)")
+        _log_timing("total", t_total)
         return rl_out
