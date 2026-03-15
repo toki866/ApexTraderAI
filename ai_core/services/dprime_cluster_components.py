@@ -78,8 +78,16 @@ class ClusterMonthlyTrainer:
         th_run = float(cfg.cluster_small_mean_run_threshold)
         k_eff_min = int(cfg.cluster_k_eff_min)
 
-        numeric_cols = [c for c in features.columns if c != "Date" and pd.api.types.is_numeric_dtype(features[c])]
-        x_train = features[numeric_cols].to_numpy(dtype=float) if numeric_cols else np.zeros((len(features), 1), dtype=float)
+        ticc_feature_cols = ["ret_1"]
+        if "ret_1" not in features.columns:
+            raise ValueError("TICC required feature missing: ret_1")
+        ticc_features = features[ticc_feature_cols].copy()
+        ticc_features["ret_1"] = (
+            pd.to_numeric(ticc_features["ret_1"], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        x_train = ticc_features.to_numpy(dtype=float)
         clusterer = TICCClusterer(
             num_clusters=max(2, raw_k),
             window_size=5,
@@ -112,6 +120,9 @@ class ClusterMonthlyTrainer:
 
         return {
             "train_df": train_df,
+            "ticc_feature_cols": ticc_feature_cols,
+            "ticc_feature_count": int(len(ticc_feature_cols)),
+            "ticc_train_shape": [int(x_train.shape[0]), int(x_train.shape[1])],
             "small_clusters": small_clusters,
             "valid_clusters": valid_clusters,
             "k_valid": len(valid_clusters),
@@ -178,6 +189,9 @@ class ClusterArtifactManager:
                 "long_months": int(cfg.cluster_long_window_months),
                 "enable_8y_context": bool(cfg.cluster_enable_8y_context),
             },
+            "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
+            "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
+            "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "status": "live",
         }
         manifest_path.write_text(json.dumps(feature_manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -189,6 +203,9 @@ class ClusterArtifactManager:
             "status": monthly.get("status", "live"),
             "note": monthly.get("note", ""),
             "k_raw": int(cfg.cluster_raw_k),
+            "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
+            "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
+            "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_clusters": list(monthly.get("small_clusters", [])),
@@ -224,6 +241,9 @@ class DPrimeClusterService:
         print(f"[DPrimeCluster] unique_dates={int(features['Date'].nunique()) if 'Date' in features.columns else 0}")
         print(f"[DPrimeCluster] raw20 training start k_raw={cfg.cluster_raw_k}")
         monthly = trainer.train(features, cfg)
+        print(f"[DPrimeCluster] ticc_feature_cols={monthly.get('ticc_feature_cols', [])}")
+        shape = tuple(monthly.get("ticc_train_shape", []))
+        print(f"[DPrimeCluster] ticc_train_shape={shape}")
         monthly_status = str(monthly.get("status", "")).strip().lower()
         monthly_note = str(monthly.get("note", ""))
         if monthly_status in {"placeholder", "not_wired", "planned"}:
@@ -254,6 +274,9 @@ class DPrimeClusterService:
             "status": str(monthly.get("status", "live")),
             "note": str(monthly.get("note", "")),
             "k_raw": int(cfg.cluster_raw_k),
+            "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
+            "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
+            "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_clusters": list(monthly.get("small_clusters", [])),
