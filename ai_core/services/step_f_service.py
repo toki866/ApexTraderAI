@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import traceback
 import warnings
 from copy import deepcopy
@@ -962,6 +963,11 @@ class StepFService:
         used = requested
         fallback_used = False
         fallback_reason = ""
+        backend_resolved_name = ""
+        backend_predict_methods: List[str] = []
+        exception_type = ""
+        exception_message = ""
+        traceback_path = ""
 
         if requested in {"ticc_raw20_stable", "ticc"}:
             try:
@@ -971,6 +977,8 @@ class StepFService:
                     x_test=x_test,
                     num_clusters=int(getattr(cfg, "raw20_num_clusters", 20)),
                 )
+                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
                 raw_stats = compute_cluster_stats(train_raw20.astype(int).tolist())
                 valid_clusters, rare_clusters = derive_valid_and_rare_clusters(
                     raw_stats,
@@ -986,6 +994,8 @@ class StepFService:
                     x_test=x_test,
                     num_clusters=k_eff,
                 )
+                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
                 used = "raw20_stable"
                 main_source = str(getattr(cfg, "cluster_main_source", "stable") or "stable").strip().lower()
                 train_main = train_stable if main_source == "stable" else train_raw20
@@ -1011,8 +1021,20 @@ class StepFService:
                 }
             except Exception as exc:
                 print(f"[STEPF_CLUSTER] ticc_raw20_stable_unavailable={type(exc).__name__}: {exc}")
+                exception_type = type(exc).__name__
+                exception_message = str(exc)
+                backend_resolved_name = str(getattr(self, "_last_ticc_backend_name", "") or backend_resolved_name)
+                backend_predict_methods = list(getattr(self, "_last_ticc_backend_predict_methods", []) or backend_predict_methods)
+                fallback_reason = self._classify_ticc_failure_reason(exc)
+                tb_text = traceback.format_exc()
+                traceback_path = self._write_ticc_traceback(tb_text)
+                print(f"[STEPF_CLUSTER] backend_resolved={backend_resolved_name or 'unknown'}")
+                print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(backend_predict_methods)}")
+                print(f"[STEPF_CLUSTER][WARN] requested=ticc_raw20_stable but fallback=none reason={fallback_reason}")
+                if traceback_path:
+                    print(f"[STEPF_CLUSTER][WARN] traceback_path={traceback_path}")
                 fallback_used = True
-                out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=f"ticc_failure:{type(exc).__name__}")
+                out, used, fallback_reason = self._run_cluster_fallback_dual(x_train=x_train, x_test=x_test, fallback_reason=fallback_reason)
                 raw_stats = pd.DataFrame(columns=["cluster_id", "count", "share", "mean_run"])
                 valid_clusters = []
                 rare_clusters = []
@@ -1043,9 +1065,14 @@ class StepFService:
         diag = {
             "clusterer_type_requested": requested,
             "clusterer_type_used": used,
+            "backend_resolved_name": backend_resolved_name,
+            "backend_predict_methods": backend_predict_methods,
             "fallback_type": fallback,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
+            "exception_type": exception_type,
+            "exception_message": exception_message,
+            "traceback_path": traceback_path,
             "raw20_num_clusters_requested": int(getattr(cfg, "raw20_num_clusters", 20)),
             "raw20_regime_count": int(len(pd.unique(out["train_raw20"]))),
             "k_valid": int(k_valid),
@@ -1091,9 +1118,48 @@ class StepFService:
             max_iter=int(cfg.ticc_max_iter),
             threshold=float(cfg.ticc_threshold),
         )
+        diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
+        self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or "")
+        self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or [])
+        if self._last_ticc_backend_name:
+            print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
+        if self._last_ticc_backend_predict_methods:
+            print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(self._last_ticc_backend_predict_methods)}")
         train_labels = clusterer.fit_predict_train(x_train)
+        diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
+        self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or self._last_ticc_backend_name)
+        self._last_ticc_backend_predict_methods = list(diag.get("backend_predict_methods", []) or self._last_ticc_backend_predict_methods)
+        if self._last_ticc_backend_name:
+            print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
+        if self._last_ticc_backend_predict_methods:
+            print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(self._last_ticc_backend_predict_methods)}")
         test_labels, strengths = clusterer.predict_test(x_test)
         return train_labels.astype(int), test_labels.astype(int), strengths.astype(float)
+
+    @staticmethod
+    def _classify_ticc_failure_reason(exc: Exception) -> str:
+        name = type(exc).__name__
+        message = str(exc).lower()
+        if name in {"ImportError", "ModuleNotFoundError"}:
+            return f"ticc_failure:ImportError"
+        if "missing_method" in message:
+            return "ticc_failure:PredictMethodMissing"
+        if "api mismatch" in message:
+            return "ticc_failure:BackendAPIMismatch"
+        if name == "ValueError":
+            return "ticc_failure:ValueError"
+        return f"ticc_failure:{name}"
+
+    @staticmethod
+    def _write_ticc_traceback(tb_text: str) -> str:
+        try:
+            root = Path(tempfile.gettempdir()) / "apex_traderai" / "stepf"
+            root.mkdir(parents=True, exist_ok=True)
+            path = root / "stepf_ticc_failure_traceback.log"
+            path.write_text(tb_text, encoding="utf-8")
+            return str(path)
+        except Exception:
+            return ""
 
     def _run_ticc_clusterer(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         clusterer = TICCClusterer(
