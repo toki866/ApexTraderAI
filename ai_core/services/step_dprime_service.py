@@ -460,10 +460,14 @@ class DPrimeRLService:
         stepc_dir: Path,
         stepd_dir: Path,
         cluster_daily: pd.DataFrame,
+        cluster_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, object]:
         t_pred_load = time.perf_counter()
         tr_s, tr_e = pd.to_datetime(split["train_start"]), pd.to_datetime(split["train_end"])
         te_s, te_e = pd.to_datetime(split["test_start"]), pd.to_datetime(split["test_end"])
+
+        cluster_summary = dict(cluster_summary or {})
+        cluster_status = str(cluster_summary.get("status", "unknown"))
 
         pred_df, pred_meta = _build_pred_from_stepb(stepb_dir, cfg.symbol, cfg.pred_k)
         pred_time_df, pred_time_src = _load_pred_time_priority(stepc_dir, stepb_dir, cfg.symbol)
@@ -681,7 +685,7 @@ class DPrimeRLService:
                         {"key": "pred_available_horizons", "value": "|".join(str(x) for x in available)},
                         {"key": "pred_missing_horizons_filled", "value": json.dumps(missing_filled, ensure_ascii=False)},
                         {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
-                        {"key": "dprime_cluster_status", "value": str(cluster_out.get("summary", {}).get("status", "unknown"))},
+                        {"key": "dprime_cluster_status", "value": cluster_status},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
                         {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
                     ]).to_csv(s_path, index=False)
@@ -749,6 +753,16 @@ class StepDPrimeService:
         pred_available_horizons: List[int] = []
         cluster_stage_reached = "not_started"
         rl_stage_reached = "not_started"
+        cluster_out: Dict[str, Any] = {
+            "daily": pd.DataFrame(
+                columns=["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"]
+            ),
+            "summary": {
+                "status": "not_started",
+                "note": "cluster stage not started",
+            },
+        }
+        rl_out: Dict[str, Any] = {}
         try:
             with timing.stage("stepDPrime.total"):
                 with timing.stage("stepDPrime.load_inputs"):
@@ -797,6 +811,27 @@ class StepDPrimeService:
                     stage_reached = "cluster_run"
                     cluster_stage_reached = "cluster_run"
                     cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
+                    if not isinstance(cluster_out, dict):
+                        raise RuntimeError(
+                            f"StepDPrime cluster output invalid type: {type(cluster_out).__name__}"
+                        )
+                    cluster_daily = cluster_out.get("daily")
+                    if not isinstance(cluster_daily, pd.DataFrame):
+                        raise RuntimeError(
+                            "StepDPrime cluster output missing daily DataFrame (required for RL merge)."
+                        )
+                    for required_col in ("Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"):
+                        if required_col not in cluster_daily.columns:
+                            raise RuntimeError(
+                                f"StepDPrime cluster daily missing required column={required_col}"
+                            )
+                    cluster_summary = cluster_out.get("summary")
+                    if not isinstance(cluster_summary, dict):
+                        cluster_summary = {
+                            "status": "invalid_summary",
+                            "note": f"summary type={type(cluster_summary).__name__}",
+                        }
+                        cluster_out["summary"] = cluster_summary
                     cluster_stage_reached = "cluster_write"
                     _log_timing("cluster_ticc", t_cluster)
 
@@ -814,6 +849,7 @@ class StepDPrimeService:
                         stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
                         stepd_dir=stepd_dir,
                         cluster_daily=cluster_out["daily"],
+                        cluster_summary=cluster_out.get("summary", {}),
                     )
                     rl_stage_reached = "rl_write_outputs"
                     pred_source_selected = str(rl_out.get("pred_source_selected", ""))
@@ -836,6 +872,8 @@ class StepDPrimeService:
                 "rl_stage_reached": rl_stage_reached,
                 "last_stage": stage_reached,
                 "last_profile": _LAST_DPRIME_PROFILE,
+                "dprime_cluster_status": str(cluster_out.get("summary", {}).get("status", "unknown")),
+                "dprime_cluster_note": str(cluster_out.get("summary", {}).get("note", "")),
             }
             summary_path = stepd_dir / f"stepDprime_failure_summary_{cfg.symbol}.json"
             summary_path.write_text(json.dumps(_json_safe(failure_summary), indent=2, ensure_ascii=False), encoding="utf-8")
