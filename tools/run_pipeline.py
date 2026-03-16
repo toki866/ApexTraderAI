@@ -2607,8 +2607,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _t0_dp = time.perf_counter()
                     _t0_dp_wall = time.time()
                     try:
-                        with timing.stage("stepDPrime.run"):
-                            results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+                        try:
+                            with timing.stage("stepDPrime.run"):
+                                results["stepDPRIME_result"] = _run_stepDPrime(app_config, symbol, date_range, mode=resolved_mamba_mode)
+                        except Exception:
+                            if _run_manifest is not None:
+                                _run_manifest.mark_step_audit("DPRIME", "FAIL")
+                            _mark_step("DPRIME", "failed")
+                            _emit_step_status(
+                                "DPRIME",
+                                status="fail",
+                                started_at=_t0_dp_wall,
+                                ended_at=time.time(),
+                                validated=False,
+                                detail="exception",
+                            )
+                            raise
                     finally:
                         _elapsed_dp = time.perf_counter() - _t0_dp
                     _dp_profiles = _OFFICIAL_STEPE_AGENTS
