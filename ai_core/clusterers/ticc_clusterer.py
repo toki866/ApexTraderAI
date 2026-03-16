@@ -52,6 +52,12 @@ class TICCClusterer:
         self._backend_entrypoint_name: str = ""
         self._backend_entrypoint_kind: str = ""
         self._backend_api_candidates: Tuple[str, ...] = tuple()
+        self._backend_signature: str = ""
+        self._last_x_original_shape: Tuple[int, ...] = tuple()
+        self._last_x_sent_shape: Tuple[int, ...] = tuple()
+        self._last_input_was_squeezed_univariate: bool = False
+        self._last_passed_keyword_names: Tuple[str, ...] = tuple()
+        self._last_result_type: str = ""
         self._train_centroids: Optional[np.ndarray] = None
         self._centroid_cluster_ids: Optional[np.ndarray] = None
 
@@ -150,11 +156,17 @@ class TICCClusterer:
             "backend_resolve_error": backend_error,
             "backend_entrypoint_name": entrypoint_name,
             "backend_entrypoint_kind": entrypoint_kind,
+            "backend_signature": self._backend_signature,
             "backend_predict_methods": [
                 name for name in self._backend_methods if name in {"predict", "predict_clusters", "transform"}
             ],
             "backend_methods": list(self._backend_methods),
             "backend_api_candidates": list(self._backend_api_candidates),
+            "x_original_shape": list(self._last_x_original_shape),
+            "x_sent_shape": list(self._last_x_sent_shape),
+            "input_was_squeezed_univariate": bool(self._last_input_was_squeezed_univariate),
+            "passed_keyword_names": list(self._last_passed_keyword_names),
+            "result_type": self._last_result_type,
         }
 
     def _instantiate_model(self, backend: _BackendSpec) -> Any:
@@ -172,6 +184,7 @@ class TICCClusterer:
     def _call_function_backend_fit_predict(self, *, backend: _BackendSpec, x: np.ndarray) -> Any:
         fn = backend.entrypoint
         sig = inspect.signature(fn)
+        self._backend_signature = str(sig)
         params = sig.parameters
         data_arg_candidates = ("data_series", "time_series", "observations", "input_data", "x", "X", "data", "series")
         common_kwargs = self._ticc_common_kwargs()
@@ -183,62 +196,92 @@ class TICCClusterer:
         }
         kwargs_all = {**common_kwargs, **alias_kwargs}
         kwargs = {k: v for k, v in kwargs_all.items() if k in params}
-        selected_data_kw: Optional[str] = None
+        data_key: Optional[str] = None
         for key in data_arg_candidates:
             if key in params:
-                kwargs[key] = x
-                selected_data_kw = key
+                data_key = key
                 break
 
-        positional_args: List[Any] = []
-        if selected_data_kw is None:
+        requires_positional_data = False
+        if data_key is None:
             required_positional = [
                 p
                 for p in params.values()
                 if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
                 and p.default is inspect._empty
             ]
-            if required_positional:
-                positional_args = [x]
+            requires_positional_data = bool(required_positional)
 
-        if selected_data_kw is None and not positional_args:
+        if data_key is None and not requires_positional_data:
             raise TICCUnavailableError(
                 "TICC function backend API mismatch: no compatible data input argument was found "
                 f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
                 f"supported_data_arg_candidates={list(data_arg_candidates)} accepted_kwargs={sorted(kwargs.keys())}"
             )
 
-        try:
-            result = fn(*positional_args, **kwargs)
-        except Exception as exc:
-            raise TICCUnavailableError(
-                "TICC function backend invocation failed "
-                f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
-                f"passed_positional={len(positional_args)} passed_keyword_names={sorted(kwargs.keys())} "
-                f"error={type(exc).__name__}: {exc}"
-            ) from exc
+        x_original_shape = tuple(int(v) for v in x.shape)
+        x_variants: List[Tuple[np.ndarray, bool]] = [(x, False)]
+        if x.ndim == 2 and x.shape[1] == 1:
+            x_variants.append((x[:, 0], True))
+
+        last_error: Optional[Exception] = None
+        attempt_errors: List[str] = []
+        for x_sent, squeezed in x_variants:
+            call_kwargs = dict(kwargs)
+            positional_args: List[Any] = []
+            if data_key is not None:
+                call_kwargs[data_key] = x_sent
+            elif requires_positional_data:
+                positional_args = [x_sent]
+
+            self._last_x_original_shape = x_original_shape
+            self._last_x_sent_shape = tuple(int(v) for v in np.asarray(x_sent).shape)
+            self._last_input_was_squeezed_univariate = bool(squeezed)
+            self._last_passed_keyword_names = tuple(sorted(call_kwargs.keys()))
+
+            try:
+                result = fn(*positional_args, **call_kwargs)
+                self._last_result_type = type(result).__name__
+                return self._extract_labels_from_result(result, expected_len=x.shape[0])
+            except Exception as exc:
+                last_error = exc
+                attempt_errors.append(
+                    f"x_sent_shape={self._last_x_sent_shape} squeezed={str(bool(squeezed)).lower()} "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+
+        detail = " | ".join(attempt_errors)
+        raise TICCUnavailableError(
+            "TICC function backend invocation failed "
+            f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
+            f"x_original_shape={x_original_shape} x_sent_shape={self._last_x_sent_shape} "
+            f"input_was_squeezed_univariate={str(self._last_input_was_squeezed_univariate).lower()} "
+            f"passed_positional={1 if requires_positional_data else 0} "
+            f"passed_keyword_names={sorted(self._last_passed_keyword_names)} "
+            f"inner_error={detail}"
+        ) from last_error
+
+    def _extract_labels_from_result(self, result: Any, *, expected_len: int) -> Any:
 
         if isinstance(result, dict):
             for key in ("labels", "cluster_assignment", "assignments", "y", "clusters", "point_labels"):
                 if key in result:
                     return result[key]
         if isinstance(result, (tuple, list)):
-            if self._is_label_like_array(result, expected_len=x.shape[0]):
+            if self._is_label_like_array(result, expected_len=expected_len):
                 return result
             for item in result:
-                if self._is_label_like_array(item, expected_len=x.shape[0]):
+                if self._is_label_like_array(item, expected_len=expected_len):
                     return item
         for attr_name in ("labels", "cluster_assignment", "assignments", "y", "clusters", "point_labels"):
             if hasattr(result, attr_name):
                 attr = getattr(result, attr_name)
-                if self._is_label_like_array(attr, expected_len=x.shape[0]):
+                if self._is_label_like_array(attr, expected_len=expected_len):
                     return attr
-        if not self._is_label_like_array(result, expected_len=x.shape[0]):
+        if not self._is_label_like_array(result, expected_len=expected_len):
             raise TICCUnavailableError(
                 "TICC function backend returned unsupported output for label extraction "
-                f"backend={backend.name} entrypoint={backend.entrypoint_name} signature={sig} "
-                f"passed_positional={len(positional_args)} passed_keyword_names={sorted(kwargs.keys())} "
-                f"result_type={type(result).__name__}"
+                f"expected_len={expected_len} result_type={type(result).__name__}"
             )
         return result
 

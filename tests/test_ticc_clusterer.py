@@ -107,3 +107,82 @@ def test_function_backend_tuple_result_extracts_labels(monkeypatch) -> None:
     c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
     labels = c.fit_predict_train(np.ones((4, 2), dtype=float))
     assert labels.tolist() == [0, 1, 0, 1]
+
+
+def test_function_backend_univariate_falls_back_to_squeezed_1d(monkeypatch) -> None:
+    def _ticc_labels(*, data_series, **kwargs):
+        arr = np.asarray(data_series)
+        if arr.ndim == 2:
+            raise ValueError("2d not supported")
+        return np.array([i % 2 for i in range(len(arr))], dtype=int)
+
+    monkeypatch.setattr(
+        tc_mod.TICCClusterer,
+        "_resolve_backend",
+        staticmethod(
+            lambda: tc_mod._BackendSpec(
+                name="fast_ticc",
+                entrypoint=_ticc_labels,
+                entrypoint_name="fast_ticc.ticc_labels",
+                entrypoint_kind="function",
+            )
+        ),
+    )
+    c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
+    labels = c.fit_predict_train(np.ones((5, 1), dtype=float))
+    assert labels.shape == (5,)
+    diag = c.get_diagnostics()
+    assert diag["x_original_shape"] == [5, 1]
+    assert diag["x_sent_shape"] == [5]
+    assert diag["input_was_squeezed_univariate"] is True
+
+
+def test_function_backend_object_result_extracts_point_labels(monkeypatch) -> None:
+    class _Result:
+        def __init__(self):
+            self.point_labels = [0, 1, 1, 0]
+
+    def _ticc_labels(*, data_series, **kwargs):
+        return _Result()
+
+    monkeypatch.setattr(
+        tc_mod.TICCClusterer,
+        "_resolve_backend",
+        staticmethod(
+            lambda: tc_mod._BackendSpec(
+                name="fast_ticc",
+                entrypoint=_ticc_labels,
+                entrypoint_name="fast_ticc.ticc_labels",
+                entrypoint_kind="function",
+            )
+        ),
+    )
+    c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
+    labels = c.fit_predict_train(np.ones((4, 2), dtype=float))
+    assert labels.tolist() == [0, 1, 1, 0]
+
+
+def test_function_backend_error_contains_shape_and_entrypoint(monkeypatch) -> None:
+    def _ticc_labels(*, data_series, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        tc_mod.TICCClusterer,
+        "_resolve_backend",
+        staticmethod(
+            lambda: tc_mod._BackendSpec(
+                name="fast_ticc",
+                entrypoint=_ticc_labels,
+                entrypoint_name="fast_ticc.ticc_labels",
+                entrypoint_kind="function",
+            )
+        ),
+    )
+    c = TICCClusterer(num_clusters=2, window_size=3, lambda_parameter=0.1, beta=10.0, max_iter=5, threshold=1e-3)
+    with pytest.raises(TICCUnavailableError) as ex:
+        c.fit_predict_train(np.ones((5, 1), dtype=float))
+    msg = str(ex.value)
+    assert "entrypoint=fast_ticc.ticc_labels" in msg
+    assert "x_original_shape=(5, 1)" in msg
+    assert "x_sent_shape=(5,)" in msg
+    assert "passed_keyword_names=" in msg
