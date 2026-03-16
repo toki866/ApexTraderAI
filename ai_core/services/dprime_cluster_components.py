@@ -133,9 +133,13 @@ class ClusterMonthlyTrainer:
             "backend_resolved_name": str(backend_diag.get("backend_resolved_name", "") or ""),
             "backend_entrypoint_name": str(backend_diag.get("backend_entrypoint_name", "") or ""),
             "backend_entrypoint_kind": str(backend_diag.get("backend_entrypoint_kind", "") or ""),
+            "backend_signature": str(backend_diag.get("backend_signature", "") or ""),
             "backend_api_candidates": list(backend_diag.get("backend_api_candidates", []) or []),
             "backend_predict_methods": list(backend_diag.get("backend_predict_methods", []) or []),
             "backend_methods": list(backend_diag.get("backend_methods", []) or []),
+            "x_original_shape": list(backend_diag.get("x_original_shape", []) or []),
+            "x_sent_shape": list(backend_diag.get("x_sent_shape", []) or []),
+            "input_was_squeezed_univariate": bool(backend_diag.get("input_was_squeezed_univariate", False)),
         }
 
 
@@ -244,6 +248,14 @@ class DPrimeClusterService:
         print(f"[DPrimeCluster] ticc_feature_cols={monthly.get('ticc_feature_cols', [])}")
         shape = tuple(monthly.get("ticc_train_shape", []))
         print(f"[DPrimeCluster] ticc_train_shape={shape}")
+        print(f"[TICC] backend_entrypoint={monthly.get('backend_entrypoint_name', '')}")
+        print(f"[TICC] backend_signature={monthly.get('backend_signature', '')}")
+        print(f"[TICC] x_original_shape={tuple(monthly.get('x_original_shape', []))}")
+        print(f"[TICC] x_sent_shape={tuple(monthly.get('x_sent_shape', []))}")
+        print(
+            "[TICC] input_was_squeezed_univariate="
+            f"{str(bool(monthly.get('input_was_squeezed_univariate', False))).lower()}"
+        )
         monthly_status = str(monthly.get("status", "")).strip().lower()
         monthly_note = str(monthly.get("note", ""))
         if monthly_status in {"placeholder", "not_wired", "planned"}:
@@ -283,9 +295,13 @@ class DPrimeClusterService:
             "backend_resolved_name": str(monthly.get("backend_resolved_name", "") or ""),
             "backend_entrypoint_name": str(monthly.get("backend_entrypoint_name", "") or ""),
             "backend_entrypoint_kind": str(monthly.get("backend_entrypoint_kind", "") or ""),
+            "backend_signature": str(monthly.get("backend_signature", "") or ""),
             "backend_api_candidates": list(monthly.get("backend_api_candidates", []) or []),
             "backend_predict_methods": list(monthly.get("backend_predict_methods", []) or []),
             "backend_methods": list(monthly.get("backend_methods", []) or []),
+            "x_original_shape": list(monthly.get("x_original_shape", []) or []),
+            "x_sent_shape": list(monthly.get("x_sent_shape", []) or []),
+            "input_was_squeezed_univariate": bool(monthly.get("input_was_squeezed_univariate", False)),
             "outputs": paths,
         }
         return {"daily": daily, "summary": summary}
