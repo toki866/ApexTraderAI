@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
 from ai_core.clusterers.ticc_clusterer import TICCClusterer
+from ai_core.utils.cluster_stats import compute_cluster_stats, derive_valid_and_rare_clusters
 
 import numpy as np
 import pandas as pd
@@ -72,51 +73,139 @@ class ClusterFeatureBuilder:
 class ClusterMonthlyTrainer:
     """Monthly refit facade using TICC backend for raw20 labels and stable map."""
 
+    _FEATURE_CANDIDATES: List[str] = [
+        "ret_1",
+        "ret_5",
+        "ret_20",
+        "range_atr",
+        "body_ratio",
+        "body_atr",
+        "upper_wick_ratio",
+        "lower_wick_ratio",
+        "Gap",
+        "ATR_norm",
+        "gap_atr",
+        "vol_log_ratio_20",
+        "vol_chg",
+        "dev_z_25",
+        "bnf_score",
+        "RSI",
+        "MACD_hist",
+        "macd_hist_delta",
+        "clv",
+        "dist_count_25",
+        "cmf_20",
+        "cluster_short_signal",
+        "cluster_mid_signal",
+        "cluster_long_signal",
+        "ctx_8y_high_distance",
+        "ctx_8y_low_distance",
+        "ctx_8y_range_position",
+        "ctx_8y_drawdown",
+        "ctx_8y_vol_percentile",
+        "ctx_8y_return_rank",
+        "ctx_8y_trend_strength_scalar",
+    ]
+
+    @classmethod
+    def _select_ticc_features(cls, features: pd.DataFrame) -> List[str]:
+        cols = [c for c in cls._FEATURE_CANDIDATES if c in features.columns]
+        if not cols:
+            raise ValueError("No valid cluster features were found for TICC training")
+        return cols
+
+    @staticmethod
+    def _distribution(labels: pd.Series) -> Dict[str, int]:
+        return {str(int(k)): int(v) for k, v in labels.value_counts().sort_index().items()}
+
     def train(self, features: pd.DataFrame, cfg: ClusterRuntimeConfig) -> Dict[str, object]:
         raw_k = int(cfg.cluster_raw_k)
         th_share = float(cfg.cluster_small_share_threshold)
         th_run = float(cfg.cluster_small_mean_run_threshold)
         k_eff_min = int(cfg.cluster_k_eff_min)
 
-        ticc_feature_cols = ["ret_1"]
-        if "ret_1" not in features.columns:
-            raise ValueError("TICC required feature missing: ret_1")
+        ticc_feature_cols = self._select_ticc_features(features)
         ticc_features = features[ticc_feature_cols].copy()
-        ticc_features["ret_1"] = (
-            pd.to_numeric(ticc_features["ret_1"], errors="coerce")
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0.0)
-        )
+        for col in ticc_feature_cols:
+            ticc_features[col] = pd.to_numeric(ticc_features[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
         x_train = ticc_features.to_numpy(dtype=float)
-        clusterer = TICCClusterer(
-            num_clusters=max(2, raw_k),
+
+        raw_clusterer = TICCClusterer(
+            num_clusters=raw_k,
             window_size=5,
             lambda_parameter=0.11,
             beta=600.0,
             max_iter=100,
             threshold=2e-5,
         )
-        raw_id = pd.Series(clusterer.fit_predict_train(x_train), index=features.index, dtype=int)
-        backend_diag = clusterer.get_diagnostics()
+        raw_id = pd.Series(raw_clusterer.fit_predict_train(x_train), index=features.index, dtype=int)
+        raw_backend_diag = raw_clusterer.get_diagnostics()
 
         train_df = features[["Date"]].copy()
         train_df["cluster_id_raw20"] = raw_id.astype(int)
+        raw_distinct = int(train_df["cluster_id_raw20"].nunique())
+        if raw_distinct <= 1:
+            raise RuntimeError(f"raw20 clustering collapsed to {raw_distinct} distinct cluster(s)")
 
-        run_id = (train_df["cluster_id_raw20"] != train_df["cluster_id_raw20"].shift(1)).cumsum().rename("run_id")
-        runs = train_df.groupby(["cluster_id_raw20", run_id], as_index=False).size().rename(columns={"size": "run_len"})
-        mean_run = runs.groupby("cluster_id_raw20")["run_len"].mean()
-        share = train_df["cluster_id_raw20"].value_counts(normalize=True).sort_index()
+        raw_stats = compute_cluster_stats(train_df["cluster_id_raw20"].astype(int).tolist())
+        valid_clusters, small_clusters = derive_valid_and_rare_clusters(
+            raw_stats,
+            share_min=th_share,
+            mean_run_min=th_run,
+        )
+        k_valid = int(len(valid_clusters))
+        if k_valid <= 1:
+            raise RuntimeError(f"raw20 valid clusters collapsed to {k_valid} after small-cluster filtering")
 
-        small_clusters = [
-            int(cid)
-            for cid in share.index
-            if float(share.loc[cid]) < th_share and float(mean_run.get(cid, 0.0)) < th_run
-        ]
-        valid_clusters = [int(cid) for cid in sorted(train_df["cluster_id_raw20"].unique().tolist()) if int(cid) not in set(small_clusters)]
-        if not valid_clusters:
-            valid_clusters = [0]
-        k_eff = max(k_eff_min, len(valid_clusters))
-        stable_map = {cid: i % k_eff for i, cid in enumerate(valid_clusters)}
+        k_eff = int(min(raw_k, max(k_eff_min, k_valid)))
+        if not (k_eff_min <= k_eff <= raw_k):
+            raise RuntimeError(f"invalid k_eff={k_eff} derived from k_valid={k_valid} raw_k={raw_k}")
+
+        stable_clusterer = TICCClusterer(
+            num_clusters=k_eff,
+            window_size=5,
+            lambda_parameter=0.11,
+            beta=600.0,
+            max_iter=100,
+            threshold=2e-5,
+        )
+        stable_id = pd.Series(stable_clusterer.fit_predict_train(x_train), index=features.index, dtype=int)
+        stable_backend_diag = stable_clusterer.get_diagnostics()
+        train_df["cluster_id_stable"] = stable_id.astype(int)
+        stable_distinct = int(train_df["cluster_id_stable"].nunique())
+        if stable_distinct <= 1:
+            raise RuntimeError(f"stable clustering collapsed to {stable_distinct} distinct cluster(s)")
+
+        stable_map: Dict[int, int] = {}
+        for cid in sorted(train_df["cluster_id_raw20"].unique().tolist()):
+            rows = train_df.loc[train_df["cluster_id_raw20"] == int(cid), "cluster_id_stable"]
+            if rows.empty:
+                continue
+            stable_map[int(cid)] = int(rows.mode(dropna=False).iloc[0])
+        if len(set(stable_map.values())) <= 1:
+            raise RuntimeError("raw20->stable mapping collapsed to a single stable cluster")
+
+        raw_stats_records = raw_stats.to_dict(orient="records")
+        small_details = []
+        for rec in raw_stats_records:
+            cid = int(rec["cluster_id"])
+            is_small = cid in set(small_clusters)
+            reason = ""
+            if is_small:
+                reason = (
+                    f"share={float(rec['share']):.6f} < {th_share:.6f} and "
+                    f"mean_run={float(rec['mean_run']):.6f} < {th_run:.6f}"
+                )
+            small_details.append(
+                {
+                    "cluster_id": cid,
+                    "count": int(rec["count"]),
+                    "share": float(rec["share"]),
+                    "mean_run": float(rec["mean_run"]),
+                    "is_small": bool(is_small),
+                    "reason": reason,
+                }
+            )
 
         return {
             "train_df": train_df,
@@ -125,21 +214,28 @@ class ClusterMonthlyTrainer:
             "ticc_train_shape": [int(x_train.shape[0]), int(x_train.shape[1])],
             "small_clusters": small_clusters,
             "valid_clusters": valid_clusters,
-            "k_valid": len(valid_clusters),
+            "k_valid": k_valid,
             "k_eff": int(k_eff),
             "stable_map": stable_map,
+            "raw_label_distribution": self._distribution(train_df["cluster_id_raw20"]),
+            "stable_label_distribution": self._distribution(train_df["cluster_id_stable"]),
+            "raw_stats": raw_stats_records,
+            "small_cluster_details": small_details,
+            "stable_distinct": stable_distinct,
             "status": "live",
             "note": "TICC backend active for monthly raw20 fitting and stable mapping.",
-            "backend_resolved_name": str(backend_diag.get("backend_resolved_name", "") or ""),
-            "backend_entrypoint_name": str(backend_diag.get("backend_entrypoint_name", "") or ""),
-            "backend_entrypoint_kind": str(backend_diag.get("backend_entrypoint_kind", "") or ""),
-            "backend_signature": str(backend_diag.get("backend_signature", "") or ""),
-            "backend_api_candidates": list(backend_diag.get("backend_api_candidates", []) or []),
-            "backend_predict_methods": list(backend_diag.get("backend_predict_methods", []) or []),
-            "backend_methods": list(backend_diag.get("backend_methods", []) or []),
-            "x_original_shape": list(backend_diag.get("x_original_shape", []) or []),
-            "x_sent_shape": list(backend_diag.get("x_sent_shape", []) or []),
-            "input_was_squeezed_univariate": bool(backend_diag.get("input_was_squeezed_univariate", False)),
+            "backend_resolved_name": str(raw_backend_diag.get("backend_resolved_name", "") or ""),
+            "backend_entrypoint_name": str(raw_backend_diag.get("backend_entrypoint_name", "") or ""),
+            "backend_entrypoint_kind": str(raw_backend_diag.get("backend_entrypoint_kind", "") or ""),
+            "backend_signature": str(raw_backend_diag.get("backend_signature", "") or ""),
+            "backend_api_candidates": list(raw_backend_diag.get("backend_api_candidates", []) or []),
+            "backend_predict_methods": list(raw_backend_diag.get("backend_predict_methods", []) or []),
+            "backend_methods": list(raw_backend_diag.get("backend_methods", []) or []),
+            "x_original_shape": list(raw_backend_diag.get("x_original_shape", []) or []),
+            "x_sent_shape": list(raw_backend_diag.get("x_sent_shape", []) or []),
+            "input_was_squeezed_univariate": bool(raw_backend_diag.get("input_was_squeezed_univariate", False)),
+            "raw_backend_diagnostics": raw_backend_diag,
+            "stable_backend_diagnostics": stable_backend_diag,
         }
 
 
@@ -149,9 +245,7 @@ class ClusterDailyAssigner:
     def assign(self, features: pd.DataFrame, monthly: Dict[str, object], cfg: ClusterRuntimeConfig) -> pd.DataFrame:
         out = features[["Date"]].copy()
         out["cluster_id_raw20"] = monthly["train_df"]["cluster_id_raw20"].astype(int).to_numpy()
-        stable_map = dict(monthly.get("stable_map", {}))
-        fallback = int(next(iter(stable_map.values()))) if stable_map else 0
-        out["cluster_id_stable"] = out["cluster_id_raw20"].map(lambda x: stable_map.get(int(x), fallback)).astype(int)
+        out["cluster_id_stable"] = monthly["train_df"]["cluster_id_stable"].astype(int).to_numpy()
         out["rare_flag_raw20"] = out["cluster_id_raw20"].isin(set(monthly.get("small_clusters", []))).astype(int)
         out["year_month"] = pd.to_datetime(out["Date"], errors="coerce").dt.to_period("M").astype(str)
         if not bool(cfg.cluster_rare_flag_enabled):
@@ -179,11 +273,34 @@ class ClusterArtifactManager:
         mapping_path = self.cluster_root / f"cluster_mapping_raw20_to_stable_{self.symbol}.json"
         manifest_path = self.cluster_root / f"cluster_feature_manifest_{self.symbol}.json"
 
+        pre_save_raw_dist = {str(int(k)): int(v) for k, v in daily["cluster_id_raw20"].value_counts().sort_index().items()}
+        pre_save_stable_dist = {str(int(k)): int(v) for k, v in daily["cluster_id_stable"].value_counts().sort_index().items()}
         daily.to_csv(assign_path, index=False)
         # legacy-compatible outputs under stepDprime/<mode>/ naming
         legacy_assign = self.stepd_dir / f"stepDprime_cluster_daily_assign_{self.symbol}.csv"
         daily.to_csv(legacy_assign, index=False)
-        mapping_path.write_text(json.dumps({"mapping": monthly.get("stable_map", {})}, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        reloaded = pd.read_csv(assign_path)
+        post_save_raw_dist = {str(int(k)): int(v) for k, v in reloaded["cluster_id_raw20"].value_counts().sort_index().items()}
+        post_save_stable_dist = {str(int(k)): int(v) for k, v in reloaded["cluster_id_stable"].value_counts().sort_index().items()}
+        if pre_save_raw_dist != post_save_raw_dist or pre_save_stable_dist != post_save_stable_dist:
+            raise RuntimeError("cluster assignments distribution changed after save/reload")
+
+        mapping_payload = {
+            "mapping": monthly.get("stable_map", {}),
+            "raw_label_distribution": monthly.get("raw_label_distribution", {}),
+            "stable_label_distribution": monthly.get("stable_label_distribution", {}),
+        }
+        mapping_path.write_text(json.dumps(mapping_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        (models_raw / f"raw20_model_meta_{self.symbol}.json").write_text(
+            json.dumps(monthly.get("raw_backend_diagnostics", {}), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (models_stable / f"stable_model_meta_{self.symbol}.json").write_text(
+            json.dumps(monthly.get("stable_backend_diagnostics", {}), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
         feature_manifest = {
             "source": "StepA-only",
@@ -213,6 +330,20 @@ class ClusterArtifactManager:
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_clusters": list(monthly.get("small_clusters", [])),
+            "raw_label_distribution": monthly.get("raw_label_distribution", {}),
+            "stable_label_distribution": monthly.get("stable_label_distribution", {}),
+            "save_roundtrip_distribution": {
+                "pre_save": {
+                    "cluster_id_raw20": pre_save_raw_dist,
+                    "cluster_id_stable": pre_save_stable_dist,
+                },
+                "post_save_reload": {
+                    "cluster_id_raw20": post_save_raw_dist,
+                    "cluster_id_stable": post_save_stable_dist,
+                },
+            },
+            "small_cluster_details": list(monthly.get("small_cluster_details", [])),
+            "raw_cluster_stats": list(monthly.get("raw_stats", [])),
             "paths": {
                 "assignments": str(assign_path),
                 "summary": str(summary_path),
@@ -268,7 +399,12 @@ class DPrimeClusterService:
         )
         print(f"[DPrimeCluster] stable training start k_eff_min={cfg.cluster_k_eff_min}")
         daily = assigner.assign(features, monthly, cfg)
+        stable_distinct = int(daily["cluster_id_stable"].nunique()) if len(daily) else 0
+        if stable_distinct <= 1:
+            raise RuntimeError(f"stable daily assignment collapsed to {stable_distinct} distinct cluster(s)")
         print(f"[DPrimeCluster] stable training end k_eff={monthly.get('k_eff')}")
+        print(f"[DPrimeCluster] raw_label_distribution={monthly.get('raw_label_distribution', {})}")
+        print(f"[DPrimeCluster] stable_label_distribution={monthly.get('stable_label_distribution', {})}")
 
         paths = artifacts.write(daily=daily, monthly=monthly, cfg=cfg)
         print(f"[DPrimeCluster] assignments_written={paths.get('legacy_daily_assign', paths.get('assignments', ''))}")
