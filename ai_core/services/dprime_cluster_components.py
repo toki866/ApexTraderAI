@@ -73,58 +73,58 @@ class ClusterFeatureBuilder:
 class ClusterMonthlyTrainer:
     """Monthly refit facade using TICC backend for raw20 labels and stable map."""
 
-    _FEATURE_CANDIDATES: List[str] = [
+    _FEATURE_SET_CORE8: List[str] = [
         "ret_1",
         "ret_5",
         "ret_20",
-        "range_atr",
-        "body_ratio",
-        "body_atr",
-        "upper_wick_ratio",
-        "lower_wick_ratio",
-        "Gap",
         "ATR_norm",
         "gap_atr",
         "vol_log_ratio_20",
-        "vol_chg",
         "dev_z_25",
-        "bnf_score",
-        "RSI",
-        "MACD_hist",
-        "macd_hist_delta",
-        "clv",
-        "dist_count_25",
-        "cmf_20",
-        "cluster_short_signal",
-        "cluster_mid_signal",
-        "cluster_long_signal",
-        "ctx_8y_high_distance",
-        "ctx_8y_low_distance",
-        "ctx_8y_range_position",
-        "ctx_8y_drawdown",
-        "ctx_8y_vol_percentile",
-        "ctx_8y_return_rank",
-        "ctx_8y_trend_strength_scalar",
+        "body_ratio",
     ]
+    _FEATURE_SET_CALENDAR10: List[str] = [
+        "ret_1",
+        "ret_5",
+        "ret_20",
+        "ATR_norm",
+        "gap_atr",
+        "vol_log_ratio_20",
+        "dev_z_25",
+        "body_ratio",
+        "per_cal_year365_sin",
+        "per_cal_year365_cos",
+    ]
+    _FEATURE_SETS: Dict[str, List[str]] = {
+        "core8": _FEATURE_SET_CORE8,
+        "calendar10": _FEATURE_SET_CALENDAR10,
+    }
 
     @classmethod
-    def _select_ticc_features(cls, features: pd.DataFrame) -> List[str]:
-        cols = [c for c in cls._FEATURE_CANDIDATES if c in features.columns]
-        if not cols:
-            raise ValueError("No valid cluster features were found for TICC training")
-        return cols
+    def _select_ticc_features(cls, features: pd.DataFrame, feature_set: str = "calendar10") -> List[str]:
+        selected = cls._FEATURE_SETS.get(str(feature_set))
+        if selected is None:
+            supported = sorted(cls._FEATURE_SETS.keys())
+            raise ValueError(f"Unsupported TICC feature_set={feature_set!r}. Supported: {supported}")
+
+        missing = [col for col in selected if col not in features.columns]
+        if missing:
+            raise ValueError(
+                f"Missing required TICC feature columns for feature_set={feature_set}: {missing}"
+            )
+        return list(selected)
 
     @staticmethod
     def _distribution(labels: pd.Series) -> Dict[str, int]:
         return {str(int(k)): int(v) for k, v in labels.value_counts().sort_index().items()}
 
-    def train(self, features: pd.DataFrame, cfg: ClusterRuntimeConfig) -> Dict[str, object]:
+    def train(self, features: pd.DataFrame, cfg: ClusterRuntimeConfig, feature_set: str = "calendar10") -> Dict[str, object]:
         raw_k = int(cfg.cluster_raw_k)
         th_share = float(cfg.cluster_small_share_threshold)
         th_run = float(cfg.cluster_small_mean_run_threshold)
         k_eff_min = int(cfg.cluster_k_eff_min)
 
-        ticc_feature_cols = self._select_ticc_features(features)
+        ticc_feature_cols = self._select_ticc_features(features, feature_set=feature_set)
         ticc_features = features[ticc_feature_cols].copy()
         for col in ticc_feature_cols:
             ticc_features[col] = pd.to_numeric(ticc_features[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -209,6 +209,7 @@ class ClusterMonthlyTrainer:
 
         return {
             "train_df": train_df,
+            "ticc_feature_set_name": str(feature_set),
             "ticc_feature_cols": ticc_feature_cols,
             "ticc_feature_count": int(len(ticc_feature_cols)),
             "ticc_train_shape": [int(x_train.shape[0]), int(x_train.shape[1])],
@@ -310,6 +311,7 @@ class ClusterArtifactManager:
                 "long_months": int(cfg.cluster_long_window_months),
                 "enable_8y_context": bool(cfg.cluster_enable_8y_context),
             },
+            "ticc_feature_set_name": str(monthly.get("ticc_feature_set_name", "calendar10")),
             "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
             "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
@@ -324,6 +326,7 @@ class ClusterArtifactManager:
             "status": monthly.get("status", "live"),
             "note": monthly.get("note", ""),
             "k_raw": int(cfg.cluster_raw_k),
+            "ticc_feature_set_name": str(monthly.get("ticc_feature_set_name", "calendar10")),
             "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
             "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
@@ -376,6 +379,7 @@ class DPrimeClusterService:
         print(f"[DPrimeCluster] unique_dates={int(features['Date'].nunique()) if 'Date' in features.columns else 0}")
         print(f"[DPrimeCluster] raw20 training start k_raw={cfg.cluster_raw_k}")
         monthly = trainer.train(features, cfg)
+        print(f"[DPrimeCluster] ticc_feature_set_name={monthly.get('ticc_feature_set_name', 'calendar10')}")
         print(f"[DPrimeCluster] ticc_feature_cols={monthly.get('ticc_feature_cols', [])}")
         shape = tuple(monthly.get("ticc_train_shape", []))
         print(f"[DPrimeCluster] ticc_train_shape={shape}")
@@ -422,6 +426,7 @@ class DPrimeClusterService:
             "status": str(monthly.get("status", "live")),
             "note": str(monthly.get("note", "")),
             "k_raw": int(cfg.cluster_raw_k),
+            "ticc_feature_set_name": str(monthly.get("ticc_feature_set_name", "calendar10")),
             "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
             "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
