@@ -859,7 +859,33 @@ class StepDPrimeService:
                     ready_path=str(ready),
                 )
         except Exception as e:
-            write_status_marker(marker_dir, "DPrimeBaseCluster", "FAILED", {"symbol": cfg.symbol, "error": repr(e)})
+            diag_payload = {
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
+                "error": repr(e),
+                "error_type": type(e).__name__,
+                "traceback": traceback.format_exc(),
+                "config": {
+                    "cluster_backend": str(cfg.cluster_backend),
+                    "cluster_raw_k": int(cfg.cluster_raw_k),
+                    "cluster_k_eff_min": int(cfg.cluster_k_eff_min),
+                    "cluster_small_share_threshold": float(cfg.cluster_small_share_threshold),
+                    "cluster_small_mean_run_threshold": float(cfg.cluster_small_mean_run_threshold),
+                },
+                "artifacts_present": {
+                    "base_features": str((stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv").exists()).lower(),
+                    "cluster_daily": str((stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv").exists()).lower(),
+                    "cluster_summary": str((stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json").exists()).lower(),
+                },
+            }
+            diag_path = stepd_dir / f"stepDprime_base_cluster_diagnostics_{cfg.symbol}.json"
+            diag_path.write_text(json.dumps(_json_safe(diag_payload), indent=2, ensure_ascii=False), encoding="utf-8")
+            write_status_marker(
+                marker_dir,
+                "DPrimeBaseCluster",
+                "FAILED",
+                {"symbol": cfg.symbol, "error": repr(e), "diagnostics_path": str(diag_path)},
+            )
             raise
 
     def run_final_profile(self, cfg: StepDPrimeConfig, profile: str, *, force_cpu: bool = False) -> StepDPrimeProfileResult:
