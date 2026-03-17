@@ -154,8 +154,13 @@ class ClusterMonthlyTrainer:
             mean_run_min=th_run,
         )
         k_valid = int(len(valid_clusters))
-        if k_valid <= 1:
-            raise RuntimeError(f"raw20 valid clusters collapsed to {k_valid} after small-cluster filtering")
+        collapse_after_small_filter = bool(k_valid <= 1)
+        collapse_reason = ""
+        if collapse_after_small_filter:
+            collapse_reason = (
+                f"raw20 valid clusters collapsed to {k_valid} after small-cluster filtering; "
+                "continuing with k_eff fallback for stable re-fit"
+            )
 
         k_eff = int(min(raw_k, max(k_eff_min, k_valid)))
         if not (k_eff_min <= k_eff <= raw_k):
@@ -217,6 +222,8 @@ class ClusterMonthlyTrainer:
             "valid_clusters": valid_clusters,
             "k_valid": k_valid,
             "k_eff": int(k_eff),
+            "small_filtering_collapse_detected": bool(collapse_after_small_filter),
+            "small_filtering_collapse_reason": collapse_reason,
             "stable_map": stable_map,
             "raw_label_distribution": self._distribution(train_df["cluster_id_raw20"]),
             "stable_label_distribution": self._distribution(train_df["cluster_id_stable"]),
@@ -332,6 +339,8 @@ class ClusterArtifactManager:
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
+            "small_filtering_collapse_detected": bool(monthly.get("small_filtering_collapse_detected", False)),
+            "small_filtering_collapse_reason": str(monthly.get("small_filtering_collapse_reason", "")),
             "small_clusters": list(monthly.get("small_clusters", [])),
             "raw_label_distribution": monthly.get("raw_label_distribution", {}),
             "stable_label_distribution": monthly.get("stable_label_distribution", {}),
@@ -432,6 +441,8 @@ class DPrimeClusterService:
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
             "k_eff": int(monthly.get("k_eff", 0)),
+            "small_filtering_collapse_detected": bool(monthly.get("small_filtering_collapse_detected", False)),
+            "small_filtering_collapse_reason": str(monthly.get("small_filtering_collapse_reason", "")),
             "small_clusters": list(monthly.get("small_clusters", [])),
             "backend_resolved_name": str(monthly.get("backend_resolved_name", "") or ""),
             "backend_entrypoint_name": str(monthly.get("backend_entrypoint_name", "") or ""),
