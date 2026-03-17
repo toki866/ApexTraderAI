@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import argparse
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List
 
 from ai_core.services.step_dprime_service import StepDPrimeConfig, StepDPrimeService
 from ai_core.services.step_e_service import StepEConfig, StepEService
@@ -17,6 +16,7 @@ class DPrimePipelineOrchestratorConfig:
     mode: str
     output_root: str
     stepd_cfg: StepDPrimeConfig
+    force_cpu_dprime_final: bool = True
 
 
 class DPrimePipelineOrchestrator:
@@ -57,12 +57,17 @@ class DPrimePipelineOrchestrator:
 
         profiles_done: List[str] = []
         for profile in cfg.stepd_cfg.profiles:
-            dprime.run_final_profile(cfg.stepd_cfg, profile)
+            dprime.run_final_profile(cfg.stepd_cfg, profile, force_cpu=bool(cfg.force_cpu_dprime_final))
             profiles_done.append(profile)
             stepe_cfg = self.stepe_cfg_by_profile.get(profile)
             if stepe_cfg is not None:
-                write_status_marker(marker_dir, f"StepE_{stepe_cfg.agent}", "RUNNING", {"profile": profile, "agent": stepe_cfg.agent})
-                self.step_e_service.run_agent(stepe_cfg, date_range=self.date_range, symbol=cfg.symbol, mode=cfg.mode)
-                write_status_marker(marker_dir, f"StepE_{stepe_cfg.agent}", "READY", {"profile": profile, "agent": stepe_cfg.agent})
+                marker_name = f"StepE_{stepe_cfg.agent}"
+                write_status_marker(marker_dir, marker_name, "RUNNING", {"profile": profile, "agent": stepe_cfg.agent})
+                try:
+                    self.step_e_service.run_agent(stepe_cfg, date_range=self.date_range, symbol=cfg.symbol, mode=cfg.mode)
+                except BaseException as exc:
+                    write_status_marker(marker_dir, marker_name, "FAILED", {"profile": profile, "agent": stepe_cfg.agent, "error": repr(exc)})
+                    raise
+                write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "agent": stepe_cfg.agent})
 
         return {"status": "done", "profiles_done": profiles_done}

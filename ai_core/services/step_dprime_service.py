@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 import traceback
@@ -35,6 +36,8 @@ def _log_timing(label: str, started_at: float) -> None:
 
 
 def _cuda_available() -> bool:
+    if str(os.environ.get("DPRIME_FORCE_CPU", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     return bool(torch.cuda.is_available())
 
 _PROFILES: Tuple[str, ...] = (
@@ -734,6 +737,30 @@ class DPrimeRLService:
         return results
 
 
+
+
+class _DPrimeForceCPUContext:
+    def __init__(self, enabled: bool):
+        self.enabled = bool(enabled)
+        self.prev = None
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        self.prev = os.environ.get("DPRIME_FORCE_CPU")
+        os.environ["DPRIME_FORCE_CPU"] = "1"
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self.enabled:
+            return False
+        if self.prev is None:
+            os.environ.pop("DPRIME_FORCE_CPU", None)
+        else:
+            os.environ["DPRIME_FORCE_CPU"] = self.prev
+        return False
+
+
 @dataclass
 class StepDPrimeBaseClusterResult:
     status: str
@@ -802,8 +829,6 @@ class StepDPrimeService:
                 cluster_cfg = ClusterRuntimeConfig(
                     symbol=cfg.symbol,
                     mode=cfg.mode,
-                    output_root=cfg.output_root,
-                    stepA_root=cfg.stepA_root,
                     cluster_backend=cfg.cluster_backend,
                     cluster_raw_k=cfg.cluster_raw_k,
                     cluster_k_eff_min=cfg.cluster_k_eff_min,
@@ -814,14 +839,14 @@ class StepDPrimeService:
                     cluster_long_window_months=cfg.cluster_long_window_months,
                     cluster_enable_8y_context=cfg.cluster_enable_8y_context,
                     cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
-                    timing_logger=timing,
                 )
-                cluster_out = cluster_service.run(cluster_cfg)
+                periodic = all_df[["Date"]].copy()
+                cluster_out = cluster_service.run(cluster_cfg, data=all_df, periodic=periodic, stepd_dir=stepd_dir)
                 cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
                 cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
                 if not cluster_daily_path.exists() or not cluster_summary_path.exists():
                     raise FileNotFoundError("DPrimeCluster artifacts missing")
-                ready = write_status_marker(marker_dir, "DPrimeCluster", "READY", {
+                ready = write_status_marker(marker_dir, "DPrimeBaseCluster", "READY", {
                     "symbol": cfg.symbol,
                     "base_features_path": str(base_path),
                     "cluster_daily_path": str(cluster_daily_path),
@@ -837,7 +862,7 @@ class StepDPrimeService:
             write_status_marker(marker_dir, "DPrimeBaseCluster", "FAILED", {"symbol": cfg.symbol, "error": repr(e)})
             raise
 
-    def run_final_profile(self, cfg: StepDPrimeConfig, profile: str) -> StepDPrimeProfileResult:
+    def run_final_profile(self, cfg: StepDPrimeConfig, profile: str, *, force_cpu: bool = False) -> StepDPrimeProfileResult:
         from ai_core.utils.file_ready_utils import write_status_marker
 
         timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
@@ -847,43 +872,47 @@ class StepDPrimeService:
         marker_name = f"DPrimeFinal_{profile}"
         write_status_marker(marker_dir, marker_name, "RUNNING", {"symbol": cfg.symbol, "profile": profile})
         try:
-            base_path = stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"
-            if base_path.exists():
-                all_df = pd.read_csv(base_path)
-                all_df["Date"] = pd.to_datetime(all_df["Date"], errors="coerce").dt.normalize()
-                split = _read_split_summary(paths["stepa_dir"], cfg.symbol)
-            else:
-                split, all_df = self._build_all_df(cfg, paths["stepa_dir"])
-            cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
-            if not cluster_daily_path.exists():
-                raise FileNotFoundError(f"missing cluster daily: {cluster_daily_path}")
-            cluster_daily = pd.read_csv(cluster_daily_path)
-            cluster_daily["Date"] = pd.to_datetime(cluster_daily["Date"], errors="coerce").dt.normalize()
-            cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
-            cluster_summary = {}
-            if cluster_summary_path.exists():
-                cluster_summary = json.loads(cluster_summary_path.read_text(encoding="utf-8"))
+            with _DPrimeForceCPUContext(force_cpu):
+                base_path = stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"
+                if base_path.exists():
+                    all_df = pd.read_csv(base_path)
+                    all_df["Date"] = pd.to_datetime(all_df["Date"], errors="coerce").dt.normalize()
+                    split = _read_split_summary(paths["stepa_dir"], cfg.symbol)
+                else:
+                    split, all_df = self._build_all_df(cfg, paths["stepa_dir"])
 
-            rl_service = DPrimeRLService()
-            profile_cfg = StepDPrimeConfig(**{**cfg.__dict__, "profiles": (profile,)})
-            rl_out = rl_service.run(
-                profile_cfg,
-                timing=timing,
-                data=all_df.copy(),
-                split=split,
-                stepb_dir=paths["stepb_dir"],
-                stepc_dir=paths["stepc_dir"],
-                stepd_dir=stepd_dir,
-                cluster_daily=cluster_daily,
-                cluster_summary=cluster_summary,
-            )
+                cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
+                if not cluster_daily_path.exists():
+                    raise FileNotFoundError(f"missing cluster daily: {cluster_daily_path}")
+                cluster_daily = pd.read_csv(cluster_daily_path)
+                cluster_daily["Date"] = pd.to_datetime(cluster_daily["Date"], errors="coerce").dt.normalize()
+
+                cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
+                cluster_summary = {}
+                if cluster_summary_path.exists():
+                    cluster_summary = json.loads(cluster_summary_path.read_text(encoding="utf-8"))
+
+                rl_service = DPrimeRLService()
+                profile_cfg = StepDPrimeConfig(**{**cfg.__dict__, "profiles": (profile,)})
+                rl_service.run(
+                    profile_cfg,
+                    timing=timing,
+                    data=all_df.copy(),
+                    split=split,
+                    stepb_dir=paths["stepb_dir"],
+                    stepc_dir=paths["stepc_dir"],
+                    stepd_dir=stepd_dir,
+                    cluster_daily=cluster_daily,
+                    cluster_summary=cluster_summary,
+                )
+
             summary_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
             train_path = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
             test_path = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
             emb_path = stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
             if not train_path.exists() or not test_path.exists() or not emb_path.exists():
                 raise FileNotFoundError(f"StepDPrime final profile artifacts missing: {profile}")
-            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol})
+            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol, "force_cpu": bool(force_cpu)})
             return StepDPrimeProfileResult(
                 status="READY",
                 profile=profile,
@@ -894,7 +923,7 @@ class StepDPrimeService:
                 ready_path=str(ready),
             )
         except Exception as e:
-            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e)})
+            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e), "force_cpu": bool(force_cpu)})
             raise
 
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
