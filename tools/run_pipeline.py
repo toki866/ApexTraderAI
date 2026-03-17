@@ -1493,17 +1493,16 @@ def _run_stepB(app_config, symbol: str, date_range, enable_mamba: bool, enable_m
     return fn(cfg)
 
 
-def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
-    from ai_core.services.step_dprime_service import StepDPrimeService, StepDPrimeConfig
+def _build_stepdprime_config(app_config, symbol: str, mode: str, *, output_root: Optional[str] = None):
+    from ai_core.services.step_dprime_service import StepDPrimeConfig
 
-    out_root = str(getattr(app_config, "output_root", "output"))
+    out_root = str(output_root or getattr(app_config, "output_root", "output"))
     cluster_cfg = getattr(app_config, "cluster_regime", None)
-    raw_cfg = {
+    existing = app_config.get("stepDPrime") if isinstance(app_config, dict) else getattr(app_config, "stepDPrime", None)
+    base_raw = {
         "symbol": symbol,
         "mode": (mode or "sim"),
         "output_root": out_root,
-        "seed": 42,
-        "device": "auto",
         "enable_cluster_regime": bool(getattr(cluster_cfg, "enable_cluster_regime", True)),
         "enable_cluster_monthly_refit": bool(getattr(cluster_cfg, "enable_cluster_monthly_refit", True)),
         "enable_cluster_daily_assign": bool(getattr(cluster_cfg, "enable_cluster_daily_assign", True)),
@@ -1520,7 +1519,48 @@ def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
         "cluster_rare_flag_enabled": bool(getattr(cluster_cfg, "cluster_rare_flag_enabled", True)),
         "timing_logger": _get_timing_logger(app_config),
     }
-    cfg = StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **raw_cfg))
+    if existing is not None:
+        if isinstance(existing, dict):
+            for k, v in existing.items():
+                base_raw[k] = v
+        else:
+            for k in getattr(StepDPrimeConfig, "__dataclass_fields__", {}).keys():
+                if hasattr(existing, k):
+                    base_raw[k] = getattr(existing, k)
+    base_raw["symbol"] = symbol
+    base_raw["mode"] = (mode or base_raw.get("mode") or "sim")
+    base_raw["output_root"] = out_root
+    return StepDPrimeConfig(**_filter_kwargs_for_ctor(StepDPrimeConfig, **base_raw))
+
+
+def _build_stepe_profile_agent_map(app_config: Any, profiles: Sequence[str]) -> Dict[str, Any]:
+    raw_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+    cfgs = list(raw_cfgs) if isinstance(raw_cfgs, (list, tuple)) else ([raw_cfgs] if raw_cfgs else [])
+    by_profile: Dict[str, Any] = {}
+    by_agent: Dict[str, Any] = {}
+    for cfg in cfgs:
+        if cfg is None:
+            continue
+        agent = getattr(cfg, "agent", None) if not isinstance(cfg, dict) else cfg.get("agent")
+        dprof = getattr(cfg, "dprime_profile", None) if not isinstance(cfg, dict) else cfg.get("dprime_profile")
+        if dprof:
+            by_profile[str(dprof)] = cfg
+        if agent:
+            by_agent[str(agent)] = cfg
+    out: Dict[str, Any] = {}
+    for p in profiles:
+        if p in by_profile:
+            out[p] = by_profile[p]
+        elif p in by_agent:
+            out[p] = by_agent[p]
+    return out
+
+
+def _run_stepDPrime(app_config, symbol: str, date_range, mode: str):
+    from ai_core.services.step_dprime_service import StepDPrimeService
+
+    out_root = str(getattr(app_config, "output_root", "output"))
+    cfg = _build_stepdprime_config(app_config, symbol, mode, output_root=out_root)
     svc = StepDPrimeService()
     return svc.run(cfg)
 
@@ -1795,6 +1835,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--execution-mode", dest="execution_mode", default="sequential", help="Execution mode label for timing logs.")
     ap.add_argument("--clear-timing", type=int, default=None, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default=None, help="Optional CSV subset of StepE agents to run.")
+    ap.add_argument("--enable-dprime-stream", dest="enable_dprime_stream", type=int, default=0, help="If 1, run StepB->StepC and DPrime base+cluster in parallel, then stream per-profile StepE.")
+    ap.add_argument("--force-cpu", dest="force_cpu", type=int, default=0, choices=[0,1], help="If 1, force StepD' final profile generation to CPU (avoid GPU contention with StepE).")
     ap.add_argument("--reuse-output", dest="reuse_output", type=int, default=0, choices=[0, 1],
                     help="If 1, reuse artifacts from prior runs with matching signature (skip complete steps).")
     ap.add_argument("--force-rebuild", dest="force_rebuild", type=int, default=0, choices=[0, 1],
@@ -2465,6 +2507,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     test_months=int(args.test_months),
                     log_prefix="STEPA_SYNC",
                 )
+
+            _enable_dprime_stream = bool(int(getattr(args, "enable_dprime_stream", 0)))
+            if _enable_dprime_stream and all(s in steps for s in ("B", "C", "DPRIME", "E")):
+                from ai_core.services.dprime_pipeline_orchestrator import DPrimePipelineOrchestrator, DPrimePipelineOrchestratorConfig
+                from ai_core.services.step_e_service import StepEService
+
+                print("[DPRIME_STREAM] enabled=1 mode=safe")
+                _d_cfg = _build_stepdprime_config(app_config, symbol, resolved_mode, output_root=str(resolved_output_root))
+                _map = _build_stepe_profile_agent_map(app_config, _d_cfg.profiles)
+
+                def _run_step_bc_lane() -> None:
+                    _run_step_generic("B", app_config, symbol, date_range, results)
+                    _run_step_generic("C", app_config, symbol, date_range, results)
+
+                orch = DPrimePipelineOrchestrator(step_e_service=StepEService(app_config), date_range=date_range, stepe_cfg_by_profile=_map)
+                orch.run(
+                    DPrimePipelineOrchestratorConfig(
+                        symbol=symbol,
+                        mode=resolved_mode,
+                        output_root=str(resolved_output_root),
+                        stepd_cfg=_d_cfg,
+                        force_cpu_dprime_final=bool(int(getattr(args, "force_cpu", 0))),
+                    ),
+                    run_step_bc=_run_step_bc_lane,
+                )
+                steps = tuple(s for s in steps if s not in ("B", "C", "DPRIME", "E"))
 
             if "B" in steps:
                 app_config = _apply_config_output_root(app_config, Path(canonical_output_root))
