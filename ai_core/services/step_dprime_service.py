@@ -734,67 +734,76 @@ class DPrimeRLService:
         return results
 
 
+@dataclass
+class StepDPrimeBaseClusterResult:
+    status: str
+    base_features_path: str
+    cluster_daily_path: str
+    cluster_summary_path: str
+    ready_path: str
+
+
+@dataclass
+class StepDPrimeProfileResult:
+    status: str
+    profile: str
+    state_train_path: str
+    state_test_path: str
+    summary_path: str
+    embedding_all_path: str
+    ready_path: str
+
+
 class StepDPrimeService:
-    def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
-        t_total = time.perf_counter()
-        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
-        _log_dprime(f"[DPRIME][DEVICE] torch_cuda_available={_cuda_available()}")
-        if not _cuda_available():
-            _log_dprime("[DPRIME][DEVICE] CUDA unavailable, fallback to CPU")
+    def _resolve_paths(self, cfg: StepDPrimeConfig) -> Dict[str, Path]:
         mode = _normalize_mode(cfg.mode)
         out_root = Path(cfg.output_root)
-        stepa_dir = Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode
-        stepb_dir = Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode
-        stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
-        stepd_dir.mkdir(parents=True, exist_ok=True)
-        stage_reached = "init"
-        pred_source_selected = ""
-        pred_source_mode = ""
-        pred_available_horizons: List[int] = []
-        cluster_stage_reached = "not_started"
-        rl_stage_reached = "not_started"
-        cluster_out: Dict[str, Any] = {
-            "daily": pd.DataFrame(
-                columns=["Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"]
-            ),
-            "summary": {
-                "status": "not_started",
-                "note": "cluster stage not started",
-            },
+        return {
+            "mode": Path(mode),
+            "stepa_dir": Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode,
+            "stepb_dir": Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode,
+            "stepc_dir": Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode,
+            "stepd_dir": Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode,
         }
-        rl_out: Dict[str, Any] = {}
+
+    def _build_all_df(self, cfg: StepDPrimeConfig, stepa_dir: Path) -> Tuple[Dict[str, str], pd.DataFrame]:
+        split = _read_split_summary(stepa_dir, cfg.symbol)
+        pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
+        tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
+        pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
+        prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
+        base = _compute_base_features(prices, tech)
+        all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
+        all_df["Close_anchor"] = _safe(prices, "Close")
+        for c in all_df.columns:
+            if c == "Date":
+                continue
+            all_df[c] = pd.to_numeric(all_df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return split, all_df
+
+    def run_base_cluster(self, cfg: StepDPrimeConfig) -> StepDPrimeBaseClusterResult:
+        from ai_core.utils.file_ready_utils import write_status_marker
+
+        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
+        paths = self._resolve_paths(cfg)
+        stepd_dir = paths["stepd_dir"]
+        stepa_dir = paths["stepa_dir"]
+        stepd_dir.mkdir(parents=True, exist_ok=True)
+        marker_dir = stepd_dir / "pipeline_markers"
+        write_status_marker(marker_dir, "DPrimeBaseCluster", "RUNNING", {"symbol": cfg.symbol})
         try:
-            with timing.stage("stepDPrime.total"):
-                with timing.stage("stepDPrime.load_inputs"):
-                    t_load_inputs = time.perf_counter()
-                    stage_reached = "load_inputs"
-                    split = _read_split_summary(stepa_dir, cfg.symbol)
-                    pr_tr, pr_te = _read_pair(stepa_dir, "stepA_prices", cfg.symbol)
-                    tc_tr, tc_te = _read_pair(stepa_dir, "stepA_tech", cfg.symbol)
-                    pe_tr, pe_te = _read_pair(stepa_dir, "stepA_periodic", cfg.symbol)
-                    _log_timing("load_input_csv", t_load_inputs)
-
-                prices = pd.concat([pr_tr, pr_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-                tech = pd.concat([tc_tr, tc_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-                periodic = pd.concat([pe_tr, pe_te], ignore_index=True).sort_values("Date").reset_index(drop=True)
-
-                with timing.stage("stepDPrime.build_features"):
-                    t_features = time.perf_counter()
-                    stage_reached = "build_features"
-                    base = _compute_base_features(prices, tech)
-                    all_df = base.merge(tech, on="Date", how="left", suffixes=("", "_tech")).merge(periodic, on="Date", how="left")
-                    all_df["Close_anchor"] = _safe(prices, "Close")
-                    for c in all_df.columns:
-                        if c == "Date":
-                            continue
-                        all_df[c] = pd.to_numeric(all_df[c], errors="coerce")
-                        all_df[c] = all_df[c].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-                    _log_timing("feature_build", t_features)
-
+            with timing.stage("stepDPrime.base_cluster"):
+                _, all_df = self._build_all_df(cfg, stepa_dir)
+                base_path = stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"
+                all_df.to_csv(base_path, index=False)
                 cluster_service = DPrimeClusterService()
-                cluster_runtime_cfg = ClusterRuntimeConfig(
+                cluster_cfg = ClusterRuntimeConfig(
                     symbol=cfg.symbol,
                     mode=cfg.mode,
+                    output_root=cfg.output_root,
+                    stepA_root=cfg.stepA_root,
                     cluster_backend=cfg.cluster_backend,
                     cluster_raw_k=cfg.cluster_raw_k,
                     cluster_k_eff_min=cfg.cluster_k_eff_min,
@@ -805,123 +814,111 @@ class StepDPrimeService:
                     cluster_long_window_months=cfg.cluster_long_window_months,
                     cluster_enable_8y_context=cfg.cluster_enable_8y_context,
                     cluster_rare_flag_enabled=cfg.cluster_rare_flag_enabled,
+                    timing_logger=timing,
                 )
-                with timing.stage("stepDPrimeCluster.run"):
-                    t_cluster = time.perf_counter()
-                    stage_reached = "cluster_run"
-                    cluster_stage_reached = "cluster_run"
-                    cluster_out = cluster_service.run(cluster_runtime_cfg, all_df.copy(), periodic.copy(), stepd_dir)
-                    if not isinstance(cluster_out, dict):
-                        raise RuntimeError(
-                            f"StepDPrime cluster output invalid type: {type(cluster_out).__name__}"
-                        )
-                    cluster_daily = cluster_out.get("daily")
-                    if not isinstance(cluster_daily, pd.DataFrame):
-                        raise RuntimeError(
-                            "StepDPrime cluster output missing daily DataFrame (required for RL merge)."
-                        )
-                    for required_col in ("Date", "cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"):
-                        if required_col not in cluster_daily.columns:
-                            raise RuntimeError(
-                                f"StepDPrime cluster daily missing required column={required_col}"
-                            )
-                    cluster_summary = cluster_out.get("summary")
-                    if not isinstance(cluster_summary, dict):
-                        cluster_summary = {
-                            "status": "invalid_summary",
-                            "note": f"summary type={type(cluster_summary).__name__}",
-                        }
-                        cluster_out["summary"] = cluster_summary
-                    cluster_stage_reached = "cluster_write"
-                    _log_timing("cluster_ticc", t_cluster)
-
-                rl_service = DPrimeRLService()
-                with timing.stage("stepDPrimeRL.run"):
-                    t_rl = time.perf_counter()
-                    stage_reached = "rl_pred_load"
-                    rl_stage_reached = "rl_pred_load"
-                    rl_out = rl_service.run(
-                        cfg,
-                        timing=timing,
-                        data=all_df.copy(),
-                        split=split,
-                        stepb_dir=stepb_dir,
-                        stepc_dir=(Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode),
-                        stepd_dir=stepd_dir,
-                        cluster_daily=cluster_out["daily"],
-                        cluster_summary=cluster_out.get("summary", {}),
-                    )
-                    rl_stage_reached = "rl_write_outputs"
-                    pred_source_selected = str(rl_out.get("pred_source_selected", ""))
-                    pred_source_mode = str(rl_out.get("pred_source_mode", ""))
-                    pred_available_horizons = [int(x) for x in rl_out.get("pred_available_horizons", [])]
-                    _log_timing("state_generation", t_rl)
-        except Exception:
-            tb_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
-            tb_text = traceback.format_exc()
-            tb_path.write_text(tb_text, encoding="utf-8")
-            failure_summary = {
-                "exception_type": str(type(sys.exc_info()[1]).__name__) if sys.exc_info()[1] else "Exception",
-                "exception_repr": repr(sys.exc_info()[1]),
-                "traceback_path": str(tb_path),
-                "stepb_dir": str(stepb_dir),
-                "pred_source_selected": pred_source_selected,
-                "pred_source_mode": pred_source_mode,
-                "pred_available_horizons": pred_available_horizons,
-                "cluster_stage_reached": cluster_stage_reached,
-                "rl_stage_reached": rl_stage_reached,
-                "last_stage": stage_reached,
-                "last_profile": _LAST_DPRIME_PROFILE,
-                "dprime_cluster_status": str(cluster_out.get("summary", {}).get("status", "unknown")),
-                "dprime_cluster_note": str(cluster_out.get("summary", {}).get("note", "")),
-            }
-            summary_path = stepd_dir / f"stepDprime_failure_summary_{cfg.symbol}.json"
-            summary_path.write_text(json.dumps(_json_safe(failure_summary), indent=2, ensure_ascii=False), encoding="utf-8")
-            print(f"[STEPDPRIME_FAIL] exception_repr={failure_summary['exception_repr']}")
-            print(f"[STEPDPRIME_FAIL] traceback_path={tb_path}")
-            print(f"[STEPDPRIME_FAIL] failure_summary_path={summary_path}")
-            print("[STEPDPRIME_FAIL_TRACEBACK_BEGIN]")
-            print(tb_text.rstrip())
-            print("[STEPDPRIME_FAIL_TRACEBACK_END]")
+                cluster_out = cluster_service.run(cluster_cfg)
+                cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
+                cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
+                if not cluster_daily_path.exists() or not cluster_summary_path.exists():
+                    raise FileNotFoundError("DPrimeCluster artifacts missing")
+                ready = write_status_marker(marker_dir, "DPrimeCluster", "READY", {
+                    "symbol": cfg.symbol,
+                    "base_features_path": str(base_path),
+                    "cluster_daily_path": str(cluster_daily_path),
+                })
+                return StepDPrimeBaseClusterResult(
+                    status="READY",
+                    base_features_path=str(base_path),
+                    cluster_daily_path=str(cluster_daily_path),
+                    cluster_summary_path=str(cluster_summary_path),
+                    ready_path=str(ready),
+                )
+        except Exception as e:
+            write_status_marker(marker_dir, "DPrimeBaseCluster", "FAILED", {"symbol": cfg.symbol, "error": repr(e)})
             raise
 
-        rl_out["dprime_cluster"] = cluster_out.get("summary", {})
-        rl_out["stepDPrime_internal_flow"] = [
-            "StepA",
-            "DPrimeCluster",
-            "cluster_id_raw20/stable",
-            "StepB",
-            "StepC",
-            "DPrimeRL",
-            "StepE",
-            "StepF",
-        ]
-        rl_out["notes"] = [
-            "DPrimeCluster uses StepA-derived inputs only (no StepB prediction leakage).",
-            "cluster backend ticc is connected to live path for raw20/stable assignment.",
-            "Workflow/CLI compatibility is preserved with external step name DPRIME.",
-        ]
+    def run_final_profile(self, cfg: StepDPrimeConfig, profile: str) -> StepDPrimeProfileResult:
+        from ai_core.utils.file_ready_utils import write_status_marker
 
-        stage_reached = "summary_write"
-        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(
-            json.dumps(_json_safe(rl_out), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
+        paths = self._resolve_paths(cfg)
+        stepd_dir = paths["stepd_dir"]
+        marker_dir = stepd_dir / "pipeline_markers"
+        marker_name = f"DPrimeFinal_{profile}"
+        write_status_marker(marker_dir, marker_name, "RUNNING", {"symbol": cfg.symbol, "profile": profile})
+        try:
+            base_path = stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"
+            if base_path.exists():
+                all_df = pd.read_csv(base_path)
+                all_df["Date"] = pd.to_datetime(all_df["Date"], errors="coerce").dt.normalize()
+                split = _read_split_summary(paths["stepa_dir"], cfg.symbol)
+            else:
+                split, all_df = self._build_all_df(cfg, paths["stepa_dir"])
+            cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
+            if not cluster_daily_path.exists():
+                raise FileNotFoundError(f"missing cluster daily: {cluster_daily_path}")
+            cluster_daily = pd.read_csv(cluster_daily_path)
+            cluster_daily["Date"] = pd.to_datetime(cluster_daily["Date"], errors="coerce").dt.normalize()
+            cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
+            cluster_summary = {}
+            if cluster_summary_path.exists():
+                cluster_summary = json.loads(cluster_summary_path.read_text(encoding="utf-8"))
 
-        required_files = [
-            stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv",
-            stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json",
-            stepd_dir / f"stepDprime_state_test_dprime_all_features_h01_{cfg.symbol}.csv",
-            stepd_dir / f"stepDprime_summary_{cfg.symbol}.json",
-        ]
-        missing = [str(p) for p in required_files if not p.exists()]
-        emb_exists = bool(list((stepd_dir / "embeddings").glob(f"stepDprime_*_{cfg.symbol}_embeddings_all.csv")))
-        if not emb_exists:
-            missing.append(str(stepd_dir / "embeddings" / f"stepDprime_*_{cfg.symbol}_embeddings_all.csv"))
-        stage_reached = "post_check"
-        if missing:
-            raise FileNotFoundError(f"StepDPrime post-check missing artifacts: {missing}")
-        print("[StepDPrime] DPrimeCluster complete (cluster_id_raw20/cluster_id_stable/rare_flag_raw20)")
-        print("[StepDPrime] DPrimeRL complete (RL state with cluster integration)")
-        _log_timing("total", t_total)
-        return rl_out
+            rl_service = DPrimeRLService()
+            profile_cfg = StepDPrimeConfig(**{**cfg.__dict__, "profiles": (profile,)})
+            rl_out = rl_service.run(
+                profile_cfg,
+                timing=timing,
+                data=all_df.copy(),
+                split=split,
+                stepb_dir=paths["stepb_dir"],
+                stepc_dir=paths["stepc_dir"],
+                stepd_dir=stepd_dir,
+                cluster_daily=cluster_daily,
+                cluster_summary=cluster_summary,
+            )
+            summary_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
+            train_path = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
+            test_path = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
+            emb_path = stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
+            if not train_path.exists() or not test_path.exists() or not emb_path.exists():
+                raise FileNotFoundError(f"StepDPrime final profile artifacts missing: {profile}")
+            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol})
+            return StepDPrimeProfileResult(
+                status="READY",
+                profile=profile,
+                state_train_path=str(train_path),
+                state_test_path=str(test_path),
+                summary_path=str(summary_path),
+                embedding_all_path=str(emb_path),
+                ready_path=str(ready),
+            )
+        except Exception as e:
+            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e)})
+            raise
+
+    def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
+        base = self.run_base_cluster(cfg)
+        profile_results: Dict[str, Dict[str, str]] = {}
+        for profile in cfg.profiles:
+            p = self.run_final_profile(cfg, profile)
+            profile_results[profile] = {
+                "train": p.state_train_path,
+                "test": p.state_test_path,
+                "summary": p.summary_path,
+                "embedding_all": p.embedding_all_path,
+            }
+        out = {
+            "mode": cfg.mode,
+            "symbol": cfg.symbol,
+            "profiles": profile_results,
+            "output_dir": str((Path(cfg.stepDprime_root) if cfg.stepDprime_root else Path(cfg.output_root) / "stepDprime" / _normalize_mode(cfg.mode))),
+            "dprime_cluster": {
+                "status": base.status,
+                "cluster_daily_path": base.cluster_daily_path,
+                "cluster_summary_path": base.cluster_summary_path,
+            },
+        }
+        stepd_dir = Path(out["output_dir"])
+        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(_json_safe(out), indent=2, ensure_ascii=False), encoding="utf-8")
+        return out

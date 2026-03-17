@@ -1795,6 +1795,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--execution-mode", dest="execution_mode", default="sequential", help="Execution mode label for timing logs.")
     ap.add_argument("--clear-timing", type=int, default=None, choices=[0, 1], help="Clear timing events file before run when --timing=1.")
     ap.add_argument("--stepe-agents", dest="stepe_agents", default=None, help="Optional CSV subset of StepE agents to run.")
+    ap.add_argument("--enable-dprime-stream", dest="enable_dprime_stream", type=int, default=0, help="If 1, run StepB->StepC and DPrime base+cluster in parallel, then stream per-profile StepE.")
     ap.add_argument("--reuse-output", dest="reuse_output", type=int, default=0, choices=[0, 1],
                     help="If 1, reuse artifacts from prior runs with matching signature (skip complete steps).")
     ap.add_argument("--force-rebuild", dest="force_rebuild", type=int, default=0, choices=[0, 1],
@@ -2465,6 +2466,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     test_months=int(args.test_months),
                     log_prefix="STEPA_SYNC",
                 )
+
+            _enable_dprime_stream = bool(int(getattr(args, "enable_dprime_stream", 0)))
+            if _enable_dprime_stream and all(s in steps for s in ("B", "C", "DPRIME", "E")):
+                from ai_core.services.dprime_pipeline_orchestrator import DPrimePipelineOrchestrator, DPrimePipelineOrchestratorConfig
+                from ai_core.services.step_dprime_service import StepDPrimeConfig
+                from ai_core.services.step_e_service import StepEService
+
+                print("[DPRIME_STREAM] enabled=1 mode=safe")
+                _raw_cfgs = getattr(app_config, "stepE", None) if not isinstance(app_config, dict) else app_config.get("stepE")
+                _cfgs = list(_raw_cfgs) if isinstance(_raw_cfgs, (list, tuple)) else ([_raw_cfgs] if _raw_cfgs else [])
+                _dprime_profiles = list(getattr(getattr(app_config, "stepDPrime", None), "profiles", ()) or ())
+                _map = {}
+                for _idx, _prof in enumerate(_dprime_profiles):
+                    if _idx < len(_cfgs):
+                        _map[_prof] = _cfgs[_idx]
+                _d_cfg = StepDPrimeConfig(symbol=symbol, mode=resolved_mode, output_root=str(resolved_output_root))
+
+                def _run_step_bc_lane() -> None:
+                    _run_step_generic("B", app_config, symbol, date_range, results)
+                    _run_step_generic("C", app_config, symbol, date_range, results)
+
+                orch = DPrimePipelineOrchestrator(step_e_service=StepEService(app_config), date_range=date_range, stepe_cfg_by_profile=_map)
+                orch.run(
+                    DPrimePipelineOrchestratorConfig(symbol=symbol, mode=resolved_mode, output_root=str(resolved_output_root), stepd_cfg=_d_cfg),
+                    run_step_bc=_run_step_bc_lane,
+                )
+                steps = tuple(s for s in steps if s not in ("B", "C", "DPRIME", "E"))
 
             if "B" in steps:
                 app_config = _apply_config_output_root(app_config, Path(canonical_output_root))

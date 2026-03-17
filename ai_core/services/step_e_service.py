@@ -160,6 +160,13 @@ class StepEService:
         t = getattr(self.app_config, "_timing_logger", None)
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
+    def run_agent(self, cfg: StepEConfig, *, date_range, symbol: str, mode: Optional[str] = None) -> Dict[str, object]:
+        resolved_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
+        if resolved_mode in {"ops", "prod", "production", "real"}:
+            resolved_mode = "live"
+        self._run_one(cfg, date_range=date_range, symbol=symbol, mode=resolved_mode)
+        return {"agent": str(cfg.agent), "status": "done", "mode": resolved_mode, "symbol": symbol}
+
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
         timing = self._timing()
         with timing.stage("stepE.total"):
