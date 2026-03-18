@@ -64,7 +64,14 @@ class StepBService:
             raise RuntimeError(f"StepBService mode_dir points to repo cache output path: {p}")
         return p
 
-    def _actual_device(self) -> str:
+    def _actual_device(self, *agent_results) -> str:
+        for result in agent_results:
+            candidate = getattr(result, "device_execution", None)
+            if candidate:
+                return str(candidate)
+            info = getattr(result, "info", None)
+            if isinstance(info, dict) and info.get("device_execution"):
+                return str(info["device_execution"])
         return "cuda" if torch.cuda.is_available() else "cpu"
 
     def _load_stepa_split_df(self, symbol: str, run_mode: str, kind: str, split: str) -> pd.DataFrame:
@@ -568,7 +575,7 @@ class StepBService:
                 "symbol": symbol,
                 "mode": run_mode,
                 "output_root": str(self._out_root()),
-                "device_execution": self._actual_device(),
+                "device_execution": self._actual_device(full_res, periodic_res),
                 "pred_time_all_path": str(pred_time_all_path),
                 "prediction_paths": {
                     "full": str(getattr(full_res, "pred_close_path", "")),

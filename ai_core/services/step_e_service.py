@@ -306,17 +306,13 @@ class StepEService:
             dp = [c for c in df_train.columns if c.startswith("dprime_") and "_emb_" in c]
             if dp:
                 nonzero_ratio = float((df_train[dp].abs().sum(axis=1) > 1e-9).mean())
-                if nonzero_ratio < 0.5:
-                    match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 0.0))
-                    if match_ratio < 0.10:
-                        raise RuntimeError(
-                            f"StepD' embeddings merge mismatch (match_ratio={match_ratio:.3f}). "
-                            f"Generate embeddings with export-split all (stepDprime_*_embeddings_all.csv) first."
-                        )
-                    # If the dates merged fine but values are small/zero, don't hard-fail; keep running.
-                    print(
-                        f"[StepE] WARN StepD' embeddings are mostly zero in TRAIN (nonzero_ratio={nonzero_ratio:.3f}, "
-                        f"match_ratio={match_ratio:.3f}). Continuing anyway."
+                used_manifest["stepD_prime_nonzero_ratio"] = nonzero_ratio
+                match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 0.0))
+                if nonzero_ratio < 0.80:
+                    raise RuntimeError(
+                        "StepD' embeddings are too sparse after merge: "
+                        f"nonzero_ratio={nonzero_ratio:.3f} match_ratio={match_ratio:.3f}. "
+                        "Treating as invalid instead of warning-only continuation."
                     )
 
         # Observation columns
@@ -538,6 +534,7 @@ class StepEService:
         df_log["source_device"] = device_name
         df_log["device_requested"] = str(cfg.device)
         df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
+        df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
         df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
         df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
         df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
@@ -590,6 +587,7 @@ class StepEService:
             **legacy_metrics,
             **feature_summary,
             "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
+            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
             "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
             "degraded": bool(used_manifest.get("degraded", False)),
@@ -624,6 +622,7 @@ class StepEService:
             **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **feature_summary,
             "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
+            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
             "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
             "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
@@ -757,6 +756,7 @@ class StepEService:
         df_log["source_device"] = device_name
         df_log["device_requested"] = str(cfg.device)
         df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
+        df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
         df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
         df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
         df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
@@ -803,6 +803,7 @@ class StepEService:
             **legacy_metrics,
             **feature_summary,
             "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
+            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
             "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
             "degraded": bool(used_manifest.get("degraded", False)),
@@ -836,6 +837,7 @@ class StepEService:
             **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **feature_summary,
             "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
+            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
             "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
             "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),

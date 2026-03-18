@@ -1092,6 +1092,7 @@ def run_mamba_multi_model_by_horizon(
         "train_samples_by_h": train_samples_by_h,
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
         "daily_manifest_rows": int(len(manifest_rows)),
+        "device_execution": str(device),
         "csv": {
             "pred_close": str(pred_close_path),
             "pred_path": str(pred_path_path),
@@ -1116,6 +1117,7 @@ def run_mamba_multi_model_by_horizon(
             "daily_manifest_rows": int(len(manifest_rows)),
             "train_samples_by_h": train_samples_by_h,
         },
+        device_execution=str(device),
         csv_paths_list=[str(pred_close_path), str(pred_path_path), str(delta_path), str(meta_path)],
     )
 
