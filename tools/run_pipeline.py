@@ -421,19 +421,19 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.dprime_horizons = str(spec["dprime_horizons"])
         cfg.seed = 42 + idx
         cfg.device = "auto"
-        cfg.hidden_dim = 256
         cfg.policy_kind = "ppo"
-        cfg.ppo_total_timesteps = 200000
+        cfg.ppo_total_timesteps = 80000
         cfg.ppo_n_steps = 2048
-        cfg.ppo_batch_size = 256
-        cfg.ppo_n_epochs = 5
+        cfg.ppo_batch_size = 512
+        cfg.ppo_n_epochs = 2
         cfg.ppo_gamma = 0.99
         cfg.ppo_gae_lambda = 0.95
         cfg.ppo_ent_coef = 0.0
         cfg.ppo_clip_range = 0.2
         cfg.lr = 3e-4
+        cfg.ppo_lr = 3e-4
         cfg.pos_l2 = 1e-3
-        # cfg.epochs / cfg.patience are diffpg-only knobs.
+        cfg.max_parallel_agents = 1
         cfg_list.append(cfg)
 
     if isinstance(app_config, dict):
@@ -457,25 +457,38 @@ def _apply_headless_stepe_overrides(app_config: Any, args: Any) -> None:
     override_policy_kind = getattr(args, "stepE_policy_kind", None)
     override_ppo_total_timesteps = getattr(args, "stepE_ppo_total_timesteps", None)
     override_ppo_n_epochs = getattr(args, "stepE_ppo_n_epochs", None)
+    override_max_parallel_agents = getattr(args, "stepE_max_parallel_agents", None)
 
     for cfg in cfgs:
         current_policy_kind = str(getattr(cfg, "policy_kind", "ppo") or "ppo").strip().lower()
         final_policy_kind = str(override_policy_kind or current_policy_kind or "ppo").strip().lower()
+        if final_policy_kind != "ppo":
+            raise ValueError(f"Unsupported StepE policy_kind: {final_policy_kind}. StepE is PPO-only.")
         setattr(cfg, "policy_kind", final_policy_kind)
         if override_ppo_total_timesteps is not None:
             setattr(cfg, "ppo_total_timesteps", int(override_ppo_total_timesteps))
         elif getattr(cfg, "ppo_total_timesteps", None) is None:
-            setattr(cfg, "ppo_total_timesteps", 200000)
+            setattr(cfg, "ppo_total_timesteps", 80000)
         if override_ppo_n_epochs is not None:
             setattr(cfg, "ppo_n_epochs", int(override_ppo_n_epochs))
         elif getattr(cfg, "ppo_n_epochs", None) is None:
-            setattr(cfg, "ppo_n_epochs", 5)
-        _policy_kind_log = str(getattr(cfg, "policy_kind", "") or "").strip().lower()
-        _policy_role_log = "headless_default_primary" if _policy_kind_log == "ppo" else "fallback_or_legacy"
+            setattr(cfg, "ppo_n_epochs", 2)
+        if getattr(cfg, "ppo_batch_size", None) is None:
+            setattr(cfg, "ppo_batch_size", 512)
+        if getattr(cfg, "ppo_n_steps", None) is None:
+            setattr(cfg, "ppo_n_steps", 2048)
+        if getattr(cfg, "ppo_lr", None) is None:
+            setattr(cfg, "ppo_lr", float(getattr(cfg, "lr", 3e-4) or 3e-4))
+        if override_max_parallel_agents is not None:
+            setattr(cfg, "max_parallel_agents", int(override_max_parallel_agents))
+        elif getattr(cfg, "max_parallel_agents", None) is None:
+            setattr(cfg, "max_parallel_agents", 1)
         print(
             f"[StepEConfig] agent={getattr(cfg, 'agent', '')} policy_kind={getattr(cfg, 'policy_kind', '')} "
-            f"policy_role={_policy_role_log} ppo_total_timesteps={int(getattr(cfg, 'ppo_total_timesteps', 0) or 0)} "
-            f"ppo_n_epochs={int(getattr(cfg, 'ppo_n_epochs', 0) or 0)}"
+            f"policy_role=ppo_only ppo_total_timesteps={int(getattr(cfg, 'ppo_total_timesteps', 0) or 0)} "
+            f"ppo_n_epochs={int(getattr(cfg, 'ppo_n_epochs', 0) or 0)} "
+            f"ppo_batch_size={int(getattr(cfg, 'ppo_batch_size', 0) or 0)} "
+            f"max_parallel_agents={int(getattr(cfg, 'max_parallel_agents', 1) or 1)}"
         )
 
 
@@ -1846,9 +1859,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="StepE: comma-separated horizons for StepD' embeddings (e.g. '1,5,10,20').")
     ap.add_argument("--stepE-dprime-join", dest="stepE_dprime_join", default="inner", choices=["inner", "left"],
                    help="StepE: join method when merging embeddings by Date (inner or left).")
-    ap.add_argument("--stepE-policy-kind", dest="stepE_policy_kind", default=None, choices=["diffpg", "ppo"], help="StepE: override headless policy kind.")
+    ap.add_argument("--stepE-policy-kind", dest="stepE_policy_kind", default=None, choices=["ppo"], help="StepE: override headless policy kind (PPO only).")
     ap.add_argument("--stepE-ppo-total-timesteps", dest="stepE_ppo_total_timesteps", type=int, default=None, help="StepE: override PPO total timesteps for headless runs.")
     ap.add_argument("--stepE-ppo-n-epochs", dest="stepE_ppo_n_epochs", type=int, default=None, help="StepE: override PPO n_epochs for headless runs.")
+    ap.add_argument("--stepE-max-parallel-agents", dest="stepE_max_parallel_agents", type=int, default=None, help="StepE: maximum concurrent PPO agents (capped at 2).")
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None, help="StepB(Mamba) lookback_days (sequence length).")
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default=None, help="StepB(Mamba) horizons as CSV (e.g., 1,5,10,20).")
     ap.add_argument(
@@ -2281,6 +2295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cfg.dprime_sources = dprime_sources
                 cfg.dprime_horizons = dprime_horizons
                 cfg.dprime_join = dprime_join
+                cfg.max_parallel_agents = int(getattr(args, "stepE_max_parallel_agents", None) or 1)
                 cfg_list.append(cfg)
             setattr(app_config, "stepE", cfg_list if len(cfg_list) != 1 else cfg_list[0])
             print(f"[headless] StepE configured to use StepD' embeddings: sources={dprime_sources} horizons={dprime_horizons} join={dprime_join}")

@@ -195,16 +195,16 @@ def main() -> int:
             dprime_horizons=",".join(str(int(x)) for x in hs),
             dprime_join=join,
 
-            # RL hyperparams (lightweight)
-            policy_kind="diffpg",
-            hidden_dim=64,
-            lr=1e-3,
-            epochs=120,
-            patience=15,
-            val_ratio=0.2,
-            weight_decay=1e-4,
+            # RL hyperparams (lightweight PPO)
+            policy_kind="ppo",
+            lr=3e-4,
+            ppo_lr=3e-4,
+            ppo_total_timesteps=80_000,
+            ppo_n_steps=2048,
+            ppo_batch_size=512,
+            ppo_n_epochs=2,
             pos_l2=1e-3,
-            smooth_abs_eps=1e-6,
+            max_parallel_agents=1,
         )
         configs.append(cfg)
         runs_used.append(agent)
