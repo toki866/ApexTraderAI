@@ -123,6 +123,41 @@ class StepBService:
                 summary = dict(detail)
                 summary["device_evidence_source"] = f"agent_result[{name}]"
         summary["agent_device_evidence"] = agent_details
+        execution_variants = {name: str(detail.get("device_execution", "") or "") for name, detail in agent_details.items()}
+        model_variants = {name: str(detail.get("device_execution_primary_model_device", "") or "") for name, detail in agent_details.items()}
+        tensor_variants = {name: str(detail.get("device_execution_primary_tensor_device", "") or "") for name, detail in agent_details.items()}
+
+        def _is_consistent(values: Dict[str, str]) -> bool:
+            normalized = [str(v).strip() for v in values.values()]
+            nonempty = [v for v in normalized if v]
+            if not normalized:
+                return True
+            if not nonempty:
+                return False
+            return len(nonempty) == len(normalized) and len(set(nonempty)) == 1
+
+        mismatch_reasons = []
+        if not _is_consistent(execution_variants):
+            mismatch_reasons.append("variant_device_execution_mismatch")
+        if not _is_consistent(model_variants):
+            mismatch_reasons.append("variant_model_device_mismatch")
+        if not _is_consistent(tensor_variants):
+            mismatch_reasons.append("variant_tensor_device_mismatch")
+        cpu_fallback_variants = [
+            name for name, value in execution_variants.items()
+            if str(value).strip().lower().startswith("cpu")
+        ]
+        if cpu_fallback_variants and len(cpu_fallback_variants) != len(execution_variants):
+            mismatch_reasons.append(f"partial_cpu_fallback:{','.join(cpu_fallback_variants)}")
+
+        summary["device_execution_variants"] = execution_variants
+        summary["device_execution_consistent"] = _is_consistent(execution_variants)
+        summary["device_model_device_variants"] = model_variants
+        summary["device_model_device_consistent"] = _is_consistent(model_variants)
+        summary["device_tensor_device_variants"] = tensor_variants
+        summary["device_tensor_device_consistent"] = _is_consistent(tensor_variants)
+        summary["device_execution_cpu_fallback_variants"] = cpu_fallback_variants
+        summary["device_mismatch_reason"] = ";".join(mismatch_reasons)
         if not summary.get("device_execution_verified", False) and not summary.get("device_fallback_reason"):
             summary["device_fallback_reason"] = "device_execution_not_verified"
         return summary

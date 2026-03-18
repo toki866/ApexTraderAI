@@ -29,6 +29,9 @@ StepE の wall time 調整が必要な場合は、たとえば以下のように
 python tools/run_pipeline.py --symbol SOXL --steps E --stepE-ppo-total-timesteps 80000 --stepE-max-parallel-agents 2
 ```
 
+- 推奨運用値は **sim=2 / live=1** です。live で `2` を使うのは GPU/CPU 余力を確認した後にしてください。
+- 実行時は StepE summary / audit / log に `effective_parallel_agents` と `parallelism_warning` が残るため、実際に有効化された並列数を追跡できます。
+
 - 既存の `run_*.py` は後方互換ラッパで、内部的に同じパイプライン実行に委譲します。
 - 相対パス（`config/`, `data/`, `output/`）はリポジトリルート基準で解決されるため、実行時 CWD に依存しません。
 

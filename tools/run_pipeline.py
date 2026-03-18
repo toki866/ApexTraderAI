@@ -1862,7 +1862,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--stepE-policy-kind", dest="stepE_policy_kind", default=None, choices=["ppo"], help="StepE: override headless policy kind (PPO only).")
     ap.add_argument("--stepE-ppo-total-timesteps", dest="stepE_ppo_total_timesteps", type=int, default=None, help="StepE: override PPO total timesteps for headless runs.")
     ap.add_argument("--stepE-ppo-n-epochs", dest="stepE_ppo_n_epochs", type=int, default=None, help="StepE: override PPO n_epochs for headless runs.")
-    ap.add_argument("--stepE-max-parallel-agents", dest="stepE_max_parallel_agents", type=int, default=None, help="StepE: maximum concurrent PPO agents (capped at 2).")
+    ap.add_argument("--stepE-max-parallel-agents", dest="stepE_max_parallel_agents", type=int, default=None, help="StepE: maximum concurrent PPO agents (capped at 2; recommended sim=2, live=1 then 2 after headroom validation).")
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None, help="StepB(Mamba) lookback_days (sequence length).")
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default=None, help="StepB(Mamba) horizons as CSV (e.g., 1,5,10,20).")
     ap.add_argument(
