@@ -1,19 +1,17 @@
 # ai_core/services/step_e_service.py
 # -*- coding: utf-8 -*-
 """
-StepE Service (Independent RL agents)
+StepE Service (Independent PPO agents)
 
 This service runs multiple StepE agents independently while keeping StepE's role
 limited to expert evaluation / candidate generation. Final candidate selection and
 integration remain StepF responsibility.
 
-Policy support and current operating stance
--------------------------------------------
-- StepE supports both PPO and diffPG training paths.
-- The headless default path is PPO-oriented and is the primary operating mode for
-  current automated runs.
-- diffPG remains available as a fallback / lightweight comparison / legacy option;
-  it is intentionally kept, but it is not the primary headless path.
+Policy support
+--------------
+- StepE is PPO-only.
+- PPO training failures are treated as StepE failures; there is no automatic
+  fallback to another policy implementation.
 
 StepD' embedding expectation
 ----------------------------
@@ -33,15 +31,14 @@ output/stepE/<mode>/
 
 Notes
 -----
-- PPO is the primary headless policy path for current operation.
-- diffPG is retained for fallback / comparison / legacy workflows.
+- PPO is the only supported policy path for current operation.
 - Positions are continuous in [-1, +1] via tanh().
 """
 
 from __future__ import annotations
 
 import json
-import math
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -50,7 +47,6 @@ import numpy as np
 import pandas as pd
 
 import torch
-from torch import nn
 
 from ai_core.utils.metrics_utils import compute_split_metrics
 from ai_core.utils.timing_logger import TimingLogger
@@ -82,67 +78,48 @@ class StepEConfig:
     dprime_horizons: str = "1"    # e.g. "1" or "1,2,3"
     dprime_join: str = "concat"   # concat only (for now)
 
-    # Policy training (diffPG)
-    policy_kind: str = "diffpg"
-    hidden_dim: int = 64
-    lr: float = 1e-3
-    epochs: int = 120
-    patience: int = 15
-    val_ratio: float = 0.2
-    weight_decay: float = 1e-4
-    pos_l2: float = 1e-3
-    smooth_abs_eps: float = 1e-6
-    device: str = "auto"
-
     # PPO training
-    ppo_total_timesteps: int = 200_000
+    policy_kind: str = "ppo"
+    lr: float = 3e-4
+    ppo_lr: Optional[float] = None
+    device: str = "auto"
+    pos_l2: float = 1e-3
+    ppo_total_timesteps: int = 80_000
     ppo_n_steps: int = 2048
-    ppo_batch_size: int = 256
-    ppo_n_epochs: int = 5
+    ppo_batch_size: int = 512
+    ppo_n_epochs: int = 2
     ppo_gamma: float = 0.99
     ppo_gae_lambda: float = 0.95
     ppo_ent_coef: float = 0.0
     ppo_clip_range: float = 0.2
+    max_parallel_agents: int = 1
 
     # Pair-trade mode (SOXL long when ratio>0, SOXS long when ratio<0)
     pair_trade: bool = True
     long_symbol: str = "SOXL"
     short_symbol: str = "SOXS"
 
+    def __post_init__(self) -> None:
+        self.policy_kind = str(self.policy_kind or "ppo").strip().lower()
+        if self.policy_kind != "ppo":
+            raise ValueError(f"Unsupported StepE policy_kind: {self.policy_kind}. StepE is PPO-only.")
+        self.device = str(self.device or "auto")
+        self.max_parallel_agents = max(1, int(self.max_parallel_agents or 1))
+
 
 def _training_config_summary(cfg: StepEConfig, *, device: str) -> Dict[str, object]:
-    policy_kind = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
-    policy_role = "primary" if policy_kind == "ppo" else "fallback_or_legacy"
+    ppo_lr = float(getattr(cfg, "ppo_lr", None) or getattr(cfg, "lr", 3e-4) or 3e-4)
     return {
-        "policy_kind": policy_kind,
-        "policy_role": policy_role,
-        "epochs": int(getattr(cfg, "epochs", 0) or 0),
+        "policy_kind": "ppo",
+        "policy_role": "only_supported_policy",
+        "ppo_lr": ppo_lr,
         "ppo_total_timesteps": int(getattr(cfg, "ppo_total_timesteps", 0) or 0),
         "ppo_n_epochs": int(getattr(cfg, "ppo_n_epochs", 0) or 0),
         "ppo_n_steps": int(getattr(cfg, "ppo_n_steps", 0) or 0),
         "ppo_batch_size": int(getattr(cfg, "ppo_batch_size", 0) or 0),
+        "max_parallel_agents": int(getattr(cfg, "max_parallel_agents", 1) or 1),
         "device": str(device),
     }
-
-
-# ---------------------------
-# Policy (continuous position)
-# ---------------------------
-
-class DiffPolicyNet(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int = 64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # returns mu (unbounded)
-        return self.net(x).squeeze(-1)
 
 
 # ---------------------------
@@ -283,21 +260,52 @@ class StepEService:
             if not cfgs:
                 print("[StepE] WARN: No StepE configs to run. Skipping StepE.")
                 return {
-                "skipped": True,
-                "reason": "no_stepE_configs",
-                "symbol": symbol,
-                "mode": mode,
-            }
+                    "skipped": True,
+                    "reason": "no_stepE_configs",
+                    "symbol": symbol,
+                    "mode": mode,
+                }
 
-            for cfg in cfgs:
-                self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
+            max_parallel_agents = min(
+                2,
+                max(1, max(int(getattr(cfg, "max_parallel_agents", 1) or 1) for cfg in cfgs)),
+            )
+            if max_parallel_agents < max(int(getattr(cfg, "max_parallel_agents", 1) or 1) for cfg in cfgs):
+                print("[StepE][PARALLEL_WARN] max_parallel_agents capped at 2 for safety.")
+
+            requested_devices = [str(getattr(cfg, "device", "auto") or "auto") for cfg in cfgs]
+            if max_parallel_agents > 1 and any(dev.startswith("cuda") or dev == "auto" for dev in requested_devices):
+                print(
+                    "[StepE][PARALLEL_WARN] max_parallel_agents>1 may oversubscribe a single GPU. "
+                    "Keep StepE parallelism conservative on CUDA runs."
+                )
+
+            if max_parallel_agents == 1 or len(cfgs) == 1:
+                for cfg in cfgs:
+                    self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
+            else:
+                print(f"[StepE] running {len(cfgs)} agents with max_parallel_agents={max_parallel_agents}")
+                with ThreadPoolExecutor(max_workers=max_parallel_agents, thread_name_prefix="stepE-agent") as executor:
+                    futures = [
+                        executor.submit(self._run_one, cfg, date_range=date_range, symbol=symbol, mode=mode)
+                        for cfg in cfgs
+                    ]
+                    done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
+                    first_error = next((future.exception() for future in done if future.exception() is not None), None)
+                    if first_error is not None:
+                        for future in not_done:
+                            future.cancel()
+                        raise first_error
+                    for future in futures:
+                        future.result()
 
             return {
-            "skipped": False,
-            "configs_run": len(cfgs),
-            "symbol": symbol,
-            "mode": mode,
-        }
+                "skipped": False,
+                "configs_run": len(cfgs),
+                "symbol": symbol,
+                "mode": mode,
+                "max_parallel_agents": max_parallel_agents,
+            }
 
     # -----------------------
     # Main per-agent run
@@ -309,24 +317,25 @@ class StepEService:
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
             out_dir = out_root / "stepE" / mode
             model_dir = out_dir / "models"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        model_dir.mkdir(parents=True, exist_ok=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            model_dir.mkdir(parents=True, exist_ok=True)
 
-        cfg.seed = 42 if getattr(cfg, "seed", None) is None else int(cfg.seed)
-        cfg.device = str(getattr(cfg, "device", "auto") or "auto")
-        actual_device_name, device_warnings = self._resolve_device(cfg.device)
-        used_manifest: dict[str, object] = {}
+            cfg.seed = 42 if getattr(cfg, "seed", None) is None else int(cfg.seed)
+            cfg.device = str(getattr(cfg, "device", "auto") or "auto")
+            cfg.policy_kind = str(getattr(cfg, "policy_kind", "ppo") or "ppo").strip().lower()
+            if cfg.policy_kind != "ppo":
+                raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}. StepE is PPO-only.")
+            actual_device_name, device_warnings = self._resolve_device(cfg.device)
+            used_manifest: dict[str, object] = {}
 
-        if cfg.verbose:
-            _policy_kind_for_log = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
-            _policy_role_for_log = "primary_headless_default" if _policy_kind_for_log == "ppo" else "fallback_or_legacy"
-            print(
-                f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} "
-                f"seed={cfg.seed} device_requested={cfg.device} device_execution={actual_device_name} "
-                f"policy_kind={_policy_kind_for_log} policy_role={_policy_role_for_log}"
-            )
-        for warning in device_warnings:
-            print(f"[StepE][DEVICE_WARN] agent={cfg.agent} warning={warning}")
+            if cfg.verbose:
+                print(
+                    f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} "
+                    f"seed={cfg.seed} device_requested={cfg.device} device_execution={actual_device_name} "
+                    f"policy_kind=ppo policy_role=only_supported_policy"
+                )
+            for warning in device_warnings:
+                print(f"[StepE][DEVICE_WARN] agent={cfg.agent} warning={warning}")
 
         # Load & merge inputs (train+test)
         with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
@@ -407,294 +416,36 @@ class StepEService:
         X_train_s = (X_train - mu) / sd
         X_test_s = (X_test - mu) / sd
 
-        policy_kind = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
-        if policy_kind not in {"diffpg", "ppo"}:
-            raise ValueError(f"Unsupported StepE policy_kind: {cfg.policy_kind}")
-        if policy_kind == "ppo":
-            try:
-                with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
-                    self._train_and_eval_ppo(
-                    cfg=cfg,
-                    symbol=symbol,
-                    mode=mode,
-                    out_dir=out_dir,
-                    model_dir=model_dir,
-                    obs_cols=obs_cols,
-                    mu=mu,
-                    sd=sd,
-                    dates_train=dates_train,
-                    dates_test=dates_test,
-                    r_soxl_train=r_soxl_train,
-                    r_soxs_train=r_soxs_train,
-                    r_soxl_test=r_soxl_test,
-                    r_soxs_test=r_soxs_test,
-                    X_train_s=X_train_s,
-                    X_test_s=X_test_s,
-                    train_start=train_start,
-                    train_end=train_end,
-                    test_start=test_start,
-                    test_end=test_end,
-                    rows_train=len(df_train),
-                    rows_test=len(df_test),
-                    used_manifest=used_manifest,
-                    device_warnings=device_warnings,
-                    resolved_device_name=actual_device_name,
-                    feature_summary=feature_summary,
-                    )
-                timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)})
-                return
-            except RuntimeError as e:
-                msg = str(e)
-                if "stable-baselines3" not in msg:
-                    raise
-                print(f"[StepE] WARN agent={cfg.agent} PPO unavailable for primary path ({msg}); fallback to diffpg legacy/comparison path")
-                policy_kind = "diffpg"
-
-        # Train policy (diffPG)
-        device_name = actual_device_name
-        device = torch.device(device_name)
-        torch.manual_seed(int(cfg.seed))
-        np.random.seed(int(cfg.seed))
-
-        # include pos_prev as an extra input feature (stateful)
-        X_train_t = torch.tensor(X_train_s, dtype=torch.float32, device=device)
-        X_test_t = torch.tensor(X_test_s, dtype=torch.float32, device=device)
-        r_soxl_train_t = torch.tensor(r_soxl_train, dtype=torch.float32, device=device)
-        r_soxl_test_t = torch.tensor(r_soxl_test, dtype=torch.float32, device=device)
-        r_soxs_train_t = torch.tensor(r_soxs_train, dtype=torch.float32, device=device)
-        r_soxs_test_t = torch.tensor(r_soxs_test, dtype=torch.float32, device=device)
-
-        net = DiffPolicyNet(in_dim=X_train_t.shape[1] + 1, hidden_dim=int(cfg.hidden_dim)).to(device)
-        opt = torch.optim.AdamW(net.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
-
-        best_val = float("inf")
-        best_state = None
-        wait = 0
-
-        n = X_train_t.shape[0]
-        n_val = max(10, int(cfg.val_ratio * n))
-        n_fit = max(50, n - n_val)
-
-        def _smooth_abs(x: torch.Tensor) -> torch.Tensor:
-            return torch.sqrt(x * x + float(cfg.smooth_abs_eps))
-
-        def _rollout(
-            net_: DiffPolicyNet,
-            X_: torch.Tensor,
-            r_soxl_: torch.Tensor,
-            r_soxs_: torch.Tensor,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            """
-            Sequential rollout with differentiable pos_prev dependency.
-            Returns:
-              reward_next: (T,) daily net returns
-              pos:     (T,) positions
-              cost:    (T,) transaction cost component
-            """
-            T = X_.shape[0]
-            pos_prev = torch.zeros((), device=X_.device)
-            pos_list = []
-            reward_list = []
-            gross_list = []
-            cost_list = []
-            cost_k = float(cfg.trade_cost_bps) * 1e-4
-            for t in range(T):
-                xt = torch.cat([X_[t], pos_prev.unsqueeze(0)], dim=0)
-                mu_t = net_(xt)
-                pos_t = torch.tanh(mu_t) * float(cfg.pos_limit)
-                gross = torch.relu(pos_t) * r_soxl_[t] + torch.relu(-pos_t) * r_soxs_[t]
-                # transaction cost on position change
-                cost = cost_k * _smooth_abs(pos_t - pos_prev)
-                reward_next = gross - cost - float(cfg.pos_l2) * (pos_t * pos_t)
-                pos_list.append(pos_t)
-                reward_list.append(reward_next)
-                gross_list.append(gross)
-                cost_list.append(cost)
-                pos_prev = pos_t
-            pos = torch.stack(pos_list, dim=0)
-            reward_next = torch.stack(reward_list, dim=0)
-            gross = torch.stack(gross_list, dim=0)
-            cost = torch.stack(cost_list, dim=0)
-            return reward_next, pos, cost, gross
-
-        with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"policy": "diffpg", "agent_kind": "expert", "expert_name": str(cfg.agent)}):
-            for ep in range(1, int(cfg.epochs) + 1):
-                net.train()
-                opt.zero_grad()
-
-                ret_fit, _, _, _ = _rollout(
-                    net,
-                    X_train_t[:n_fit],
-                    r_soxl_train_t[:n_fit],
-                    r_soxs_train_t[:n_fit],
-                )
-                # maximize log equity: sum log(1+ret)
-                obj = -torch.log1p(ret_fit).mean()
-                obj.backward()
-                torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-                opt.step()
-
-                # validation
-                net.eval()
-                with torch.no_grad():
-                    ret_val, _, _, _ = _rollout(
-                        net,
-                        X_train_t[n_fit:],
-                        r_soxl_train_t[n_fit:],
-                        r_soxs_train_t[n_fit:],
-                    )
-                    val_loss = float((-torch.log1p(ret_val).mean()).item())
-
-                if cfg.verbose:
-                    print(f"[StepE] ep={ep:03d} fit_loss={float(obj.item()):.6f} val_loss={val_loss:.6f}")
-
-                if val_loss + 1e-8 < best_val:
-                    best_val = val_loss
-                    best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
-                    wait = 0
-                else:
-                    wait += 1
-                    if wait >= int(cfg.patience):
-                        if cfg.verbose:
-                            print(f"[StepE] early stop at ep={ep}")
-                        break
-
-        if best_state is not None:
-            net.load_state_dict(best_state)
-
-        # Evaluate on full train + test for daily log
-        net.eval()
-        with torch.no_grad():
-            ret_tr_full, pos_tr_full, cost_tr_full, gross_tr_full = _rollout(net, X_train_t, r_soxl_train_t, r_soxs_train_t)
-            ret_te_full, pos_te_full, cost_te_full, gross_te_full = _rollout(net, X_test_t, r_soxl_test_t, r_soxs_test_t)
-
-        reward_next_arr = torch.cat([ret_tr_full, ret_te_full], dim=0).cpu().numpy().astype(float)
-        pos_arr = torch.cat([pos_tr_full, pos_te_full], dim=0).cpu().numpy().astype(float)
-        cost_arr = torch.cat([cost_tr_full, cost_te_full], dim=0).cpu().numpy().astype(float)
-        gross_arr = torch.cat([gross_tr_full, gross_te_full], dim=0).cpu().numpy().astype(float)
-        cc_soxl = np.concatenate([r_soxl_train, r_soxl_test]).astype(float)
-        cc_soxs = np.concatenate([r_soxs_train, r_soxs_test]).astype(float)
-
-        df_log = pd.DataFrame({
-            "Date": pd.to_datetime(list(dates_train) + list(dates_test)),
-            "Split": (["train"] * len(dates_train)) + (["test"] * len(dates_test)),
-            "pos": pos_arr,
-            "reward_next": reward_next_arr,
-            "r_soxl_next": cc_soxl,
-            "r_soxs_next": cc_soxs,
-            "cost": cost_arr,
-        })
-        df_log["ratio"] = df_log["pos"]
-        df_log["abs_ratio"] = df_log["ratio"].abs()
-        df_log["market_ret"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"] * df_log["ratio"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"] * (-df_log["ratio"]), 0.0))
-        df_log["cc_ret_next"] = np.where(df_log["ratio"] > 1e-8, df_log["r_soxl_next"], np.where(df_log["ratio"] < -1e-8, df_log["r_soxs_next"], 0.0))
-        df_log["underlying"] = np.where(df_log["ratio"] > 1e-8, "SOXL", np.where(df_log["ratio"] < -1e-8, "SOXS", "NONE"))
-        df_log["gross"] = gross_arr
-        df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
-        df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
-        df_log["source_device"] = device_name
-        df_log["device_requested"] = str(cfg.device)
-        df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
-        df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
-        df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
-        df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
-        df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
-        df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
-
-        # Also provide Action/Position columns for StepF compatibility
-        df_log["Position"] = df_log["pos"]
-        df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
-
-        # Test-only equity file (kept small)
-        df_eq = df_log[df_log["Split"] == "test"][["Date", "pos", "ret", "equity", "reward_next"]].copy().reset_index(drop=True)
-        # Reset equity at the start of the test window (initial capital = 1.0)
-        if len(df_eq) > 0:
-            df_eq["equity"] = (1.0 + df_eq["ret"].astype(float)).cumprod()
-
-        eq_path = out_dir / f"stepE_equity_{cfg.agent}_{symbol}.csv"
-        with timing.stage("stepE.agent.eval", agent_id=str(cfg.agent), meta={"stage_group": "eval", "agent_kind": "expert", "expert_name": str(cfg.agent)}):
-            with timing.stage("stepE.agent.eval_and_save", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
-                df_eq.to_csv(eq_path, index=False)
-
-                log_path = out_dir / f"stepE_daily_log_{cfg.agent}_{symbol}.csv"
-                df_log.to_csv(log_path, index=False)
-
-        # Summary metrics (test) using metrics_summary.csv-aligned definitions.
-        # Read back from saved daily log to guarantee summary uses persisted data.
-        df_log_for_summary = pd.read_csv(log_path)
-        metrics = compute_split_metrics(df_log_for_summary, split="test", equity_col="equity", ret_col="ret")
-        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
-            "stepdprime_join_status": "PASS",
-            "reuse_eligible": True,
-            "failure_reason": "",
-            "embedding_join_ratio": 1.0,
-            "embedding_nonzero_ratio": 1.0,
-            "nan_fill_count": 0,
-        }
-        legacy_metrics = {
-            "test_return_pct": metrics["total_return_pct"],
-            "test_sharpe": metrics["sharpe"],
-            "test_max_dd": metrics["max_dd_pct"],
-            "total_return": metrics["total_return_pct"] / 100.0 if np.isfinite(metrics["total_return_pct"]) else float("nan"),
-            "cagr": metrics["cagr_pct"] / 100.0 if np.isfinite(metrics["cagr_pct"]) else float("nan"),
-            "max_drawdown": metrics["max_dd_pct"],
-        }
-
-        summary = {
-            "agent": cfg.agent,
-            "mode": mode,
-            "symbol": symbol,
-            "train_start": str(train_start.date()),
-            "train_end": str(train_end.date()),
-            "test_start": str(test_start.date()),
-            "test_end": str(test_end.date()),
-            "rows_train": int(len(df_train)),
-            "rows_test": int(len(df_test)),
-            **_training_config_summary(cfg, device=device_name),
-            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
-            **metrics,
-            **legacy_metrics,
-            **feature_summary,
-            **stepdprime_quality,
-            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
-            "degraded": bool(used_manifest.get("degraded", False)),
-            "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
-            "stepdprime_legacy_read": bool(used_manifest.get("stepDprime_legacy_read", False)),
-        }
-
-        summ_path = out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json"
-        summ_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        # Save model + scaler
-        mdl_path = model_dir / f"stepE_{cfg.agent}_{symbol}.pt"
-        torch.save({
-            "cfg": asdict(cfg),
-            "obs_cols": obs_cols,
-            "mu": mu.astype(np.float32),
-            "sd": sd.astype(np.float32),
-            "state_dict": net.state_dict(),
-        }, mdl_path)
-
-        if cfg.verbose:
-            print(f"[StepE] wrote equity={eq_path}")
-            print(f"[StepE] wrote daily_log={log_path}")
-            print(f"[StepE] wrote summary={summ_path}")
-            print(f"[StepE] wrote model={mdl_path}")
-        audit_dir = out_root / "audit" / mode
-        audit_dir.mkdir(parents=True, exist_ok=True)
-        audit_payload = {
-            "agent": cfg.agent,
-            "symbol": symbol,
-            "mode": mode,
-            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
-            **feature_summary,
-            **stepdprime_quality,
-            "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
-            "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
-            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
-            "status": "PASS",
-        }
-        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with timing.stage("stepE.agent.train", agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)}):
+            self._train_and_eval_ppo(
+                cfg=cfg,
+                symbol=symbol,
+                mode=mode,
+                out_dir=out_dir,
+                model_dir=model_dir,
+                obs_cols=obs_cols,
+                mu=mu,
+                sd=sd,
+                dates_train=dates_train,
+                dates_test=dates_test,
+                r_soxl_train=r_soxl_train,
+                r_soxs_train=r_soxs_train,
+                r_soxl_test=r_soxl_test,
+                r_soxs_test=r_soxs_test,
+                X_train_s=X_train_s,
+                X_test_s=X_test_s,
+                train_start=train_start,
+                train_end=train_end,
+                test_start=test_start,
+                test_end=test_end,
+                rows_train=len(df_train),
+                rows_test=len(df_test),
+                used_manifest=used_manifest,
+                device_warnings=device_warnings,
+                resolved_device_name=actual_device_name,
+                feature_summary=feature_summary,
+            )
+        timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)})
 
     def _train_and_eval_ppo(
         self,
@@ -737,6 +488,14 @@ class StepEService:
         seed = int(cfg.seed or 42)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
+            "stepdprime_join_status": "PASS",
+            "reuse_eligible": True,
+            "failure_reason": "",
+            "embedding_join_ratio": 1.0,
+            "embedding_nonzero_ratio": 1.0,
+            "nan_fill_count": 0,
+        }
 
         train_env = DailyPairTradingEnv(
             X=X_train_s,
@@ -755,15 +514,22 @@ class StepEService:
             pos_l2=float(cfg.pos_l2),
         )
 
+        # NOTE:
+        # DummyVecEnv is still used here because SB3 PPO expects a VecEnv wrapper,
+        # but this is intentionally a single-environment configuration:
+        # DummyVecEnv([lambda: train_env]) does not introduce environment parallelism.
+        # StepE wall-time reduction in this change comes from PPO-only simplification,
+        # lighter PPO defaults, and agent-level parallel execution instead.
         vec_env = DummyVecEnv([lambda: train_env])
         vec_env.seed(seed)
 
         device_name = resolved_device_name
+        learning_rate = float(getattr(cfg, "ppo_lr", None) or getattr(cfg, "lr", 3e-4) or 3e-4)
 
         model = PPO(
             "MlpPolicy",
             vec_env,
-            learning_rate=float(cfg.lr),
+            learning_rate=learning_rate,
             n_steps=int(cfg.ppo_n_steps),
             batch_size=int(cfg.ppo_batch_size),
             n_epochs=int(cfg.ppo_n_epochs),
@@ -883,6 +649,7 @@ class StepEService:
             "mu": mu.astype(np.float32),
             "sd": sd.astype(np.float32),
             "policy_kind": "ppo",
+            "ppo_lr": learning_rate,
             "sb3_model_path": str(mdl_zip_path),
         }, mdl_pt_path)
 

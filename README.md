@@ -10,6 +10,7 @@
 - **`D` は廃止運用（Dは使わない）**で、通常のパイプラインでは使いません。
 - `DPRIME` は **「StepD上位版」** です。`DPRIME` 単独で、チャート圧縮（Phase2）と RL state 生成まで実施します。
 - `StepE` は `DPRIME` が生成した state（必要に応じて embeddings 併用）を観測入力として利用します。
+- `StepE` は **PPO 専用**です。reward 定義・train/test 境界・StepE/StepF の責務分離は維持したまま、既定値は短時間学習向けに調整しています。
 
 ### 3ヶ月窓は2種類（用途が異なる）
 
@@ -20,6 +21,12 @@
 
 ```bash
 python tools/run_pipeline.py --symbol SOXL --test-start 2022-01-03
+```
+
+StepE の wall time 調整が必要な場合は、たとえば以下のように PPO timesteps と agent 並列数を上書きできます。
+
+```bash
+python tools/run_pipeline.py --symbol SOXL --steps E --stepE-ppo-total-timesteps 80000 --stepE-max-parallel-agents 2
 ```
 
 - 既存の `run_*.py` は後方互換ラッパで、内部的に同じパイプライン実行に委譲します。
