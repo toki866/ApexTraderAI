@@ -4,7 +4,7 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 from ai_core.config.app_config import AppConfig
@@ -63,12 +63,24 @@ class StepBService:
         return p
 
     def _device_evidence(self, *named_results) -> dict:
+        def _first_recorded_device(evidence: Dict[str, object], *keys: str) -> str:
+            for key in keys:
+                values = evidence.get(key, [])
+                if isinstance(values, list) and values:
+                    first = str(values[0] or "").strip()
+                    if first:
+                        return first
+            return ""
+
         agent_details = {}
         summary = {
             "device_requested": "auto",
             "device_execution": "unknown",
             "device_execution_verified": False,
             "device_execution_evidence": {},
+            "device_execution_primary_model_device": "",
+            "device_execution_primary_tensor_device": "",
+            "device_execution_evidence_counts": {},
             "device_resolution_source": "",
             "device_fallback_reason": "missing_device_execution_evidence",
             "device_evidence_source": "service_default_missing_agent_evidence",
@@ -80,11 +92,28 @@ class StepBService:
             evidence = info.get("device_execution_evidence", {})
             if not isinstance(evidence, dict):
                 evidence = {}
+            evidence_counts = {
+                str(k): int(len(v)) if isinstance(v, list) else 0
+                for k, v in evidence.items()
+            }
             detail = {
                 "device_requested": str(info.get("device_requested", "auto") or "auto"),
                 "device_execution": str(getattr(result, "device_execution", info.get("device_execution", "")) or ""),
                 "device_execution_verified": bool(info.get("device_execution_verified", False)),
                 "device_execution_evidence": evidence,
+                "device_execution_primary_model_device": _first_recorded_device(
+                    evidence,
+                    "train_model_devices",
+                    "infer_model_devices",
+                    "daily_rollout_model_devices",
+                ),
+                "device_execution_primary_tensor_device": _first_recorded_device(
+                    evidence,
+                    "train_tensor_devices",
+                    "infer_tensor_devices",
+                    "daily_rollout_tensor_devices",
+                ),
+                "device_execution_evidence_counts": evidence_counts,
                 "device_resolution_source": str(info.get("device_resolution_source", "") or ""),
                 "device_fallback_reason": str(info.get("device_fallback_reason", "") or ""),
                 "device_evidence_source": "agent_result.info.device_execution_evidence" if evidence else ("agent_result.info" if info else "agent_result"),
@@ -94,6 +123,8 @@ class StepBService:
                 summary = dict(detail)
                 summary["device_evidence_source"] = f"agent_result[{name}]"
         summary["agent_device_evidence"] = agent_details
+        if not summary.get("device_execution_verified", False) and not summary.get("device_fallback_reason"):
+            summary["device_fallback_reason"] = "device_execution_not_verified"
         return summary
 
     def _load_stepa_split_df(self, symbol: str, run_mode: str, kind: str, split: str) -> pd.DataFrame:

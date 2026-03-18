@@ -505,6 +505,63 @@ class StepFService:
             return None
         return match.group(1).strip("_") or None
 
+    @staticmethod
+    def _ensure_daily_audit_columns(daily: pd.DataFrame, *, agents: List[str], source_device: str, selected_expert_definition: str) -> pd.DataFrame:
+        out = daily.copy()
+
+        if "Date" in out.columns and "date" not in out.columns:
+            out["date"] = out["Date"]
+        if "ratio" in out.columns and "final_ratio" not in out.columns:
+            out["final_ratio"] = out["ratio"]
+        if "ret" in out.columns and "realized_ret" not in out.columns:
+            out["realized_ret"] = out["ret"]
+        if "selected_expert" not in out.columns:
+            out["selected_expert"] = ""
+        if "source_device" not in out.columns:
+            out["source_device"] = source_device
+        if "mixture_weights_json" not in out.columns:
+            weight_payload = []
+            for _, row in out.iterrows():
+                payload = {}
+                for agent in agents:
+                    value = row.get(f"mixture_weight_{agent}", row.get(f"w_{agent}", 0.0))
+                    payload[agent] = float(pd.to_numeric(value, errors="coerce") if value is not None else 0.0)
+                weight_payload.append(json.dumps(payload, ensure_ascii=False))
+            out["mixture_weights_json"] = weight_payload
+        if "mixture_weights" not in out.columns:
+            out["mixture_weights"] = out["mixture_weights_json"].astype(str)
+
+        for agent in agents:
+            col = f"mixture_weight_{agent}"
+            if col not in out.columns:
+                if f"w_{agent}" in out.columns:
+                    out[col] = pd.to_numeric(out[f"w_{agent}"], errors="coerce").fillna(0.0)
+                else:
+                    out[col] = 0.0
+
+        if "input_feature_summary" not in out.columns:
+            out["input_feature_summary"] = "{}"
+        if "input_feature_count" not in out.columns:
+            out["input_feature_count"] = 0
+        if "nonzero_feature_count" not in out.columns:
+            src = "input_nonzero_feature_count" if "input_nonzero_feature_count" in out.columns else None
+            out["nonzero_feature_count"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+        if "has_regime" not in out.columns:
+            src = "input_has_regime" if "input_has_regime" in out.columns else None
+            out["has_regime"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+        if "has_cluster" not in out.columns:
+            src = "input_has_cluster" if "input_has_cluster" in out.columns else None
+            out["has_cluster"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+        if "has_past_block" not in out.columns:
+            src = "input_has_past_block" if "input_has_past_block" in out.columns else None
+            out["has_past_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+        if "has_pred_block" not in out.columns:
+            src = "input_has_pred_block" if "input_has_pred_block" in out.columns else None
+            out["has_pred_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+
+        out["selected_expert_definition"] = selected_expert_definition
+        return out
+
     def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str], Path]:
         candidate_roots = self._resolve_step_e_root_candidates(out_root=out_root, input_mode=input_mode)
         selected_step_e_root = candidate_roots[0]
@@ -710,36 +767,16 @@ class StepFService:
             log_marl_path = out_dir / f"stepF_daily_log_marl_{symbol}.csv"
             eq_marl_path = out_dir / f"stepF_equity_marl_{symbol}.csv"
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
+            selected_expert_definition = "argmax mixture weight for the day after EMA-smoothed routing weights are normalized"
 
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
                 cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
-                daily = daily.copy()
-                # Daily trace contract for PR/review:
-                # - selected_expert
-                # - mixture_weights (router-native mixture_weights_json alias)
-                # - source_device
-                # - input_feature_summary
-                if "selected_expert" not in daily.columns:
-                    daily["selected_expert"] = ""
-                if "mixture_weights" not in daily.columns:
-                    if "mixture_weights_json" in daily.columns:
-                        daily["mixture_weights"] = daily["mixture_weights_json"].astype(str)
-                    else:
-                        daily["mixture_weights"] = "{}"
-                if "source_device" not in daily.columns:
-                    daily["source_device"] = actual_device_name
-                if "input_feature_summary" not in daily.columns:
-                    daily["input_feature_summary"] = daily.apply(
-                        lambda r: json.dumps(
-                            {
-                                "regime_id": int(r["regime_id"]) if pd.notna(r.get("regime_id")) else -1,
-                                "cluster_id_stable": int(r["cluster_id_stable"]) if pd.notna(r.get("cluster_id_stable")) else -1,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        axis=1,
-                    )
-                daily["selected_expert_definition"] = "argmax mixture weight for the day after EMA-smoothed routing weights are normalized"
+                daily = self._ensure_daily_audit_columns(
+                    daily,
+                    agents=agents,
+                    source_device=actual_device_name,
+                    selected_expert_definition=selected_expert_definition,
+                )
                 daily["device_requested"] = str(getattr(cfg, "device", "auto"))
                 daily["device_execution"] = actual_device_name
                 daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")
@@ -783,7 +820,26 @@ class StepFService:
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
                 summary.update(
                     {
-                        "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
+                        "selected_expert_definition": selected_expert_definition,
+                        "daily_audit_columns": [
+                            "date",
+                            "regime_id",
+                            "cluster_id_stable",
+                            "selected_expert",
+                            "final_ratio",
+                            "reward",
+                            "realized_ret",
+                            "equity",
+                            "source_device",
+                            "mixture_weights_json",
+                            "input_feature_summary",
+                            "input_feature_count",
+                            "nonzero_feature_count",
+                            "has_regime",
+                            "has_cluster",
+                            "has_past_block",
+                            "has_pred_block",
+                        ],
                         "device_requested": str(getattr(cfg, "device", "auto")),
                         "device_execution": actual_device_name,
                         "device_warnings": list(device_warnings),
@@ -821,7 +877,26 @@ class StepFService:
                     "mode": mode,
                     "symbol": symbol,
                     "reward_mode": reward_mode,
-                    "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
+                    "selected_expert_definition": selected_expert_definition,
+                    "daily_audit_columns": [
+                        "date",
+                        "regime_id",
+                        "cluster_id_stable",
+                        "selected_expert",
+                        "final_ratio",
+                        "reward",
+                        "realized_ret",
+                        "equity",
+                        "source_device",
+                        "mixture_weights_json",
+                        "input_feature_summary",
+                        "input_feature_count",
+                        "nonzero_feature_count",
+                        "has_regime",
+                        "has_cluster",
+                        "has_past_block",
+                        "has_pred_block",
+                    ],
                     "device_requested": str(getattr(cfg, "device", "auto")),
                     "device_execution": actual_device_name,
                     "device_warnings": list(device_warnings),
@@ -1744,14 +1819,20 @@ class StepFService:
                 "source_device": str(compute_device),
                 "input_feature_count": int(len(input_feature_summary)),
                 "input_nonzero_feature_count": input_nonzero_feature_count,
+                "nonzero_feature_count": input_nonzero_feature_count,
                 "input_has_regime": 1,
                 "input_has_cluster": 1,
                 "input_has_pred_block": 0,
                 "input_has_past_block": 1,
+                "has_regime": 1,
+                "has_cluster": 1,
+                "has_pred_block": 0,
+                "has_past_block": 1,
                 "input_feature_summary": json.dumps(input_feature_summary, ensure_ascii=False),
             }
             for a in agents:
                 rec[f"w_{a}"] = w_full[a]
+                rec[f"mixture_weight_{a}"] = w_full[a]
             out.append(rec)
             w_prev = w_full
             ratio_prev = ratio
