@@ -470,9 +470,11 @@ def _apply_headless_stepe_overrides(app_config: Any, args: Any) -> None:
             setattr(cfg, "ppo_n_epochs", int(override_ppo_n_epochs))
         elif getattr(cfg, "ppo_n_epochs", None) is None:
             setattr(cfg, "ppo_n_epochs", 5)
+        _policy_kind_log = str(getattr(cfg, "policy_kind", "") or "").strip().lower()
+        _policy_role_log = "headless_default_primary" if _policy_kind_log == "ppo" else "fallback_or_legacy"
         print(
             f"[StepEConfig] agent={getattr(cfg, 'agent', '')} policy_kind={getattr(cfg, 'policy_kind', '')} "
-            f"ppo_total_timesteps={int(getattr(cfg, 'ppo_total_timesteps', 0) or 0)} "
+            f"policy_role={_policy_role_log} ppo_total_timesteps={int(getattr(cfg, 'ppo_total_timesteps', 0) or 0)} "
             f"ppo_n_epochs={int(getattr(cfg, 'ppo_n_epochs', 0) or 0)}"
         )
 

@@ -52,21 +52,37 @@ class DPrimePipelineOrchestrator:
             lane_started = self._utcnow_iso()
             print(f"[DPRIME_STREAM] lane=stepbc status=start started_at={lane_started}")
             try:
-                write_status_marker(marker_dir, "StepB", "RUNNING", {"symbol": cfg.symbol, "started_at": lane_started})
-                run_step_b()
+                stepb_started = self._utcnow_iso()
+                print(f"[DPRIME_STREAM] lane=stepbc step=StepB status=start started_at={stepb_started}")
+                write_status_marker(marker_dir, "StepB", "RUNNING", {"symbol": cfg.symbol, "started_at": stepb_started})
+                try:
+                    run_step_b()
+                except BaseException as exc:
+                    errors.append(exc)
+                    write_status_marker(marker_dir, "StepB", "FAILED", {"symbol": cfg.symbol, "error": repr(exc), "ended_at": self._utcnow_iso()})
+                    print(f"[DPRIME_STREAM] lane=stepbc step=StepB status=failed ended_at={self._utcnow_iso()} error={repr(exc)}")
+                    print(f"[DPRIME_STREAM] lane=stepbc status=failed ended_at={self._utcnow_iso()} failed_step=StepB error={repr(exc)}")
+                    return
                 write_status_marker(marker_dir, "StepB", "READY", {"symbol": cfg.symbol, "ended_at": self._utcnow_iso()})
-                print(f"[DPRIME_STREAM] lane=stepbc step=StepB status=ready")
+                print(f"[DPRIME_STREAM] lane=stepbc step=StepB status=ready ended_at={self._utcnow_iso()}")
 
-                write_status_marker(marker_dir, "StepC", "RUNNING", {"symbol": cfg.symbol, "started_at": self._utcnow_iso()})
-                run_step_c()
+                stepc_started = self._utcnow_iso()
+                print(f"[DPRIME_STREAM] lane=stepbc step=StepC status=start started_at={stepc_started}")
+                write_status_marker(marker_dir, "StepC", "RUNNING", {"symbol": cfg.symbol, "started_at": stepc_started})
+                try:
+                    run_step_c()
+                except BaseException as exc:
+                    errors.append(exc)
+                    write_status_marker(marker_dir, "StepC", "FAILED", {"symbol": cfg.symbol, "error": repr(exc), "ended_at": self._utcnow_iso()})
+                    print(f"[DPRIME_STREAM] lane=stepbc step=StepC status=failed ended_at={self._utcnow_iso()} error={repr(exc)}")
+                    print(f"[DPRIME_STREAM] lane=stepbc status=failed ended_at={self._utcnow_iso()} failed_step=StepC error={repr(exc)}")
+                    return
                 write_status_marker(marker_dir, "StepC", "READY", {"symbol": cfg.symbol, "ended_at": self._utcnow_iso()})
-                print(f"[DPRIME_STREAM] lane=stepbc step=StepC status=ready")
+                print(f"[DPRIME_STREAM] lane=stepbc step=StepC status=ready ended_at={self._utcnow_iso()}")
                 print(f"[DPRIME_STREAM] lane=stepbc status=ready ended_at={self._utcnow_iso()}")
             except BaseException as exc:
                 errors.append(exc)
-                write_status_marker(marker_dir, "StepB", "FAILED", {"symbol": cfg.symbol, "error": repr(exc), "ended_at": self._utcnow_iso()})
-                write_status_marker(marker_dir, "StepC", "FAILED", {"symbol": cfg.symbol, "error": repr(exc), "ended_at": self._utcnow_iso()})
-                print(f"[DPRIME_STREAM] lane=stepbc status=failed error={repr(exc)}")
+                print(f"[DPRIME_STREAM] lane=stepbc status=failed ended_at={self._utcnow_iso()} error={repr(exc)}")
 
         def _dprime_base_lane() -> None:
             lane_started = self._utcnow_iso()

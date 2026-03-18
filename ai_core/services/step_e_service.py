@@ -3,23 +3,25 @@
 """
 StepE Service (Independent RL agents)
 
-This version is designed to run multiple StepE agents independently (10 agents etc.)
+This service runs multiple StepE agents independently while keeping StepE's role
+limited to expert evaluation / candidate generation. Final candidate selection and
+integration remain StepF responsibility.
 
-Role boundary note:
-- StepE is the expert evaluation / candidate-generation layer.
-- Final candidate selection/integration is StepF responsibility.
-using StepD' embeddings as the primary observation stream.
+Policy support and current operating stance
+-------------------------------------------
+- StepE supports both PPO and diffPG training paths.
+- The headless default path is PPO-oriented and is the primary operating mode for
+  current automated runs.
+- diffPG remains available as a fallback / lightweight comparison / legacy option;
+  it is intentionally kept, but it is not the primary headless path.
 
-What changed vs "pos=0" issue
+StepD' embedding expectation
 ----------------------------
-Previously, if StepD' embeddings existed only for *test* dates (e.g. 62 rows),
-then the merged dataframe during training had missing embeddings for most train dates.
-Those were filled with zeros, and the baseline policy tended to output pos=0.
-
-This service expects StepD' embeddings exported for "all" (train+test), e.g.:
+If StepD' embeddings exist only for *test* dates, most train rows merge with
+missing embeddings and the policy can degenerate toward neutral positions.
+This service therefore expects StepD' embeddings exported for the full
+train+test span, for example:
   stepDprime_bnf_h01_SOXL_embeddings_all.csv
-
-Then it trains an independent policy for each agent on the train split and evaluates on the test split.
 
 Outputs
 -------
@@ -31,8 +33,8 @@ output/stepE/<mode>/
 
 Notes
 -----
-- This is a lightweight "differentiable policy gradient" (diffPG) approach:
-  it directly optimizes policy parameters to maximize cumulative log equity on the train split.
+- PPO is the primary headless policy path for current operation.
+- diffPG is retained for fallback / comparison / legacy workflows.
 - Positions are continuous in [-1, +1] via tanh().
 """
 
@@ -108,8 +110,11 @@ class StepEConfig:
 
 
 def _training_config_summary(cfg: StepEConfig, *, device: str) -> Dict[str, object]:
+    policy_kind = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
+    policy_role = "primary" if policy_kind == "ppo" else "fallback_or_legacy"
     return {
-        "policy_kind": str(getattr(cfg, "policy_kind", "diffpg") or "diffpg"),
+        "policy_kind": policy_kind,
+        "policy_role": policy_role,
         "epochs": int(getattr(cfg, "epochs", 0) or 0),
         "ppo_total_timesteps": int(getattr(cfg, "ppo_total_timesteps", 0) or 0),
         "ppo_n_epochs": int(getattr(cfg, "ppo_n_epochs", 0) or 0),
@@ -232,7 +237,12 @@ class StepEService:
         cfg.device = str(getattr(cfg, "device", "auto") or "auto")
 
         if cfg.verbose:
-            print(f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} seed={cfg.seed} device={cfg.device}")
+            _policy_kind_for_log = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
+            _policy_role_for_log = "primary_headless_default" if _policy_kind_for_log == "ppo" else "fallback_or_legacy"
+            print(
+                f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} "
+                f"seed={cfg.seed} device={cfg.device} policy_kind={_policy_kind_for_log} policy_role={_policy_role_for_log}"
+            )
 
         # Load & merge inputs (train+test)
         with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
@@ -339,7 +349,7 @@ class StepEService:
                 msg = str(e)
                 if "stable-baselines3" not in msg:
                     raise
-                print(f"[StepE] WARN agent={cfg.agent} PPO unavailable ({msg}); fallback to diffpg")
+                print(f"[StepE] WARN agent={cfg.agent} PPO unavailable for primary path ({msg}); fallback to diffpg legacy/comparison path")
                 policy_kind = "diffpg"
 
         # Train policy (diffPG)
