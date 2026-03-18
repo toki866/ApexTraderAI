@@ -126,6 +126,28 @@ def _read_pair(base: Path, stem: str, symbol: str) -> Tuple[pd.DataFrame, pd.Dat
     return tr, te
 
 
+def _utcnow_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _read_split_summary_csv(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return {}
+    if {"key", "value"}.issubset(df.columns):
+        return {str(k): str(v) for k, v in zip(df["key"], df["value"])}
+    if len(df.index) > 0:
+        return {str(c): str(df.iloc[0][c]) for c in df.columns}
+    return {}
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(_json_safe(payload), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
@@ -844,12 +866,26 @@ class StepDPrimeService:
                 cluster_out = cluster_service.run(cluster_cfg, data=all_df, periodic=periodic, stepd_dir=stepd_dir)
                 cluster_daily_path = stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"
                 cluster_summary_path = stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"
+                cluster_raw_stats_path = stepd_dir / f"stepDprime_cluster_raw_stats_{cfg.symbol}.csv"
                 if not cluster_daily_path.exists() or not cluster_summary_path.exists():
                     raise FileNotFoundError("DPrimeCluster artifacts missing")
+                base_meta_path = stepd_dir / f"stepDprime_base_meta_{cfg.symbol}.json"
+                _write_json(base_meta_path, {
+                    "symbol": cfg.symbol,
+                    "mode": str(cfg.mode),
+                    "base_features_path": str(base_path),
+                    "cluster_daily_path": str(cluster_daily_path),
+                    "cluster_summary_path": str(cluster_summary_path),
+                    "cluster_raw_stats_path": str(cluster_raw_stats_path),
+                    "status": "READY",
+                    "created_at": _utcnow_iso(),
+                })
                 ready = write_status_marker(marker_dir, "DPrimeBaseCluster", "READY", {
                     "symbol": cfg.symbol,
                     "base_features_path": str(base_path),
                     "cluster_daily_path": str(cluster_daily_path),
+                    "cluster_summary_path": str(cluster_summary_path),
+                    "base_meta_path": str(base_meta_path),
                 })
                 return StepDPrimeBaseClusterResult(
                     status="READY",
@@ -880,11 +916,22 @@ class StepDPrimeService:
             }
             diag_path = stepd_dir / f"stepDprime_base_cluster_diagnostics_{cfg.symbol}.json"
             diag_path.write_text(json.dumps(_json_safe(diag_payload), indent=2, ensure_ascii=False), encoding="utf-8")
+            base_meta_path = stepd_dir / f"stepDprime_base_meta_{cfg.symbol}.json"
+            _write_json(base_meta_path, {
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
+                "base_features_path": str(stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"),
+                "cluster_daily_path": str(stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"),
+                "cluster_summary_path": str(stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"),
+                "status": "FAILED",
+                "created_at": _utcnow_iso(),
+                "diagnostics_path": str(diag_path),
+            })
             write_status_marker(
                 marker_dir,
                 "DPrimeBaseCluster",
                 "FAILED",
-                {"symbol": cfg.symbol, "error": repr(e), "diagnostics_path": str(diag_path)},
+                {"symbol": cfg.symbol, "error": repr(e), "diagnostics_path": str(diag_path), "base_meta_path": str(base_meta_path)},
             )
             raise
 
@@ -938,7 +985,24 @@ class StepDPrimeService:
             emb_path = stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"
             if not train_path.exists() or not test_path.exists() or not emb_path.exists():
                 raise FileNotFoundError(f"StepDPrime final profile artifacts missing: {profile}")
-            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol, "force_cpu": bool(force_cpu)})
+            split_meta = _read_split_summary_csv(summary_path)
+            family, pred_type = _parse_profile(profile)
+            profile_summary_path = stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json"
+            _write_json(profile_summary_path, {
+                "profile": profile,
+                "family": family,
+                "pred_type": pred_type,
+                "state_train_path": str(train_path),
+                "state_test_path": str(test_path),
+                "embeddings_all_path": str(emb_path),
+                "pred_source_selected": str(split_meta.get("pred_source_file", "")),
+                "pred_source_mode": str(split_meta.get("pred_source_mode", "")),
+                "pred_available_horizons": str(split_meta.get("pred_available_horizons", "")),
+                "force_cpu": bool(force_cpu),
+                "status": "READY",
+                "created_at": _utcnow_iso(),
+            })
+            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol, "force_cpu": bool(force_cpu), "profile_summary_path": str(profile_summary_path)})
             return StepDPrimeProfileResult(
                 status="READY",
                 profile=profile,
@@ -949,7 +1013,24 @@ class StepDPrimeService:
                 ready_path=str(ready),
             )
         except Exception as e:
-            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e), "force_cpu": bool(force_cpu)})
+            family, pred_type = _parse_profile(profile)
+            profile_summary_path = stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json"
+            _write_json(profile_summary_path, {
+                "profile": profile,
+                "family": family,
+                "pred_type": pred_type,
+                "state_train_path": str(stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"),
+                "state_test_path": str(stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"),
+                "embeddings_all_path": str(stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"),
+                "pred_source_selected": "",
+                "pred_source_mode": "",
+                "pred_available_horizons": "",
+                "force_cpu": bool(force_cpu),
+                "status": "FAILED",
+                "created_at": _utcnow_iso(),
+                "error": repr(e),
+            })
+            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e), "force_cpu": bool(force_cpu), "profile_summary_path": str(profile_summary_path)})
             raise
 
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:

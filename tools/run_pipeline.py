@@ -423,10 +423,10 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.device = "auto"
         cfg.hidden_dim = 256
         cfg.policy_kind = "ppo"
-        cfg.ppo_total_timesteps = 600000
+        cfg.ppo_total_timesteps = 200000
         cfg.ppo_n_steps = 2048
         cfg.ppo_batch_size = 256
-        cfg.ppo_n_epochs = 20
+        cfg.ppo_n_epochs = 5
         cfg.ppo_gamma = 0.99
         cfg.ppo_gae_lambda = 0.95
         cfg.ppo_ent_coef = 0.0
@@ -440,6 +440,43 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         app_config["stepE"] = cfg_list
     else:
         setattr(app_config, "stepE", cfg_list)
+
+
+def _iter_stepe_configs(app_config: Any) -> List[Any]:
+    raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+    if raw is None:
+        return []
+    return list(raw) if isinstance(raw, (list, tuple)) else [raw]
+
+
+def _apply_headless_stepe_overrides(app_config: Any, args: Any) -> None:
+    cfgs = _iter_stepe_configs(app_config)
+    if not cfgs:
+        return
+
+    override_policy_kind = getattr(args, "stepE_policy_kind", None)
+    override_ppo_total_timesteps = getattr(args, "stepE_ppo_total_timesteps", None)
+    override_ppo_n_epochs = getattr(args, "stepE_ppo_n_epochs", None)
+
+    for cfg in cfgs:
+        current_policy_kind = str(getattr(cfg, "policy_kind", "ppo") or "ppo").strip().lower()
+        final_policy_kind = str(override_policy_kind or current_policy_kind or "ppo").strip().lower()
+        setattr(cfg, "policy_kind", final_policy_kind)
+        if override_ppo_total_timesteps is not None:
+            setattr(cfg, "ppo_total_timesteps", int(override_ppo_total_timesteps))
+        elif getattr(cfg, "ppo_total_timesteps", None) is None:
+            setattr(cfg, "ppo_total_timesteps", 200000)
+        if override_ppo_n_epochs is not None:
+            setattr(cfg, "ppo_n_epochs", int(override_ppo_n_epochs))
+        elif getattr(cfg, "ppo_n_epochs", None) is None:
+            setattr(cfg, "ppo_n_epochs", 5)
+        _policy_kind_log = str(getattr(cfg, "policy_kind", "") or "").strip().lower()
+        _policy_role_log = "headless_default_primary" if _policy_kind_log == "ppo" else "fallback_or_legacy"
+        print(
+            f"[StepEConfig] agent={getattr(cfg, 'agent', '')} policy_kind={getattr(cfg, 'policy_kind', '')} "
+            f"policy_role={_policy_role_log} ppo_total_timesteps={int(getattr(cfg, 'ppo_total_timesteps', 0) or 0)} "
+            f"ppo_n_epochs={int(getattr(cfg, 'ppo_n_epochs', 0) or 0)}"
+        )
 
 
 def _extract_stepe_agents_from_config(app_config: Any) -> List[str]:
@@ -1809,6 +1846,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="StepE: comma-separated horizons for StepD' embeddings (e.g. '1,5,10,20').")
     ap.add_argument("--stepE-dprime-join", dest="stepE_dprime_join", default="inner", choices=["inner", "left"],
                    help="StepE: join method when merging embeddings by Date (inner or left).")
+    ap.add_argument("--stepE-policy-kind", dest="stepE_policy_kind", default=None, choices=["diffpg", "ppo"], help="StepE: override headless policy kind.")
+    ap.add_argument("--stepE-ppo-total-timesteps", dest="stepE_ppo_total_timesteps", type=int, default=None, help="StepE: override PPO total timesteps for headless runs.")
+    ap.add_argument("--stepE-ppo-n-epochs", dest="stepE_ppo_n_epochs", type=int, default=None, help="StepE: override PPO n_epochs for headless runs.")
     ap.add_argument("--mamba-lookback", dest="mamba_lookback", type=int, default=None, help="StepB(Mamba) lookback_days (sequence length).")
     ap.add_argument("--mamba-horizons", dest="mamba_horizons", default=None, help="StepB(Mamba) horizons as CSV (e.g., 1,5,10,20).")
     ap.add_argument(
@@ -1985,6 +2025,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _run_manifest.mark_step(step_key, status)
             except Exception:
                 pass
+
+    def _normalize_manifest_reuse_statuses() -> None:
+        if _run_manifest is None:
+            return
+        try:
+            for _step in ("A", "B", "C", "DPRIME", "F"):
+                _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
+                if check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes):
+                    if _run_manifest.step_status(_step) not in ("complete", "reuse"):
+                        _run_manifest.mark_step(_step, "reuse")
+            for _agent in _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS):
+                if check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode):
+                    if _run_manifest.stepe_agent_status(_agent) not in ("complete", "reuse"):
+                        _run_manifest.mark_stepe_agent(_agent, "reuse")
+            _stepe_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
+            if _stepe_agents and all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
+                if _run_manifest.step_status("E") not in ("complete", "reuse"):
+                    _run_manifest.mark_step("E", "reuse")
+        except Exception as _manifest_norm_e:
+            print(f"[reuse] WARNING manifest normalization failed: {type(_manifest_norm_e).__name__}: {_manifest_norm_e}", file=sys.stderr)
+
+    _normalize_manifest_reuse_statuses()
 
     def _emit_step_status(step_key: str, *, status: str, started_at: float, ended_at: float, validated: Optional[bool], detail: str = "") -> None:
         start_ts = datetime.fromtimestamp(started_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2233,6 +2295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"[headless] StepE default config injected: agents={','.join(_OFFICIAL_STEPE_AGENTS)} seed=42+idx device=auto")
             except Exception as e:
                 print(f"[headless] WARNING: failed to inject default StepE config: {type(e).__name__}: {e}")
+        _apply_headless_stepe_overrides(app_config, args)
 
     if args.stepe_agents:
         requested_agents = {a.strip() for a in str(args.stepe_agents).split(",") if a.strip()}
@@ -2517,21 +2580,104 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _d_cfg = _build_stepdprime_config(app_config, symbol, resolved_mode, output_root=str(resolved_output_root))
                 _map = _build_stepe_profile_agent_map(app_config, _d_cfg.profiles)
 
-                def _run_step_bc_lane() -> None:
-                    _run_step_generic("B", app_config, symbol, date_range, results)
-                    _run_step_generic("C", app_config, symbol, date_range, results)
+                def _run_step_b_stream() -> None:
+                    if _can_reuse_step("B"):
+                        _mark_step("B", "reuse")
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("B", 0.0)
+                            _run_manifest.mark_step_audit("B", "PASS")
+                        return
+                    _mark_step("B", "running")
+                    _t0_b_stream = time.perf_counter()
+                    _t0_b_stream_wall = time.time()
+                    try:
+                        results["stepB_result"] = _run_step_generic("B", app_config, symbol, date_range, results)
+                    finally:
+                        _elapsed_b_stream = time.perf_counter() - _t0_b_stream
+                    _miss_b_stream = validate_step_b(Path(resolved_output_root), symbol, resolved_mode, enabled_agents=tuple(results.get("agents", [])))
+                    if _miss_b_stream:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("B", _elapsed_b_stream)
+                            _run_manifest.mark_step_audit("B", "FAIL")
+                        _mark_step("B", "failed")
+                        _emit_step_status("B", status="fail", started_at=_t0_b_stream_wall, ended_at=time.time(), validated=False, detail="contract_or_coverage")
+                        raise RuntimeError("StepB contract missing required files: " + ", ".join(_miss_b_stream))
+                    _mark_step("B", "complete")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("B", _elapsed_b_stream)
+                        _run_manifest.mark_step_audit("B", "PASS")
+                    _emit_step_status("B", status="run", started_at=_t0_b_stream_wall, ended_at=time.time(), validated=True)
+
+                def _run_step_c_stream() -> None:
+                    if _can_reuse_step("C"):
+                        _mark_step("C", "reuse")
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("C", 0.0)
+                            _run_manifest.mark_step_audit("C", "PASS")
+                        return
+                    _mark_step("C", "running")
+                    _t0_c_stream = time.perf_counter()
+                    _t0_c_stream_wall = time.time()
+                    try:
+                        results["stepC_result"] = _run_step_generic("C", app_config, symbol, date_range, results)
+                    finally:
+                        _elapsed_c_stream = time.perf_counter() - _t0_c_stream
+                    _miss_c_stream = validate_step_c(Path(resolved_output_root), symbol, resolved_mode)
+                    if _miss_c_stream:
+                        if _run_manifest is not None:
+                            _run_manifest.mark_step_elapsed("C", _elapsed_c_stream)
+                            _run_manifest.mark_step_audit("C", "FAIL")
+                        _mark_step("C", "failed")
+                        _emit_step_status("C", status="fail", started_at=_t0_c_stream_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                        raise RuntimeError("StepC contract missing required files: " + ", ".join(_miss_c_stream))
+                    _mark_step("C", "complete")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed("C", _elapsed_c_stream)
+                        _run_manifest.mark_step_audit("C", "PASS")
+                    _emit_step_status("C", status="run", started_at=_t0_c_stream_wall, ended_at=time.time(), validated=True)
 
                 orch = DPrimePipelineOrchestrator(step_e_service=StepEService(app_config), date_range=date_range, stepe_cfg_by_profile=_map)
-                orch.run(
-                    DPrimePipelineOrchestratorConfig(
-                        symbol=symbol,
-                        mode=resolved_mode,
-                        output_root=str(resolved_output_root),
-                        stepd_cfg=_d_cfg,
-                        force_cpu_dprime_final=bool(int(getattr(args, "force_cpu", 0))),
-                    ),
-                    run_step_bc=_run_step_bc_lane,
-                )
+                _t0_dp_stream_wall = time.time()
+                try:
+                    _mark_step("DPRIME", "running")
+                    _mark_step("E", "running")
+                    _orch_result = orch.run(
+                        DPrimePipelineOrchestratorConfig(
+                            symbol=symbol,
+                            mode=resolved_mode,
+                            output_root=str(resolved_output_root),
+                            stepd_cfg=_d_cfg,
+                            force_cpu_dprime_final=bool(int(getattr(args, "force_cpu", 0))),
+                        ),
+                        run_step_b=_run_step_b_stream,
+                        run_step_c=_run_step_c_stream,
+                    )
+                except Exception:
+                    _mark_step("DPRIME", "failed")
+                    _mark_step("E", "failed")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_audit("DPRIME", "FAIL")
+                        _run_manifest.mark_step_audit("E", "FAIL")
+                    _emit_step_status("DPRIME", status="fail", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=False, detail="stream_exception")
+                    _emit_step_status("E", status="fail", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=False, detail="stream_exception")
+                    raise
+                results["stepDPRIME_stream_result"] = _orch_result
+                if _run_manifest is not None:
+                    if check_step_artifacts("DPRIME", resolved_output_root, symbol, resolved_mode):
+                        _run_manifest.mark_step("DPRIME", "complete")
+                        _run_manifest.mark_step_audit("DPRIME", "PASS")
+                    _stream_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
+                    for _stream_agent in _stream_agents:
+                        if check_stepe_agent_artifact(_stream_agent, resolved_output_root, symbol, resolved_mode):
+                            _run_manifest.mark_stepe_agent(_stream_agent, "complete")
+                            _run_manifest.mark_stepe_agent_audit(_stream_agent, "PASS")
+                    if _stream_agents and all(check_stepe_agent_artifact(_stream_agent, resolved_output_root, symbol, resolved_mode) for _stream_agent in _stream_agents):
+                        _run_manifest.mark_step("E", "complete")
+                        _run_manifest.mark_step_audit("E", "PASS")
+                _mark_step("DPRIME", "complete")
+                _mark_step("E", "complete")
+                _emit_step_status("DPRIME", status="run", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=True)
+                _emit_step_status("E", status="run", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=True)
                 steps = tuple(s for s in steps if s not in ("B", "C", "DPRIME", "E"))
 
             if "B" in steps:
