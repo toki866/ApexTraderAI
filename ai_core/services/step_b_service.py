@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-import torch
-
 from ai_core.config.app_config import AppConfig
 from ai_core.config.step_b_config import StepBConfig, WaveletMambaTrainConfig
 from ai_core.services.step_b_mamba_runner import rollout_periodic_h1_future, run_stepB_mamba
@@ -64,41 +62,37 @@ class StepBService:
             raise RuntimeError(f"StepBService mode_dir points to repo cache output path: {p}")
         return p
 
-    def _actual_device(self, *agent_results) -> str:
-        for result in agent_results:
-            candidate = getattr(result, "device_execution", None)
-            if candidate:
-                return str(candidate)
-            info = getattr(result, "info", None)
-            if isinstance(info, dict) and info.get("device_execution"):
-                return str(info["device_execution"])
-        return "cuda" if torch.cuda.is_available() else "cpu"
-
     def _device_evidence(self, *named_results) -> dict:
         agent_details = {}
         summary = {
             "device_requested": "auto",
-            "device_execution": "cuda" if torch.cuda.is_available() else "cpu",
-            "device_resolution_source": "torch.cuda.is_available",
-            "device_fallback_reason": "",
-            "device_evidence_source": "service_default",
+            "device_execution": "unknown",
+            "device_execution_verified": False,
+            "device_execution_evidence": {},
+            "device_resolution_source": "",
+            "device_fallback_reason": "missing_device_execution_evidence",
+            "device_evidence_source": "service_default_missing_agent_evidence",
         }
         for name, result in named_results:
             info = getattr(result, "info", None)
             if not isinstance(info, dict):
                 info = {}
+            evidence = info.get("device_execution_evidence", {})
+            if not isinstance(evidence, dict):
+                evidence = {}
             detail = {
                 "device_requested": str(info.get("device_requested", "auto") or "auto"),
                 "device_execution": str(getattr(result, "device_execution", info.get("device_execution", "")) or ""),
+                "device_execution_verified": bool(info.get("device_execution_verified", False)),
+                "device_execution_evidence": evidence,
                 "device_resolution_source": str(info.get("device_resolution_source", "") or ""),
                 "device_fallback_reason": str(info.get("device_fallback_reason", "") or ""),
-                "device_evidence_source": "agent_result.info" if info else "agent_result",
+                "device_evidence_source": "agent_result.info.device_execution_evidence" if evidence else ("agent_result.info" if info else "agent_result"),
             }
             agent_details[str(name)] = detail
-            if detail["device_execution"]:
+            if detail["device_execution"] and summary["device_execution"] == "unknown":
                 summary = dict(detail)
                 summary["device_evidence_source"] = f"agent_result[{name}]"
-                break
         summary["agent_device_evidence"] = agent_details
         return summary
 

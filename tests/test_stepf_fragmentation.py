@@ -304,7 +304,13 @@ def test_run_completes_and_writes_equity_csv_with_none_fallback(monkeypatch, tmp
     assert summary["clusterer_type_used"] == "none"
     assert summary["fallback_reason"] == "ticc_unavailable"
     daily = pd.read_csv(Path(result.daily_log_path))
+    assert "selected_expert" in daily.columns
+    assert "mixture_weights_json" in daily.columns
+    assert "source_device" in daily.columns
+    assert "input_feature_summary" in daily.columns
+    assert daily["selected_expert"].tolist() == ["a1", "a1", "a1"]
     assert daily["device_execution"].tolist() == ["cpu", "cpu", "cpu"]
+    assert daily["source_device"].tolist() == ["cpu", "cpu", "cpu"]
     assert daily["clusterer_type_used"].tolist() == ["none", "none", "none"]
     assert daily["fallback_reason"].tolist() == ["ticc_unavailable", "ticc_unavailable", "ticc_unavailable"]
     assert daily["selected_expert_definition"].nunique() == 1

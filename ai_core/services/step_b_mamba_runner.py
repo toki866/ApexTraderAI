@@ -414,6 +414,27 @@ def _resolve_torch_device(device_request: Any) -> Tuple[torch.device, str, str, 
     return _resolve_torch_device("auto")
 
 
+def _record_device_name(bucket: List[str], value: Any) -> None:
+    name = str(value or "").strip()
+    if name and name not in bucket:
+        bucket.append(name)
+
+
+def _primary_runtime_device(device_evidence: Dict[str, List[str]], fallback_device: str) -> Tuple[str, bool]:
+    for key in (
+        "train_model_devices",
+        "train_tensor_devices",
+        "infer_model_devices",
+        "infer_tensor_devices",
+        "daily_rollout_model_devices",
+        "daily_rollout_tensor_devices",
+    ):
+        vals = list(device_evidence.get(key, []) or [])
+        if vals:
+            return str(vals[0]), True
+    return str(fallback_device), False
+
+
 def _parse_horizons(cfg: Any) -> List[int]:
     if _is_periodic_variant(cfg):
         hz = _get(cfg, 'periodic_snapshot_horizons', (20,))
@@ -756,6 +777,14 @@ def run_mamba_multi_model_by_horizon(
     pred_dense_y_by_h: Dict[int, np.ndarray] = {}
     loss_by_h: Dict[int, List[float]] = {}
     train_samples_by_h: Dict[int, int] = {}
+    device_execution_evidence: Dict[str, List[str]] = {
+        "train_model_devices": [],
+        "train_tensor_devices": [],
+        "infer_model_devices": [],
+        "infer_tensor_devices": [],
+        "daily_rollout_model_devices": [],
+        "daily_rollout_tensor_devices": [],
+    }
 
     for H in horizons:
         horizon_stage = None
@@ -795,6 +824,7 @@ def run_mamba_multi_model_by_horizon(
             y_train = np.array(y_list, dtype=np.float32)
 
             model = _build_model(input_dim=X_train.shape[2], hidden_dim=hidden_dim, out_dim=H).to(device)
+            _record_device_name(device_execution_evidence["train_model_devices"], next(model.parameters()).device)
             opt = torch.optim.Adam(model.parameters(), lr=lr)
             loss_fn = nn.MSELoss()
 
@@ -809,6 +839,7 @@ def run_mamba_multi_model_by_horizon(
                 for xb, yb in dl:
                     xb = xb.to(device)
                     yb = yb.to(device)
+                    _record_device_name(device_execution_evidence["train_tensor_devices"], xb.device)
                     opt.zero_grad(set_to_none=True)
                     pred = model(xb)
                     loss = loss_fn(pred, yb)
@@ -828,6 +859,8 @@ def run_mamba_multi_model_by_horizon(
             with torch.no_grad():
                 for i0 in range(0, len(X_inf), 1024):
                     xb = torch.from_numpy(X_inf[i0:i0+1024]).to(device)
+                    _record_device_name(device_execution_evidence["infer_model_devices"], next(model.parameters()).device)
+                    _record_device_name(device_execution_evidence["infer_tensor_devices"], xb.device)
                     pb = model(xb).detach().cpu().numpy()  # (B, H)
                     preds.append(pb)
             P = np.concatenate(preds, axis=0)  # (N_anchor, H)
@@ -940,6 +973,7 @@ def run_mamba_multi_model_by_horizon(
             mdl = _build_model(input_dim=input_dim, hidden_dim=hidden_dim, out_dim=H).to(device)
             mdl.load_state_dict(state)
             mdl.eval()
+            _record_device_name(device_execution_evidence["daily_rollout_model_devices"], next(mdl.parameters()).device)
             model_cache[H] = mdl
             return mdl
 
@@ -1008,6 +1042,8 @@ def run_mamba_multi_model_by_horizon(
                 model = _load_horizon_model(H, input_dim=Xw.shape[1])
 
                 xb = torch.from_numpy(Xw[None, :, :]).to(device)
+                _record_device_name(device_execution_evidence["daily_rollout_model_devices"], next(model.parameters()).device)
+                _record_device_name(device_execution_evidence["daily_rollout_tensor_devices"], xb.device)
                 with torch.no_grad():
                     yhat = model(xb).detach().cpu().numpy().reshape(-1)  # (H,)
 
@@ -1069,6 +1105,7 @@ def run_mamba_multi_model_by_horizon(
     out_win[["Date", f"Delta_Close_pred_{col_agent}"]].to_csv(delta_path, index=False, encoding="utf-8-sig")
 
     model_arch = "Mamba(mamba-ssm)"
+    actual_device_execution, device_execution_verified = _primary_runtime_device(device_execution_evidence, fallback_device=str(device))
 
     meta = {
         "symbol": sym,
@@ -1108,7 +1145,9 @@ def run_mamba_multi_model_by_horizon(
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
         "daily_manifest_rows": int(len(manifest_rows)),
         "device_requested": device_requested,
-        "device_execution": str(device),
+        "device_execution": actual_device_execution,
+        "device_execution_verified": bool(device_execution_verified),
+        "device_execution_evidence": device_execution_evidence,
         "device_resolution_source": device_resolution_source,
         "device_fallback_reason": device_fallback_reason,
         "csv": {
@@ -1136,7 +1175,9 @@ def run_mamba_multi_model_by_horizon(
             "train_samples_by_h": train_samples_by_h,
         },
         device_requested=device_requested,
-        device_execution=str(device),
+        device_execution=actual_device_execution,
+        device_execution_verified=bool(device_execution_verified),
+        device_execution_evidence=device_execution_evidence,
         device_resolution_source=device_resolution_source,
         device_fallback_reason=device_fallback_reason,
         csv_paths_list=[str(pred_close_path), str(pred_path_path), str(delta_path), str(meta_path)],
