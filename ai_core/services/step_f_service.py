@@ -530,6 +530,9 @@ class StepFService:
             out["mixture_weights_json"] = weight_payload
         if "mixture_weights" not in out.columns:
             out["mixture_weights"] = out["mixture_weights_json"].astype(str)
+        if "mixture_weight" not in out.columns:
+            src = "selected_expert_weight" if "selected_expert_weight" in out.columns else None
+            out["mixture_weight"] = pd.to_numeric(out[src], errors="coerce").fillna(0.0) if src else 0.0
 
         for agent in agents:
             col = f"mixture_weight_{agent}"
@@ -826,6 +829,8 @@ class StepFService:
                             "regime_id",
                             "cluster_id_stable",
                             "selected_expert",
+                            "mixture_weight",
+                            "selected_expert_weight",
                             "final_ratio",
                             "reward",
                             "realized_ret",
@@ -840,6 +845,11 @@ class StepFService:
                             "has_past_block",
                             "has_pred_block",
                         ],
+                        "daily_audit_column_aliases": {
+                            "mixture_weight": "selected_expert_weight alias",
+                            "mixture_weights_json": "full expert-weight payload",
+                            "mixture_weight_<agent>": "per-agent mixture weight columns",
+                        },
                         "device_requested": str(getattr(cfg, "device", "auto")),
                         "device_execution": actual_device_name,
                         "device_warnings": list(device_warnings),
@@ -883,6 +893,8 @@ class StepFService:
                         "regime_id",
                         "cluster_id_stable",
                         "selected_expert",
+                        "mixture_weight",
+                        "selected_expert_weight",
                         "final_ratio",
                         "reward",
                         "realized_ret",
@@ -897,6 +909,11 @@ class StepFService:
                         "has_past_block",
                         "has_pred_block",
                     ],
+                    "daily_audit_column_aliases": {
+                        "mixture_weight": "selected_expert_weight alias",
+                        "mixture_weights_json": "full expert-weight payload",
+                        "mixture_weight_<agent>": "per-agent mixture weight columns",
+                    },
                     "device_requested": str(getattr(cfg, "device", "auto")),
                     "device_execution": actual_device_name,
                     "device_warnings": list(device_warnings),
