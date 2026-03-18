@@ -714,6 +714,11 @@ class StepFService:
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
                 cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
                 daily = daily.copy()
+                # Daily trace contract for PR/review:
+                # - selected_expert
+                # - mixture_weights (router-native mixture_weights_json alias)
+                # - source_device
+                # - input_feature_summary
                 if "selected_expert" not in daily.columns:
                     daily["selected_expert"] = ""
                 if "mixture_weights" not in daily.columns:
