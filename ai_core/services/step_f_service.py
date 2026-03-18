@@ -714,6 +714,26 @@ class StepFService:
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
                 cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
                 daily = daily.copy()
+                if "selected_expert" not in daily.columns:
+                    daily["selected_expert"] = ""
+                if "mixture_weights" not in daily.columns:
+                    if "mixture_weights_json" in daily.columns:
+                        daily["mixture_weights"] = daily["mixture_weights_json"].astype(str)
+                    else:
+                        daily["mixture_weights"] = "{}"
+                if "source_device" not in daily.columns:
+                    daily["source_device"] = actual_device_name
+                if "input_feature_summary" not in daily.columns:
+                    daily["input_feature_summary"] = daily.apply(
+                        lambda r: json.dumps(
+                            {
+                                "regime_id": int(r["regime_id"]) if pd.notna(r.get("regime_id")) else -1,
+                                "cluster_id_stable": int(r["cluster_id_stable"]) if pd.notna(r.get("cluster_id_stable")) else -1,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        axis=1,
+                    )
                 daily["selected_expert_definition"] = "argmax mixture weight for the day after EMA-smoothed routing weights are normalized"
                 daily["device_requested"] = str(getattr(cfg, "device", "auto"))
                 daily["device_execution"] = actual_device_name
