@@ -1937,10 +1937,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"[PIPELINE] canonical_output_root={canonical_output_root}")
     print(f"[PIPELINE] cfg_output_root={getattr(app_config, 'output_root', None)}")
     print(f"[PIPELINE] cfg_data_output_root={getattr(getattr(app_config, 'data', None), 'output_root', None)}")
+    reuse_signature_payload = {
+        "mode": resolved_mode,
+        "symbols": [symbol],
+        "test_start_date": str(args.test_start or canonical_test_start or ""),
+        "train_years": int(args.train_years),
+        "test_months": int(args.test_months),
+        "feature_signature": "canonical_stepA_stepF",
+        "algorithm_signature": f"mamba={int(enable_mamba)};mamba_periodic={int(bool(args.enable_mamba_periodic))}",
+        "parameter_signature": f"mamba_lookback={args.mamba_lookback};mamba_horizons={args.mamba_horizons};steps={','.join(steps)}",
+    }
+    reuse_signature_payload["reuse_key_hash"] = uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(reuse_signature_payload, sort_keys=True)).hex[:16]
+    (Path(resolved_output_root) / "reuse_signature.json").write_text(json.dumps(reuse_signature_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # --- Run-reuse manifest (initialised early; steps update it as they complete) ---
     _run_manifest = None
-    if reuse_output:
+    if True:
         try:
             from tools.run_manifest import (  # lazy import to avoid hard dep
                 RunManifest,
@@ -2032,17 +2044,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
-                if check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes):
-                    if _run_manifest.step_status(_step) not in ("complete", "reuse"):
-                        _run_manifest.mark_step(_step, "reuse")
+                _artifact_ok = check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes)
+                if not _artifact_ok and _run_manifest.step_status(_step) in ("complete", "reuse"):
+                    _run_manifest.mark_step(_step, "pending")
             for _agent in _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS):
-                if check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode):
-                    if _run_manifest.stepe_agent_status(_agent) not in ("complete", "reuse"):
-                        _run_manifest.mark_stepe_agent(_agent, "reuse")
+                if not check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) and _run_manifest.stepe_agent_status(_agent) in ("complete", "reuse"):
+                    _run_manifest.mark_stepe_agent(_agent, "pending")
             _stepe_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
-            if _stepe_agents and all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
-                if _run_manifest.step_status("E") not in ("complete", "reuse"):
-                    _run_manifest.mark_step("E", "reuse")
+            if _stepe_agents and not all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
+                if _run_manifest.step_status("E") in ("complete", "reuse"):
+                    _run_manifest.mark_step("E", "pending")
         except Exception as _manifest_norm_e:
             print(f"[reuse] WARNING manifest normalization failed: {type(_manifest_norm_e).__name__}: {_manifest_norm_e}", file=sys.stderr)
 
@@ -2082,9 +2093,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _manifest_ok = False
             if _run_manifest is not None:
                 _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
-                if _artifact_ok and not _manifest_ok:
-                    _run_manifest.mark_stepe_agent(_agent, "reuse")
-                    _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
 
             # keep parity with manifest artifact checker and ensure minimum contract.
             _artifact_ok = _artifact_ok and _check_agent_art_final(_agent, resolved_output_root, symbol, resolved_mode)
@@ -2905,10 +2913,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 _artifact_complete_agents.append(_agent)
                             if _manifest_ok:
                                 _manifest_complete_agents.append(_agent)
-                            if _artifact_ok and not _manifest_ok:
-                                _run_manifest.mark_stepe_agent(_agent, "reuse")
-                                _normalized_reuse_agents.append(_agent)
-                                _manifest_ok = True
                             if _manifest_ok and _artifact_ok:
                                 _reusable_agents.append(_agent)
 
@@ -3024,6 +3028,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         print(f"[StepE] reuse logic error ({type(_reuse_e).__name__}: {_reuse_e}); running step normally", file=sys.stderr)
 
                 # --- StepF: reuse ---
+                if step == "F":
+                    _stepf_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
+                    _stepe_final_for_f = _evaluate_stepe_final_state(_stepf_agents)
+                    if not _stepe_final_for_f["all_complete"]:
+                        raise RuntimeError(f"StepF requires complete StepE artifacts for all agents. missing={_stepe_final_for_f['missing_detail']}")
                 if step == "F" and _can_reuse_step("F"):
                     print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("F", "reuse")
@@ -3049,7 +3058,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
                     reason = step_result.get("reason", "unknown")
                     raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
-                _mark_step(step if step != "D" else "D", "complete")
                 if _run_manifest is not None:
                     _run_manifest.mark_step_elapsed(step if step != "D" else "D", _elapsed_generic)
                     if step == "E":
@@ -3144,6 +3152,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if int(_final_eval_f.get("return_code", 1)) != 0:
                             _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
                             raise RuntimeError("StepF final artifacts invalid: " + ", ".join(_final_eval_f.get("errors", [])))
+                _mark_step(step if step != "D" else "D", "complete")
                 _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)
                 print(f"[Step{step}] done")
 
@@ -3165,6 +3174,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         timing_events = Path(resolved_output_root) / "timing" / resolved_mode / "timing_events.jsonl"
         timing_summary_step = Path(resolved_output_root) / "timing" / "summary_step_elapsed.csv"
         timing_summary_agent = Path(resolved_output_root) / "timing" / "summary_agent_elapsed.csv"
+        mandatory_root_files = [
+            Path(resolved_output_root) / "run_manifest.json",
+            Path(resolved_output_root) / "timings.csv",
+            Path(resolved_output_root) / "reuse_signature.json",
+        ]
+        missing_root_files = [str(p) for p in mandatory_root_files if not p.exists()]
+        if missing_root_files:
+            raise RuntimeError(f"missing mandatory root artifacts: {missing_root_files}")
         print(f"[ONE_TAP][DIAG] timings_csv_exists={'yes' if timings_csv.exists() else 'no'}")
         print(f"[ONE_TAP][DIAG] timing_events_exists={'yes' if timing_events.exists() else 'no'}")
         print(f"[ONE_TAP][DIAG] timing_summary_step_exists={'yes' if timing_summary_step.exists() else 'no'}")

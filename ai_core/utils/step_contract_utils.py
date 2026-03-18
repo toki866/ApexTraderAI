@@ -78,10 +78,14 @@ def validate_step_b(output_root: Path, symbol: str, mode: str) -> List[str]:
         f"stepB_pred_path_mamba_{symbol}.csv",
         f"stepB_pred_close_mamba_periodic_{symbol}.csv",
         f"stepB_pred_path_mamba_periodic_{symbol}.csv",
+        f"stepB_summary_{symbol}.json",
     ):
         p = base / name
         if not p.exists():
             missing.append(str(p))
+    audit_path = Path(output_root) / "audit" / mode / f"stepB_audit_{symbol}.json"
+    if not audit_path.exists():
+        missing.append(str(audit_path))
 
     periodic_close = base / f"stepB_pred_close_mamba_periodic_{symbol}.csv"
     if periodic_close.exists():
@@ -180,11 +184,14 @@ def validate_step_e_agent(
     summary = base / f"stepE_summary_{agent}_{symbol}.json"
     model_pt = base / "models" / f"stepE_{agent}_{symbol}.pt"
     model_zip = base / "models" / f"stepE_{agent}_{symbol}_ppo.zip"
+    audit = Path(output_root) / "audit" / mode / f"stepE_audit_{agent}_{symbol}.json"
     if not daily.exists():
         return [str(daily)]
     missing = []
     if not summary.exists():
         missing.append(str(summary))
+    if not audit.exists():
+        missing.append(str(audit))
     if not model_pt.exists() and not model_zip.exists():
         missing.append(f"{model_pt} | {model_zip}")
     if missing:
@@ -205,9 +212,13 @@ def validate_step_f(output_root: Path, symbol: str, mode: str) -> List[str]:
         f"stepF_daily_log_marl_{symbol}.csv",
         f"stepF_daily_log_router_{symbol}.csv",
         f"stepF_summary_router_{symbol}.json",
+        f"stepF_audit_router_{symbol}.json",
     ):
         p = base / name
         if not p.exists():
             missing.append(str(p))
+    audit_compare = Path(output_root) / "audit" / mode / f"stepF_policy_compare_{symbol}.json"
+    if not audit_compare.exists():
+        missing.append(str(audit_compare))
 
     return missing

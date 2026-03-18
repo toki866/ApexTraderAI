@@ -2270,6 +2270,17 @@ jobs:
             Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
             Write-Host "[OK] output_root=$outRoot"
 
+            $strictRequired = @(
+              (Join-Path $outRoot 'run_manifest.json'),
+              (Join-Path $outRoot 'reuse_signature.json'),
+              (Join-Path $outRoot 'timings.csv')
+            )
+            $missingStrict = @($strictRequired | Where-Object { -not (Test-Path $_) })
+            if ($missingStrict.Count -gt 0) {
+              Add-Content $rp ("[NG] strict_required_missing={0}" -f ($missingStrict -join ','))
+              throw "Missing strict required artifacts: $($missingStrict -join ',')"
+            }
+
             # robocopy to OneDrive
             if ($env:COPY_TO_ONEDRIVE -eq '1') {
               $oneDest = $null
@@ -6104,6 +6115,17 @@ jobs:
             Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
             Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
             Write-Host "[OK] output_root=$outRoot"
+
+            $strictRequired = @(
+              (Join-Path $outRoot 'run_manifest.json'),
+              (Join-Path $outRoot 'reuse_signature.json'),
+              (Join-Path $outRoot 'timings.csv')
+            )
+            $missingStrict = @($strictRequired | Where-Object { -not (Test-Path $_) })
+            if ($missingStrict.Count -gt 0) {
+              Add-Content $rp ("[NG] strict_required_missing={0}" -f ($missingStrict -join ','))
+              throw "Missing strict required artifacts: $($missingStrict -join ',')"
+            }
 
             # robocopy to OneDrive
             if ($env:COPY_TO_ONEDRIVE -eq '1') {
