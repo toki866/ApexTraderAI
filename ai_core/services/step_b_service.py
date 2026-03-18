@@ -74,6 +74,34 @@ class StepBService:
                 return str(info["device_execution"])
         return "cuda" if torch.cuda.is_available() else "cpu"
 
+    def _device_evidence(self, *named_results) -> dict:
+        agent_details = {}
+        summary = {
+            "device_requested": "auto",
+            "device_execution": "cuda" if torch.cuda.is_available() else "cpu",
+            "device_resolution_source": "torch.cuda.is_available",
+            "device_fallback_reason": "",
+            "device_evidence_source": "service_default",
+        }
+        for name, result in named_results:
+            info = getattr(result, "info", None)
+            if not isinstance(info, dict):
+                info = {}
+            detail = {
+                "device_requested": str(info.get("device_requested", "auto") or "auto"),
+                "device_execution": str(getattr(result, "device_execution", info.get("device_execution", "")) or ""),
+                "device_resolution_source": str(info.get("device_resolution_source", "") or ""),
+                "device_fallback_reason": str(info.get("device_fallback_reason", "") or ""),
+                "device_evidence_source": "agent_result.info" if info else "agent_result",
+            }
+            agent_details[str(name)] = detail
+            if detail["device_execution"]:
+                summary = dict(detail)
+                summary["device_evidence_source"] = f"agent_result[{name}]"
+                break
+        summary["agent_device_evidence"] = agent_details
+        return summary
+
     def _load_stepa_split_df(self, symbol: str, run_mode: str, kind: str, split: str) -> pd.DataFrame:
         p = self._mode_dir(run_mode) / f"stepA_{kind}_{split}_{symbol}.csv"
         if not p.exists() or p.stat().st_size <= 0:
@@ -575,7 +603,6 @@ class StepBService:
                 "symbol": symbol,
                 "mode": run_mode,
                 "output_root": str(self._out_root()),
-                "device_execution": self._actual_device(full_res, periodic_res),
                 "pred_time_all_path": str(pred_time_all_path),
                 "prediction_paths": {
                     "full": str(getattr(full_res, "pred_close_path", "")),
@@ -587,6 +614,7 @@ class StepBService:
                     "periodic": "periodic_only",
                 },
             }
+            summary.update(self._device_evidence(("full", full_res), ("periodic", periodic_res)))
             (stepb_dir / f"stepB_summary_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
             audit_dir = self._out_root() / "audit" / run_mode
             audit_dir.mkdir(parents=True, exist_ok=True)

@@ -712,6 +712,17 @@ class StepFService:
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
+                cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
+                daily = daily.copy()
+                daily["selected_expert_definition"] = "argmax mixture weight for the day after EMA-smoothed routing weights are normalized"
+                daily["device_requested"] = str(getattr(cfg, "device", "auto"))
+                daily["device_execution"] = actual_device_name
+                daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")
+                daily["clusterer_type_used"] = cluster_diag.get("clusterer_type_used", "")
+                daily["fallback_type"] = cluster_diag.get("fallback_type", "")
+                daily["fallback_used"] = bool(cluster_diag.get("fallback_used", False))
+                daily["fallback_reason"] = cluster_diag.get("fallback_reason", "")
+                daily["cluster_main_source"] = cluster_diag.get("cluster_main_source", "stable")
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 if persist_primary_outputs:
                     daily.to_csv(log_router_path, index=False)
@@ -745,7 +756,6 @@ class StepFService:
                     "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                 }
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
-                cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
                 summary.update(
                     {
                         "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",

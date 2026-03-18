@@ -399,6 +399,21 @@ def _jsonify(x: Any) -> Any:
     return x
 
 
+def _resolve_torch_device(device_request: Any) -> Tuple[torch.device, str, str, str]:
+    requested = str(device_request or "auto").strip().lower()
+    if requested in ("", "auto"):
+        if torch.cuda.is_available():
+            return torch.device("cuda"), "auto", "torch.cuda.is_available", ""
+        return torch.device("cpu"), "auto", "torch.cuda.is_available", "auto_cuda_unavailable"
+    if requested == "cpu":
+        return torch.device("cpu"), "cpu", "cfg.device", ""
+    if requested.startswith("cuda"):
+        if torch.cuda.is_available():
+            return torch.device(requested), requested, "cfg.device", ""
+        return torch.device("cpu"), requested, "cfg.device", "requested_cuda_unavailable"
+    return _resolve_torch_device("auto")
+
+
 def _parse_horizons(cfg: Any) -> List[int]:
     if _is_periodic_variant(cfg):
         hz = _get(cfg, 'periodic_snapshot_horizons', (20,))
@@ -663,7 +678,7 @@ def run_mamba_multi_model_by_horizon(
     close_of_date: Dict[pd.Timestamp, float] = {pd.Timestamp(d).normalize(): float(close[i]) for i, d in enumerate(dates)}
 
     _require_mamba_ssm()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device, device_requested, device_resolution_source, device_fallback_reason = _resolve_torch_device(_get(cfg, "device", "auto"))
     print(f"[StepB:mamba:{out_tag}] backend=mamba-ssm available={_MAMBA_SSM_AVAILABLE} device={device} epochs={epochs} horizons={horizons}")
 
     # ---- Train a model per horizon, then infer for all anchors ----
@@ -1092,7 +1107,10 @@ def run_mamba_multi_model_by_horizon(
         "train_samples_by_h": train_samples_by_h,
         "loss_by_h": {f"h{h:02d}": loss_by_h[h] for h in horizons},
         "daily_manifest_rows": int(len(manifest_rows)),
+        "device_requested": device_requested,
         "device_execution": str(device),
+        "device_resolution_source": device_resolution_source,
+        "device_fallback_reason": device_fallback_reason,
         "csv": {
             "pred_close": str(pred_close_path),
             "pred_path": str(pred_path_path),
@@ -1117,7 +1135,10 @@ def run_mamba_multi_model_by_horizon(
             "daily_manifest_rows": int(len(manifest_rows)),
             "train_samples_by_h": train_samples_by_h,
         },
+        device_requested=device_requested,
         device_execution=str(device),
+        device_resolution_source=device_resolution_source,
+        device_fallback_reason=device_fallback_reason,
         csv_paths_list=[str(pred_close_path), str(pred_path_path), str(delta_path), str(meta_path)],
     )
 
