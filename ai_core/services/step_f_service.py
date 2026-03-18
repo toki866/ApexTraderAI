@@ -748,6 +748,7 @@ class StepFService:
                 cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
                 summary.update(
                     {
+                        "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
                         "device_requested": str(getattr(cfg, "device", "auto")),
                         "device_execution": actual_device_name,
                         "device_warnings": list(device_warnings),
@@ -785,6 +786,7 @@ class StepFService:
                     "mode": mode,
                     "symbol": symbol,
                     "reward_mode": reward_mode,
+                    "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
                     "device_requested": str(getattr(cfg, "device", "auto")),
                     "device_execution": actual_device_name,
                     "device_warnings": list(device_warnings),
@@ -903,10 +905,28 @@ class StepFService:
     def _load_stepe_logs(self, step_e_root: Path, symbol: str, agents: List[str]) -> Dict[str, pd.DataFrame]:
         out: Dict[str, pd.DataFrame] = {}
         selected_root = Path(step_e_root).resolve(strict=False)
+        audit_root = selected_root.parent.parent / "audit" / selected_root.name
         for agent in agents:
             p = selected_root / f"stepE_daily_log_{agent}_{symbol}.csv"
+            summary_path = selected_root / f"stepE_summary_{agent}_{symbol}.json"
+            audit_path = audit_root / f"stepE_audit_{agent}_{symbol}.json"
             if not p.exists():
                 print(f"[StepF-router] WARN: missing StepE log (skip agent): {p}")
+                continue
+            quality_payload = {}
+            for meta_path in (summary_path, audit_path):
+                if meta_path.exists():
+                    try:
+                        quality_payload.update(json.loads(meta_path.read_text(encoding="utf-8")))
+                    except Exception as exc:
+                        print(f"[StepF-router] WARN: unreadable StepE meta (skip agent) path={meta_path} exc={type(exc).__name__}:{exc}")
+                        quality_payload = {"stepdprime_join_status": "FAIL", "failure_reason": f"meta_unreadable:{meta_path.name}"}
+                        break
+            if str(quality_payload.get("stepdprime_join_status", "PASS")).upper() != "PASS":
+                print(f"[StepF-router] WARN: StepE agent filtered by join_status agent={agent} reason={quality_payload.get('failure_reason', '')}")
+                continue
+            if str(quality_payload.get("status", "PASS")).upper() == "FAIL" or quality_payload.get("reuse_eligible") is False:
+                print(f"[StepF-router] WARN: StepE agent filtered by audit/status agent={agent} reason={quality_payload.get('failure_reason', '')}")
                 continue
             df = pd.read_csv(p)
             if "Date" not in df.columns:
@@ -1664,6 +1684,7 @@ class StepFService:
                 "confidence_stable": float(getattr(row, "confidence_stable", 0.0) or 0.0),
                 "state_context_norm": float(getattr(row, "state_context_norm", 0.0) or 0.0),
             }
+            input_nonzero_feature_count = int(sum(abs(float(v or 0.0)) > 1e-12 for v in input_feature_summary.values()))
             rec = {
                 "Date": getattr(row, "Date"),
                 "Split": split,
@@ -1686,6 +1707,12 @@ class StepFService:
                 "r_soxl": r_soxl,
                 "r_soxs": r_soxs,
                 "source_device": str(compute_device),
+                "input_feature_count": int(len(input_feature_summary)),
+                "input_nonzero_feature_count": input_nonzero_feature_count,
+                "input_has_regime": 1,
+                "input_has_cluster": 1,
+                "input_has_pred_block": 0,
+                "input_has_past_block": 1,
                 "input_feature_summary": json.dumps(input_feature_summary, ensure_ascii=False),
             }
             for a in agents:

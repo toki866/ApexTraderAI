@@ -208,6 +208,54 @@ class StepEService:
             "obs_cols_signature": "|".join(obs_cols),
         }
 
+    @staticmethod
+    def _evaluate_stepdprime_join_quality(used_manifest: Dict[str, object]) -> Dict[str, object]:
+        match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 1.0) or 0.0)
+        nonzero_ratio = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0) or 0.0)
+        nan_fill_count = int(used_manifest.get("stepD_prime_nan_fill_count", 0) or 0)
+        failure_reasons: List[str] = []
+        if match_ratio < 0.95:
+            failure_reasons.append(f"embedding_join_ratio_below_threshold:{match_ratio:.3f}")
+        if nonzero_ratio < 0.80:
+            failure_reasons.append(f"embedding_nonzero_ratio_below_threshold:{nonzero_ratio:.3f}")
+        if nan_fill_count > 0:
+            failure_reasons.append(f"dprime_nan_fill_detected:{nan_fill_count}")
+        status = "PASS" if not failure_reasons else "FAIL"
+        return {
+            "stepdprime_join_status": status,
+            "reuse_eligible": status == "PASS",
+            "failure_reason": ";".join(failure_reasons),
+            "embedding_join_ratio": match_ratio,
+            "embedding_nonzero_ratio": nonzero_ratio,
+            "nan_fill_count": nan_fill_count,
+        }
+
+    def _write_stepdprime_failure_artifacts(
+        self,
+        *,
+        out_root: Path,
+        mode: str,
+        cfg: StepEConfig,
+        symbol: str,
+        quality: Dict[str, object],
+        rows_train: int,
+        rows_test: int,
+    ) -> None:
+        out_dir = out_root / "stepE" / mode
+        out_dir.mkdir(parents=True, exist_ok=True)
+        audit_dir = out_root / "audit" / mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        summary_payload = {
+            "agent": cfg.agent,
+            "mode": mode,
+            "symbol": symbol,
+            "rows_train": int(rows_train),
+            "rows_test": int(rows_test),
+            **quality,
+        }
+        (out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps({"status": "FAIL", **summary_payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def run_agent(self, cfg: StepEConfig, *, date_range, symbol: str, mode: Optional[str] = None) -> Dict[str, object]:
         resolved_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
         if resolved_mode in {"ops", "prod", "production", "real"}:
@@ -307,13 +355,26 @@ class StepEService:
             if dp:
                 nonzero_ratio = float((df_train[dp].abs().sum(axis=1) > 1e-9).mean())
                 used_manifest["stepD_prime_nonzero_ratio"] = nonzero_ratio
-                match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 0.0))
-                if nonzero_ratio < 0.80:
-                    raise RuntimeError(
-                        "StepD' embeddings are too sparse after merge: "
-                        f"nonzero_ratio={nonzero_ratio:.3f} match_ratio={match_ratio:.3f}. "
-                        "Treating as invalid instead of warning-only continuation."
-                    )
+
+        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
+            "stepdprime_join_status": "PASS",
+            "reuse_eligible": True,
+            "failure_reason": "",
+            "embedding_join_ratio": 1.0,
+            "embedding_nonzero_ratio": 1.0,
+            "nan_fill_count": 0,
+        }
+        if stepdprime_quality["stepdprime_join_status"] != "PASS":
+            self._write_stepdprime_failure_artifacts(
+                out_root=out_root,
+                mode=mode,
+                cfg=cfg,
+                symbol=symbol,
+                quality=stepdprime_quality,
+                rows_train=len(df_train),
+                rows_test=len(df_test),
+            )
+            raise RuntimeError(f"StepD' quality gate failed: {stepdprime_quality['failure_reason']}")
 
         # Observation columns
         with timing.stage("stepE.agent.select_obs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
@@ -562,6 +623,14 @@ class StepEService:
         # Read back from saved daily log to guarantee summary uses persisted data.
         df_log_for_summary = pd.read_csv(log_path)
         metrics = compute_split_metrics(df_log_for_summary, split="test", equity_col="equity", ret_col="ret")
+        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
+            "stepdprime_join_status": "PASS",
+            "reuse_eligible": True,
+            "failure_reason": "",
+            "embedding_join_ratio": 1.0,
+            "embedding_nonzero_ratio": 1.0,
+            "nan_fill_count": 0,
+        }
         legacy_metrics = {
             "test_return_pct": metrics["total_return_pct"],
             "test_sharpe": metrics["sharpe"],
@@ -586,9 +655,7 @@ class StepEService:
             **metrics,
             **legacy_metrics,
             **feature_summary,
-            "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
-            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
-            "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
+            **stepdprime_quality,
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
             "degraded": bool(used_manifest.get("degraded", False)),
             "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
@@ -621,12 +688,11 @@ class StepEService:
             "mode": mode,
             **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **feature_summary,
-            "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
-            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
-            "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
+            **stepdprime_quality,
             "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -802,9 +868,7 @@ class StepEService:
             **metrics,
             **legacy_metrics,
             **feature_summary,
-            "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
-            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
-            "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
+            **stepdprime_quality,
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
             "degraded": bool(used_manifest.get("degraded", False)),
             "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
@@ -836,12 +900,11 @@ class StepEService:
             "mode": mode,
             **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **feature_summary,
-            "embedding_join_ratio": float(used_manifest.get("stepD_prime_match_ratio", 1.0)),
-            "embedding_nonzero_ratio": float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0)),
-            "nan_fill_count": int(used_manifest.get("stepD_prime_nan_fill_count", 0)),
+            **stepdprime_quality,
             "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
