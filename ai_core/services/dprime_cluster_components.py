@@ -214,6 +214,8 @@ class ClusterMonthlyTrainer:
 
         return {
             "train_df": train_df,
+            "raw_k": int(raw_k),
+            "raw_distinct": int(raw_distinct),
             "ticc_feature_set_name": str(feature_set),
             "ticc_feature_cols": ticc_feature_cols,
             "ticc_feature_count": int(len(ticc_feature_cols)),
@@ -222,6 +224,7 @@ class ClusterMonthlyTrainer:
             "valid_clusters": valid_clusters,
             "k_valid": k_valid,
             "k_eff": int(k_eff),
+            "chosen_k_eff": int(k_eff),
             "small_filtering_collapse_detected": bool(collapse_after_small_filter),
             "small_filtering_collapse_reason": collapse_reason,
             "stable_map": stable_map,
@@ -278,6 +281,7 @@ class ClusterArtifactManager:
 
         assign_path = self.cluster_root / f"cluster_assignments_{self.symbol}.csv"
         summary_path = self.cluster_root / f"cluster_summary_{self.symbol}.json"
+        raw_stats_path = self.cluster_root / f"cluster_raw_stats_{self.symbol}.csv"
         mapping_path = self.cluster_root / f"cluster_mapping_raw20_to_stable_{self.symbol}.json"
         manifest_path = self.cluster_root / f"cluster_feature_manifest_{self.symbol}.json"
 
@@ -293,6 +297,10 @@ class ClusterArtifactManager:
         post_save_stable_dist = {str(int(k)): int(v) for k, v in reloaded["cluster_id_stable"].value_counts().sort_index().items()}
         if pre_save_raw_dist != post_save_raw_dist or pre_save_stable_dist != post_save_stable_dist:
             raise RuntimeError("cluster assignments distribution changed after save/reload")
+
+        pd.DataFrame(list(monthly.get("raw_stats", []))).to_csv(raw_stats_path, index=False)
+        legacy_raw_stats = self.stepd_dir / f"stepDprime_cluster_raw_stats_{self.symbol}.csv"
+        pd.DataFrame(list(monthly.get("raw_stats", []))).to_csv(legacy_raw_stats, index=False)
 
         mapping_payload = {
             "mapping": monthly.get("stable_map", {}),
@@ -332,18 +340,23 @@ class ClusterArtifactManager:
             "cluster_backend": cfg.cluster_backend,
             "status": monthly.get("status", "live"),
             "note": monthly.get("note", ""),
-            "k_raw": int(cfg.cluster_raw_k),
+            "raw_k": int(monthly.get("raw_k", cfg.cluster_raw_k)),
+            "k_raw": int(monthly.get("raw_k", cfg.cluster_raw_k)),
+            "raw_distinct": int(monthly.get("raw_distinct", 0)),
             "ticc_feature_set_name": str(monthly.get("ticc_feature_set_name", "calendar10")),
             "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
             "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
+            "chosen_k_eff": int(monthly.get("chosen_k_eff", monthly.get("k_eff", 0))),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_filtering_collapse_detected": bool(monthly.get("small_filtering_collapse_detected", False)),
             "small_filtering_collapse_reason": str(monthly.get("small_filtering_collapse_reason", "")),
             "small_clusters": list(monthly.get("small_clusters", [])),
+            "valid_clusters": list(monthly.get("valid_clusters", [])),
             "raw_label_distribution": monthly.get("raw_label_distribution", {}),
             "stable_label_distribution": monthly.get("stable_label_distribution", {}),
+            "cluster_raw_stats": list(monthly.get("raw_stats", [])),
             "save_roundtrip_distribution": {
                 "pre_save": {
                     "cluster_id_raw20": pre_save_raw_dist,
@@ -359,6 +372,7 @@ class ClusterArtifactManager:
             "paths": {
                 "assignments": str(assign_path),
                 "summary": str(summary_path),
+                "raw_stats": str(raw_stats_path),
                 "mapping": str(mapping_path),
                 "feature_manifest": str(manifest_path),
                 "models_raw20": str(models_raw),
@@ -370,6 +384,7 @@ class ClusterArtifactManager:
         legacy_summary.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         summary["paths"]["legacy_daily_assign"] = str(legacy_assign)
         summary["paths"]["legacy_summary"] = str(legacy_summary)
+        summary["paths"]["legacy_raw_stats"] = str(legacy_raw_stats)
         return summary["paths"]
 
 
@@ -434,16 +449,23 @@ class DPrimeClusterService:
             "cluster_backend": cfg.cluster_backend,
             "status": str(monthly.get("status", "live")),
             "note": str(monthly.get("note", "")),
-            "k_raw": int(cfg.cluster_raw_k),
+            "raw_k": int(monthly.get("raw_k", cfg.cluster_raw_k)),
+            "k_raw": int(monthly.get("raw_k", cfg.cluster_raw_k)),
+            "raw_distinct": int(monthly.get("raw_distinct", 0)),
             "ticc_feature_set_name": str(monthly.get("ticc_feature_set_name", "calendar10")),
             "ticc_feature_cols": list(monthly.get("ticc_feature_cols", [])),
             "ticc_feature_count": int(monthly.get("ticc_feature_count", 0)),
             "ticc_train_shape": list(monthly.get("ticc_train_shape", [])),
             "k_valid": int(monthly.get("k_valid", 0)),
+            "chosen_k_eff": int(monthly.get("chosen_k_eff", monthly.get("k_eff", 0))),
             "k_eff": int(monthly.get("k_eff", 0)),
             "small_filtering_collapse_detected": bool(monthly.get("small_filtering_collapse_detected", False)),
             "small_filtering_collapse_reason": str(monthly.get("small_filtering_collapse_reason", "")),
             "small_clusters": list(monthly.get("small_clusters", [])),
+            "valid_clusters": list(monthly.get("valid_clusters", [])),
+            "raw_label_distribution": monthly.get("raw_label_distribution", {}),
+            "stable_label_distribution": monthly.get("stable_label_distribution", {}),
+            "cluster_raw_stats": list(monthly.get("raw_stats", [])),
             "backend_resolved_name": str(monthly.get("backend_resolved_name", "") or ""),
             "backend_entrypoint_name": str(monthly.get("backend_entrypoint_name", "") or ""),
             "backend_entrypoint_kind": str(monthly.get("backend_entrypoint_kind", "") or ""),

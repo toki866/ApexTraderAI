@@ -92,10 +92,10 @@ class StepEConfig:
     device: str = "auto"
 
     # PPO training
-    ppo_total_timesteps: int = 600_000
+    ppo_total_timesteps: int = 200_000
     ppo_n_steps: int = 2048
     ppo_batch_size: int = 256
-    ppo_n_epochs: int = 20
+    ppo_n_epochs: int = 5
     ppo_gamma: float = 0.99
     ppo_gae_lambda: float = 0.95
     ppo_ent_coef: float = 0.0
@@ -105,6 +105,18 @@ class StepEConfig:
     pair_trade: bool = True
     long_symbol: str = "SOXL"
     short_symbol: str = "SOXS"
+
+
+def _training_config_summary(cfg: StepEConfig, *, device: str) -> Dict[str, object]:
+    return {
+        "policy_kind": str(getattr(cfg, "policy_kind", "diffpg") or "diffpg"),
+        "epochs": int(getattr(cfg, "epochs", 0) or 0),
+        "ppo_total_timesteps": int(getattr(cfg, "ppo_total_timesteps", 0) or 0),
+        "ppo_n_epochs": int(getattr(cfg, "ppo_n_epochs", 0) or 0),
+        "ppo_n_steps": int(getattr(cfg, "ppo_n_steps", 0) or 0),
+        "ppo_batch_size": int(getattr(cfg, "ppo_batch_size", 0) or 0),
+        "device": str(device),
+    }
 
 
 # ---------------------------
@@ -516,6 +528,7 @@ class StepEService:
             "test_end": str(test_end.date()),
             "rows_train": int(len(df_train)),
             "rows_test": int(len(df_test)),
+            **_training_config_summary(cfg, device=str(getattr(cfg, "device", "auto") or "auto")),
             **metrics,
             **legacy_metrics,
         }
@@ -696,6 +709,7 @@ class StepEService:
             "test_end": str(test_end.date()),
             "rows_train": int(rows_train),
             "rows_test": int(rows_test),
+            **_training_config_summary(cfg, device=device_name),
             **metrics,
             **legacy_metrics,
         }
