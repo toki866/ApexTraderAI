@@ -459,8 +459,9 @@ def check_step_artifacts(
             f"stepB_pred_path_mamba_{symbol}.csv",
             f"stepB_pred_close_mamba_periodic_{symbol}.csv",
             f"stepB_pred_path_mamba_periodic_{symbol}.csv",
+            f"stepB_summary_{symbol}.json",
         )
-        return all((d / name).exists() for name in required)
+        return all((d / name).exists() for name in required) and (base / "audit" / mode / f"stepB_audit_{symbol}.json").exists()
 
     if step_upper == "C":
         d = base / "stepC" / mode
@@ -495,6 +496,7 @@ def check_step_artifacts(
             d.exists()
             and any(d.glob(f"stepE_daily_log_*_{symbol}.csv"))
             and any(d.glob(f"stepE_summary_*_{symbol}.json"))
+            and any((base / "audit" / mode).glob(f"stepE_audit_*_{symbol}.json"))
             and model_dir.exists()
             and (
                 any(model_dir.glob(f"stepE_*_{symbol}.pt"))
@@ -509,6 +511,8 @@ def check_step_artifacts(
             and (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
             and (d / f"stepF_daily_log_router_{symbol}.csv").exists()
             and (d / f"stepF_summary_router_{symbol}.json").exists()
+            and (d / f"stepF_audit_router_{symbol}.json").exists()
+            and (base / "audit" / mode / f"stepF_policy_compare_{symbol}.json").exists()
         )
         if not primary_ok:
             return False
@@ -541,7 +545,8 @@ def check_stepe_agent_artifact(agent: str, output_root: Path, symbol: str, mode:
     summary = base / f"stepE_summary_{agent}_{symbol}.json"
     model_pt = base / "models" / f"stepE_{agent}_{symbol}.pt"
     model_zip = base / "models" / f"stepE_{agent}_{symbol}_ppo.zip"
-    return daily.exists() and summary.exists() and (model_pt.exists() or model_zip.exists())
+    audit = Path(output_root) / "audit" / mode / f"stepE_audit_{agent}_{symbol}.json"
+    return daily.exists() and summary.exists() and audit.exists() and (model_pt.exists() or model_zip.exists())
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +615,8 @@ class RunManifest:
     def _fresh_data(cls, sig: RunSignature, reuse_enabled: bool, force_rebuild: bool) -> dict:
         now = _utcnow_iso()
         agent_list = list(sig.stepe_agents) if sig.stepe_agents else list(_OFFICIAL_STEPE_AGENTS)
+        def _step_shell() -> dict:
+            return {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None, "reused": False, "rebuilt": False, "degraded": False, "failed": False}
         return {
             "schema_version": _SCHEMA_VERSION,
             "signature": sig.to_dict(),
@@ -622,21 +629,18 @@ class RunManifest:
             "run_id": None,
             "requested_steps": list(sig.steps),
             "steps": {
-                "A":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
-                "B":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
-                "C":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
-                "DPRIME": {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
+                "A": _step_shell(),
+                "B": _step_shell(),
+                "C": _step_shell(),
+                "DPRIME": _step_shell(),
                 "E": {
-                    "status": "pending",
-                    "completed_at": None,
-                    "elapsed_sec": None,
-                    "audit_status": None,
+                    **_step_shell(),
                     "agents": {
                         a: {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None}
                         for a in agent_list
                     },
                 },
-                "F":      {"status": "pending", "completed_at": None, "elapsed_sec": None, "audit_status": None},
+                "F": _step_shell(),
             },
         }
 
@@ -648,6 +652,10 @@ class RunManifest:
                 continue
             info.setdefault("elapsed_sec", None)
             info.setdefault("audit_status", None)
+            info.setdefault("reused", False)
+            info.setdefault("rebuilt", False)
+            info.setdefault("degraded", False)
+            info.setdefault("failed", False)
             # StepE agents
             for _agent, ainfo in (info.get("agents") or {}).items():
                 if isinstance(ainfo, dict):
@@ -790,6 +798,10 @@ class RunManifest:
                         agents = {}
                     s["agents"] = agents
                 data["steps"][step] = s
+                s.setdefault("reused", False)
+                s.setdefault("rebuilt", False)
+                s.setdefault("degraded", False)
+                s.setdefault("failed", False)
 
             failure_field = "requested_steps"
             if not data["requested_steps"] and sig is not None:
@@ -812,11 +824,19 @@ class RunManifest:
 
     def can_reuse_step(self, step: str) -> bool:
         """Return True if manifest says this step completed previously."""
-        return self.step_status(step) in ("complete", "reuse")
+        s = self._step_data(step)
+        return s.get("status") in ("complete", "reuse") and str(s.get("audit_status") or "") == "PASS"
 
     def mark_step(self, step: str, status: str) -> None:
         s = self._data["steps"].setdefault(step.upper(), {})
         s["status"] = status
+        s["reused"] = status == "reuse"
+        s["rebuilt"] = status == "complete"
+        s["failed"] = status == "failed"
+        if status in ("pending", "running"):
+            s["reused"] = False
+            s["rebuilt"] = False
+            s["failed"] = False
         if status in ("complete", "reuse"):
             s["completed_at"] = _utcnow_iso()
         self._data["updated_at"] = _utcnow_iso()
@@ -833,7 +853,8 @@ class RunManifest:
         return self._agents_data().get(agent, {}).get("status", "pending")
 
     def can_reuse_stepe_agent(self, agent: str) -> bool:
-        return self.stepe_agent_status(agent) in ("complete", "reuse")
+        info = self._agents_data().get(agent, {})
+        return info.get("status") in ("complete", "reuse") and str(info.get("audit_status") or "") == "PASS"
 
     def mark_stepe_agent(self, agent: str, status: str) -> None:
         agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})

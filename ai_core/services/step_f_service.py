@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 from pandas.errors import PerformanceWarning
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
@@ -28,6 +29,7 @@ from ai_core.clusterers.ticc_clusterer import TICCClusterer, TICCUnavailableErro
 from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.utils.cluster_stats import compute_cluster_stats, derive_valid_and_rare_clusters
 from ai_core.utils.metrics_utils import compute_split_metrics
+from ai_core.utils.pipeline_artifact_utils import resolve_stepdprime_root
 try:
     from ai_core.utils.timing_logger import TimingLogger
 except Exception:  # pragma: no cover
@@ -91,6 +93,7 @@ class StepFRouterConfig:
     branch_id: str = "default"
     input_mode: str = ""
     model_source_dir: str = ""
+    device: str = "auto"
 
 
 StepFConfig = StepFRouterConfig
@@ -153,6 +156,7 @@ class StepFService:
         daily_log_router_path = base / f"stepF_daily_log_router_{symbol}.csv"
         daily_log_marl_path = base / f"stepF_daily_log_marl_{symbol}.csv"
         summary_path = base / f"stepF_summary_router_{symbol}.json"
+        audit_path = base / f"stepF_audit_router_{symbol}.json"
 
         warnings: List[str] = []
         errors: List[str] = []
@@ -162,6 +166,7 @@ class StepFService:
         print(f"[STEPF_FINAL] daily_log_router_path={daily_log_router_path} exists={daily_log_router_path.exists()}")
         print(f"[STEPF_FINAL] daily_log_marl_path={daily_log_marl_path} exists={daily_log_marl_path.exists()}")
         print(f"[STEPF_FINAL] summary_path={summary_path} exists={summary_path.exists()}")
+        print(f"[STEPF_FINAL] audit_path={audit_path} exists={audit_path.exists()}")
 
         if not equity_path.exists():
             errors.append("missing_equity_csv")
@@ -184,6 +189,8 @@ class StepFService:
             warnings.append("missing_daily_log_marl")
         if not summary_path.exists():
             warnings.append("missing_summary_router")
+        if not audit_path.exists():
+            warnings.append("missing_audit_router")
         else:
             try:
                 summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -213,6 +220,7 @@ class StepFService:
             "daily_log_router_path": str(daily_log_router_path),
             "daily_log_marl_path": str(daily_log_marl_path),
             "summary_path": str(summary_path),
+            "audit_path": str(audit_path),
         }
 
     def run(self, date_range, symbol: str, mode: Optional[str] = None) -> StepFResult:
@@ -476,6 +484,20 @@ class StepFService:
         return unique_candidates
 
     @staticmethod
+    def _resolve_device(requested: str) -> tuple[str, List[str]]:
+        req = str(requested or "auto").strip().lower()
+        warnings: List[str] = []
+        if req in ("", "none", "auto"):
+            actual = "cuda" if torch.cuda.is_available() else "cpu"
+            if actual == "cpu":
+                warnings.append("auto_device_resolved_to_cpu")
+            return actual, warnings
+        if req.startswith("cuda") and not torch.cuda.is_available():
+            warnings.append("cuda_requested_but_unavailable_fallback_cpu")
+            return "cpu", warnings
+        return req, warnings
+
+    @staticmethod
     def _extract_agent_name_from_daily_log(path: Path, symbol: str) -> Optional[str]:
         file_name = path.name
         match = re.match(rf"^stepE_daily_log_(.+)_{re.escape(symbol)}\.csv$", file_name, flags=re.IGNORECASE)
@@ -612,7 +634,28 @@ class StepFService:
             phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
             phase2.to_csv(phase2_path, index=False)
 
-            merged = phase2[["Date", "regime_id"]].merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
+            phase2_cols = [
+                c for c in (
+                    "Date",
+                    "regime_id",
+                    "cluster_id_stable",
+                    "cluster_id_raw20",
+                    "rare_flag_raw20",
+                    "confidence_stable",
+                    "confidence_raw20",
+                    "state_gap",
+                    "state_atr_norm",
+                    "state_ret_1",
+                    "state_ret_5",
+                    "state_ret_20",
+                    "state_range_atr",
+                    "state_body_ratio",
+                    "state_bnf_score",
+                    "state_context_norm",
+                )
+                if c in phase2.columns
+            ]
+            merged = phase2[phase2_cols].merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
             for agent in agents:
                 adf = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
                 adf = adf.rename(columns={"ratio": f"ratio_{agent}", "stepE_ret_for_stats": f"ret_{agent}", "Split": f"Split_{agent}"})
@@ -643,8 +686,19 @@ class StepFService:
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
 
+            context_profiles = self._build_context_profiles(merged=merged, agents=agents)
+            actual_device_name, device_warnings = self._resolve_device(getattr(cfg, "device", "auto"))
             with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}) :
-                daily = self._run_router_sim(merged=merged, agents=agents, edge_table=edge_table, allowlist=allowlist, safe_set=safe_set, cfg=cfg)
+                daily = self._run_router_sim(
+                    merged=merged,
+                    agents=agents,
+                    edge_table=edge_table,
+                    allowlist=allowlist,
+                    safe_set=safe_set,
+                    cfg=cfg,
+                    context_profiles=context_profiles,
+                    device_name=actual_device_name,
+                )
 
             if data_cutoff:
                 cutoff_dt = pd.to_datetime(data_cutoff, errors="coerce")
@@ -658,6 +712,42 @@ class StepFService:
             ratio_live_path = out_dir / f"stepF_ratio_live_retrain_{retrain}_{symbol}.csv"
 
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
+                cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
+                daily = daily.copy()
+                # Daily trace contract for PR/review:
+                # - selected_expert
+                # - mixture_weights (router-native mixture_weights_json alias)
+                # - source_device
+                # - input_feature_summary
+                if "selected_expert" not in daily.columns:
+                    daily["selected_expert"] = ""
+                if "mixture_weights" not in daily.columns:
+                    if "mixture_weights_json" in daily.columns:
+                        daily["mixture_weights"] = daily["mixture_weights_json"].astype(str)
+                    else:
+                        daily["mixture_weights"] = "{}"
+                if "source_device" not in daily.columns:
+                    daily["source_device"] = actual_device_name
+                if "input_feature_summary" not in daily.columns:
+                    daily["input_feature_summary"] = daily.apply(
+                        lambda r: json.dumps(
+                            {
+                                "regime_id": int(r["regime_id"]) if pd.notna(r.get("regime_id")) else -1,
+                                "cluster_id_stable": int(r["cluster_id_stable"]) if pd.notna(r.get("cluster_id_stable")) else -1,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        axis=1,
+                    )
+                daily["selected_expert_definition"] = "argmax mixture weight for the day after EMA-smoothed routing weights are normalized"
+                daily["device_requested"] = str(getattr(cfg, "device", "auto"))
+                daily["device_execution"] = actual_device_name
+                daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")
+                daily["clusterer_type_used"] = cluster_diag.get("clusterer_type_used", "")
+                daily["fallback_type"] = cluster_diag.get("fallback_type", "")
+                daily["fallback_used"] = bool(cluster_diag.get("fallback_used", False))
+                daily["fallback_reason"] = cluster_diag.get("fallback_reason", "")
+                daily["cluster_main_source"] = cluster_diag.get("cluster_main_source", "stable")
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 if persist_primary_outputs:
                     daily.to_csv(log_router_path, index=False)
@@ -691,9 +781,12 @@ class StepFService:
                     "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                 }
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
-                cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
                 summary.update(
                     {
+                        "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
+                        "device_requested": str(getattr(cfg, "device", "auto")),
+                        "device_execution": actual_device_name,
+                        "device_warnings": list(device_warnings),
                         "clusterer_type_requested": cluster_diag.get("clusterer_type_requested", ""),
                         "clusterer_type_used": cluster_diag.get("clusterer_type_used", ""),
                         "fallback_type": cluster_diag.get("fallback_type", ""),
@@ -714,10 +807,41 @@ class StepFService:
                         "rare_flag_raw20_count": int(cluster_diag.get("rare_flag_raw20_count", 0) or 0),
                     }
                 )
+                policy_compare = self._build_policy_compare_audit(daily=daily, merged=merged, agents=agents)
+                summary["policy_compare"] = policy_compare["summary"]
                 if persist_primary_outputs:
                     summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
                 summary_with_reward = {**summary, "reward_mode": reward_mode}
                 reward_summary_path.write_text(json.dumps(summary_with_reward, ensure_ascii=False, indent=2), encoding="utf-8")
+                stepf_audit_path = out_dir / f"stepF_audit_router_{symbol}.json"
+                audit_dir = out_root / "audit" / mode
+                audit_dir.mkdir(parents=True, exist_ok=True)
+                compare_audit_path = audit_dir / f"stepF_policy_compare_{symbol}.json"
+                audit_payload = {
+                    "mode": mode,
+                    "symbol": symbol,
+                    "reward_mode": reward_mode,
+                    "selected_expert_definition": "argmax mixture weight for the day after EMA-smoothed routing weights are normalized",
+                    "device_requested": str(getattr(cfg, "device", "auto")),
+                    "device_execution": actual_device_name,
+                    "device_warnings": list(device_warnings),
+                    "ratio_distribution": {
+                        "mean": float(daily["ratio"].mean()) if not daily.empty else 0.0,
+                        "std": float(daily["ratio"].std(ddof=0)) if not daily.empty else 0.0,
+                        "min": float(daily["ratio"].min()) if not daily.empty else 0.0,
+                        "max": float(daily["ratio"].max()) if not daily.empty else 0.0,
+                    },
+                    "expert_selection_frequency": policy_compare["expert_frequency"],
+                    "cluster_regime_branch_stats": policy_compare["branch_stats"],
+                    "reward_change_count": int((daily["reward"].diff().abs() > 1e-12).sum()) if "reward" in daily.columns else 0,
+                    "equity_change_count": int((daily["equity"].diff().abs() > 1e-12).sum()) if "equity" in daily.columns else 0,
+                    "all_zero_input_detected": bool(policy_compare["all_zero_input_detected"]),
+                    "constant_output_detected": bool(policy_compare["constant_output_detected"]),
+                    "policy_compare": policy_compare["summary"],
+                }
+                if persist_primary_outputs:
+                    stepf_audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                compare_audit_path.write_text(json.dumps(policy_compare, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if cfg.verbose:
                 print(f"[StepF-router] wrote phase2={phase2_path}")
@@ -816,10 +940,28 @@ class StepFService:
     def _load_stepe_logs(self, step_e_root: Path, symbol: str, agents: List[str]) -> Dict[str, pd.DataFrame]:
         out: Dict[str, pd.DataFrame] = {}
         selected_root = Path(step_e_root).resolve(strict=False)
+        audit_root = selected_root.parent.parent / "audit" / selected_root.name
         for agent in agents:
             p = selected_root / f"stepE_daily_log_{agent}_{symbol}.csv"
+            summary_path = selected_root / f"stepE_summary_{agent}_{symbol}.json"
+            audit_path = audit_root / f"stepE_audit_{agent}_{symbol}.json"
             if not p.exists():
                 print(f"[StepF-router] WARN: missing StepE log (skip agent): {p}")
+                continue
+            quality_payload = {}
+            for meta_path in (summary_path, audit_path):
+                if meta_path.exists():
+                    try:
+                        quality_payload.update(json.loads(meta_path.read_text(encoding="utf-8")))
+                    except Exception as exc:
+                        print(f"[StepF-router] WARN: unreadable StepE meta (skip agent) path={meta_path} exc={type(exc).__name__}:{exc}")
+                        quality_payload = {"stepdprime_join_status": "FAIL", "failure_reason": f"meta_unreadable:{meta_path.name}"}
+                        break
+            if str(quality_payload.get("stepdprime_join_status", "PASS")).upper() != "PASS":
+                print(f"[StepF-router] WARN: StepE agent filtered by join_status agent={agent} reason={quality_payload.get('failure_reason', '')}")
+                continue
+            if str(quality_payload.get("status", "PASS")).upper() == "FAIL" or quality_payload.get("reuse_eligible") is False:
+                print(f"[StepF-router] WARN: StepE agent filtered by audit/status agent={agent} reason={quality_payload.get('failure_reason', '')}")
                 continue
             df = pd.read_csv(p)
             if "Date" not in df.columns:
@@ -943,6 +1085,22 @@ class StepFService:
         phase2 = pd.concat([phase2_train, phase2_test], ignore_index=True).sort_values("Date").reset_index(drop=True)
         phase2["cluster_id_main"] = phase2["regime_id"].astype(int)
         phase2["confidence"] = phase2["confidence_stable"].astype(float)
+        state_source = X_df[["Date"] + [c for c in ["Gap", "ATR_norm", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "bnf_score"] if c in X_df.columns]].copy()
+        rename_map = {
+            "Gap": "state_gap",
+            "ATR_norm": "state_atr_norm",
+            "ret_1": "state_ret_1",
+            "ret_5": "state_ret_5",
+            "ret_20": "state_ret_20",
+            "range_atr": "state_range_atr",
+            "body_ratio": "state_body_ratio",
+            "bnf_score": "state_bnf_score",
+        }
+        state_source = state_source.rename(columns=rename_map)
+        state_cols = [c for c in state_source.columns if c != "Date"]
+        if state_cols:
+            state_source["state_context_norm"] = np.sqrt(np.square(state_source[state_cols].astype(float)).sum(axis=1))
+            phase2 = phase2.merge(state_source, on="Date", how="left")
         regime_count = int(pd.Series(phase2["regime_id"].astype(int)).nunique()) if len(phase2) else 0
         print(f"[STEPF_CLUSTER] clusterer_type_requested={diag['clusterer_type_requested']}")
         print(f"[STEPF_CLUSTER] clusterer_type_used={diag['clusterer_type_used']}")
@@ -1292,7 +1450,10 @@ class StepFService:
         )
 
     def _load_z_pred(self, out_root: Path, mode: str, symbol: str, profile: str) -> pd.DataFrame:
-        p = out_root / "stepDprime" / mode / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
+        stepd_root, warnings, _legacy_read = resolve_stepdprime_root(out_root, mode)
+        for warning in warnings:
+            print(f"[StepF][STEPDPRIME_WARN] {warning}")
+        p = stepd_root / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
         if not p.exists():
             return pd.DataFrame({"Date": []})
         df = pd.read_csv(p)
@@ -1407,7 +1568,60 @@ class StepFService:
             base = agents[: min(3, len(agents))]
         return list(dict.fromkeys(base))
 
-    def _run_router_sim(self, merged: pd.DataFrame, agents: List[str], edge_table: pd.DataFrame, allowlist: pd.DataFrame, safe_set: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
+    def _build_context_profiles(self, merged: pd.DataFrame, agents: List[str]) -> Dict[Tuple[int, int, str], Dict[str, float]]:
+        train_df = merged[merged["Split"].astype(str).str.lower() == "train"].copy()
+        context_cols = [c for c in merged.columns if c.startswith("state_")]
+        profiles: Dict[Tuple[int, int, str], Dict[str, float]] = {}
+        if train_df.empty or not context_cols:
+            return profiles
+        for rid, cid, agent in train_df[["regime_id", "cluster_id_stable"]].dropna().assign(agent_key=1).merge(
+            pd.DataFrame({"agent": agents, "agent_key": 1}), on="agent_key", how="left"
+        )[["regime_id", "cluster_id_stable", "agent"]].itertuples(index=False):
+            sub = train_df[(train_df["regime_id"].astype(int) == int(rid)) & (train_df["cluster_id_stable"].astype(int) == int(cid))].copy()
+            if sub.empty:
+                continue
+            profiles[(int(rid), int(cid), str(agent))] = {
+                c: float(pd.to_numeric(sub[c], errors="coerce").fillna(0.0).mean()) for c in context_cols
+            }
+        return profiles
+
+    def _build_policy_compare_audit(self, daily: pd.DataFrame, merged: pd.DataFrame, agents: List[str]) -> Dict[str, object]:
+        train_df = merged[merged["Split"].astype(str).str.lower() == "train"].copy()
+        fixed_best = ""
+        if not train_df.empty:
+            means = {a: float(pd.to_numeric(train_df.get(f"ret_{a}"), errors="coerce").mean()) for a in agents}
+            fixed_best = max(means, key=means.get)
+        oracle_reward = []
+        fixed_reward = []
+        for row in merged.itertuples(index=False):
+            agent_rewards = [float(getattr(row, f"ret_{a}", np.nan)) for a in agents if np.isfinite(float(getattr(row, f"ret_{a}", np.nan)))]
+            oracle_reward.append(max(agent_rewards) if agent_rewards else 0.0)
+            fixed_reward.append(float(getattr(row, f"ret_{fixed_best}", 0.0) or 0.0) if fixed_best else 0.0)
+        selected_series = daily.get("selected_expert")
+        expert_frequency = selected_series.value_counts(dropna=False).to_dict() if selected_series is not None else {}
+        branch_stats = (
+            daily.groupby(["regime_id", "cluster_id_stable"]).agg(
+                rows=("Date", "size"),
+                ratio_mean=("ratio", "mean"),
+                reward_mean=("reward", "mean"),
+            ).reset_index().to_dict(orient="records")
+            if {"regime_id", "cluster_id_stable", "ratio", "reward"}.issubset(daily.columns)
+            else []
+        )
+        return {
+            "summary": {
+                "fixed_best_agent": fixed_best,
+                "current_policy_test_equity_end": float(daily.loc[daily["Split"].astype(str).str.lower() == "test", "equity"].iloc[-1]) if not daily.empty else 1.0,
+                "fixed_best_test_equity_end": float(np.cumprod(1.0 + np.asarray(fixed_reward, dtype=float))[-1]) if fixed_reward else 1.0,
+                "oracle_test_equity_end": float(np.cumprod(1.0 + np.asarray(oracle_reward, dtype=float))[-1]) if oracle_reward else 1.0,
+            },
+            "expert_frequency": expert_frequency,
+            "branch_stats": branch_stats,
+            "all_zero_input_detected": bool(any(c.startswith("state_") and np.all(np.abs(pd.to_numeric(merged[c], errors="coerce").fillna(0.0).to_numpy()) < 1e-12) for c in merged.columns)),
+            "constant_output_detected": bool(float(pd.to_numeric(daily["ratio"], errors="coerce").std(ddof=0)) < 1e-9) if "ratio" in daily.columns and not daily.empty else True,
+        }
+
+    def _run_router_sim(self, merged: pd.DataFrame, agents: List[str], edge_table: pd.DataFrame, allowlist: pd.DataFrame, safe_set: List[str], cfg: StepFRouterConfig, context_profiles: Dict[Tuple[int, int, str], Dict[str, float]], device_name: str) -> pd.DataFrame:
         allow_map = {int(r.regime_id): [a for a in str(r.allowed_agents).split("|") if a] for r in allowlist.itertuples(index=False)}
         ir_map: Dict[Tuple[int, str], float] = {}
         score_col = "IR_shrink" if "IR_shrink" in edge_table.columns else "IR"
@@ -1420,8 +1634,11 @@ class StepFService:
         eq = 1.0
         peak_eq = 1.0
         reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
+        compute_device = torch.device(device_name if str(device_name).startswith("cuda") and torch.cuda.is_available() else "cpu")
+        context_cols = [c for c in merged.columns if c.startswith("state_")]
         for row in merged.itertuples(index=False):
             rid = int(getattr(row, "regime_id"))
+            cid = int(getattr(row, "cluster_id_stable", getattr(row, "regime_id", 0)) or 0)
             allowed = allow_map.get(rid, safe_set if rid == -1 else agents)
             if rid == -1:
                 allowed = list(safe_set)
@@ -1430,13 +1647,22 @@ class StepFService:
                 allowed = list(safe_set or agents)
 
             scores = np.array([ir_map.get((rid, a), np.nan) for a in allowed], dtype=float)
+            context_bonus = []
+            for a in allowed:
+                profile = context_profiles.get((rid, cid, a), {})
+                if profile and context_cols:
+                    deltas = [abs(float(getattr(row, c, 0.0) or 0.0) - float(profile.get(c, 0.0))) for c in context_cols]
+                    context_bonus.append(float(np.exp(-np.mean(deltas))))
+                else:
+                    context_bonus.append(0.0)
+            scores = scores + np.asarray(context_bonus, dtype=float)
             if np.any(np.isnan(scores)):
                 w_raw_allowed = np.ones(len(allowed), dtype=float) / max(1, len(allowed))
             else:
-                z = float(cfg.softmax_beta) * scores
-                z = z - np.max(z)
-                e = np.exp(z)
-                w_raw_allowed = e / max(1e-12, e.sum())
+                z = torch.tensor(float(cfg.softmax_beta) * scores, dtype=torch.float32, device=compute_device)
+                z = z - torch.max(z)
+                e = torch.softmax(z, dim=0)
+                w_raw_allowed = e.detach().cpu().numpy().astype(float)
 
             w_raw_full = {a: 0.0 for a in agents}
             for i, a in enumerate(allowed):
@@ -1473,28 +1699,35 @@ class StepFService:
             ret_best_expert = max([float(getattr(row, f"ret_{a}", np.nan)) for a in agents if np.isfinite(float(getattr(row, f"ret_{a}", np.nan)))] or [ret_selected])
 
             if reward_mode == "profit_basic":
-                ret = ret_selected - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_churn) * churn_cost
+                reward = ret_selected - cost - penalty - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_churn) * churn_cost
             elif reward_mode == "profit_regret":
                 regret = max(0.0, ret_best_expert - ret_selected)
-                ret = ret_selected - float(cfg.lambda_regret) * regret - float(cfg.lambda_switch) * switch_cost
+                reward = ret_selected - cost - penalty - float(cfg.lambda_regret) * regret - float(cfg.lambda_switch) * switch_cost
             elif reward_mode == "profit_light_risk":
                 eq_tmp = eq * (1.0 + ret_selected - cost - penalty)
                 peak_next = max(peak_eq, eq_tmp)
                 dd_penalty = max(0.0, 1.0 - eq_tmp / max(1e-12, peak_next))
-                ret = ret_selected - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_dd) * dd_penalty
+                reward = ret_selected - cost - penalty - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_dd) * dd_penalty
             else:
-                ret = ret_selected - cost - penalty
-
-            eq *= (1.0 + ret)
-            peak_eq = max(peak_eq, eq)
+                reward = ret_selected - cost - penalty
 
             split = str(getattr(row, "Split", "test"))
+            selected_expert = max(w_full, key=w_full.get) if w_full else ""
+            input_feature_summary = {
+                "regime_id": rid,
+                "cluster_id_stable": cid,
+                "confidence_stable": float(getattr(row, "confidence_stable", 0.0) or 0.0),
+                "state_context_norm": float(getattr(row, "state_context_norm", 0.0) or 0.0),
+            }
+            input_nonzero_feature_count = int(sum(abs(float(v or 0.0)) > 1e-12 for v in input_feature_summary.values()))
             rec = {
                 "Date": getattr(row, "Date"),
                 "Split": split,
                 "regime_id": rid,
+                "cluster_id_stable": cid,
                 "ratio": ratio,
-                "ret": ret,
+                "final_ratio": ratio,
+                "reward": reward,
                 "cost": cost,
                 "turnover": turnover,
                 "ret_selected": ret_selected,
@@ -1502,18 +1735,34 @@ class StepFService:
                 "switch_cost": switch_cost,
                 "churn_cost": churn_cost,
                 "reward_mode": reward_mode,
-                "equity": eq,
+                "selected_expert": selected_expert,
+                "selected_expert_weight": float(w_full.get(selected_expert, 0.0)),
+                "mixture_weights_json": json.dumps({a: float(w_full[a]) for a in agents}, ensure_ascii=False),
                 "allowed_agents": "|".join(allowed),
                 "r_soxl": r_soxl,
                 "r_soxs": r_soxs,
+                "source_device": str(compute_device),
+                "input_feature_count": int(len(input_feature_summary)),
+                "input_nonzero_feature_count": input_nonzero_feature_count,
+                "input_has_regime": 1,
+                "input_has_cluster": 1,
+                "input_has_pred_block": 0,
+                "input_has_past_block": 1,
+                "input_feature_summary": json.dumps(input_feature_summary, ensure_ascii=False),
             }
             for a in agents:
                 rec[f"w_{a}"] = w_full[a]
             out.append(rec)
             w_prev = w_full
             ratio_prev = ratio
-
-        return pd.DataFrame(out)
+        out_df = pd.DataFrame(out)
+        if out_df.empty:
+            return out_df
+        out_df["ret"] = pd.to_numeric(out_df["reward"], errors="coerce").shift(1).fillna(0.0)
+        out_df["realized_ret"] = out_df["ret"]
+        out_df["realized_ret_next"] = pd.to_numeric(out_df["reward"], errors="coerce").fillna(0.0)
+        out_df["equity"] = (1.0 + out_df["ret"].astype(float)).cumprod()
+        return out_df
 
     def _assign_split_by_date(self, dates: pd.Series, date_range) -> pd.Series:
         d = pd.to_datetime(dates, errors="coerce").dt.normalize()

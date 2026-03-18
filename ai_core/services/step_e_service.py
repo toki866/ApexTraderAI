@@ -54,6 +54,7 @@ from torch import nn
 
 from ai_core.utils.metrics_utils import compute_split_metrics
 from ai_core.utils.timing_logger import TimingLogger
+from ai_core.utils.pipeline_artifact_utils import resolve_stepdprime_root
 
 
 # ---------------------------
@@ -177,6 +178,84 @@ class StepEService:
         t = getattr(self.app_config, "_timing_logger", None)
         return t if isinstance(t, TimingLogger) else TimingLogger.disabled()
 
+    @staticmethod
+    def _resolve_device(requested: str) -> tuple[str, List[str]]:
+        req = str(requested or "auto").strip().lower()
+        warnings: List[str] = []
+        if req in ("", "none", "auto"):
+            actual = "cuda" if torch.cuda.is_available() else "cpu"
+            if actual == "cpu":
+                warnings.append("auto_device_resolved_to_cpu")
+            return actual, warnings
+        if req.startswith("cuda") and not torch.cuda.is_available():
+            warnings.append("cuda_requested_but_unavailable_fallback_cpu")
+            return "cpu", warnings
+        return req, warnings
+
+    @staticmethod
+    def _device_payload(*, requested: str, actual: str, model_loaded: bool = False) -> Dict[str, object]:
+        return {
+            "device_requested": str(requested),
+            "device_execution": str(actual),
+            "device_model_loaded": bool(model_loaded),
+        }
+
+    @staticmethod
+    def _input_feature_summary(obs_cols: List[str]) -> Dict[str, object]:
+        return {
+            "obs_cols_count": int(len(obs_cols)),
+            "obs_cols_preview": list(obs_cols[:12]),
+            "obs_cols_signature": "|".join(obs_cols),
+        }
+
+    @staticmethod
+    def _evaluate_stepdprime_join_quality(used_manifest: Dict[str, object]) -> Dict[str, object]:
+        match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 1.0) or 0.0)
+        nonzero_ratio = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0) or 0.0)
+        nan_fill_count = int(used_manifest.get("stepD_prime_nan_fill_count", 0) or 0)
+        failure_reasons: List[str] = []
+        if match_ratio < 0.95:
+            failure_reasons.append(f"embedding_join_ratio_below_threshold:{match_ratio:.3f}")
+        if nonzero_ratio < 0.80:
+            failure_reasons.append(f"embedding_nonzero_ratio_below_threshold:{nonzero_ratio:.3f}")
+        if nan_fill_count > 0:
+            failure_reasons.append(f"dprime_nan_fill_detected:{nan_fill_count}")
+        status = "PASS" if not failure_reasons else "FAIL"
+        return {
+            "stepdprime_join_status": status,
+            "reuse_eligible": status == "PASS",
+            "failure_reason": ";".join(failure_reasons),
+            "embedding_join_ratio": match_ratio,
+            "embedding_nonzero_ratio": nonzero_ratio,
+            "nan_fill_count": nan_fill_count,
+        }
+
+    def _write_stepdprime_failure_artifacts(
+        self,
+        *,
+        out_root: Path,
+        mode: str,
+        cfg: StepEConfig,
+        symbol: str,
+        quality: Dict[str, object],
+        rows_train: int,
+        rows_test: int,
+    ) -> None:
+        out_dir = out_root / "stepE" / mode
+        out_dir.mkdir(parents=True, exist_ok=True)
+        audit_dir = out_root / "audit" / mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        summary_payload = {
+            "agent": cfg.agent,
+            "mode": mode,
+            "symbol": symbol,
+            "rows_train": int(rows_train),
+            "rows_test": int(rows_test),
+            **quality,
+        }
+        (out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps({"status": "FAIL", **summary_payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def run_agent(self, cfg: StepEConfig, *, date_range, symbol: str, mode: Optional[str] = None) -> Dict[str, object]:
         resolved_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
         if resolved_mode in {"ops", "prod", "production", "real"}:
@@ -235,14 +314,19 @@ class StepEService:
 
         cfg.seed = 42 if getattr(cfg, "seed", None) is None else int(cfg.seed)
         cfg.device = str(getattr(cfg, "device", "auto") or "auto")
+        actual_device_name, device_warnings = self._resolve_device(cfg.device)
+        used_manifest: dict[str, object] = {}
 
         if cfg.verbose:
             _policy_kind_for_log = str(getattr(cfg, "policy_kind", "diffpg") or "diffpg").strip().lower()
             _policy_role_for_log = "primary_headless_default" if _policy_kind_for_log == "ppo" else "fallback_or_legacy"
             print(
                 f"[StepE] agent={cfg.agent} mode={mode} profile={cfg.obs_profile} use_stepd_prime={cfg.use_stepd_prime} "
-                f"seed={cfg.seed} device={cfg.device} policy_kind={_policy_kind_for_log} policy_role={_policy_role_for_log}"
+                f"seed={cfg.seed} device_requested={cfg.device} device_execution={actual_device_name} "
+                f"policy_kind={_policy_kind_for_log} policy_role={_policy_role_for_log}"
             )
+        for warning in device_warnings:
+            print(f"[StepE][DEVICE_WARN] agent={cfg.agent} warning={warning}")
 
         # Load & merge inputs (train+test)
         with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
@@ -270,18 +354,27 @@ class StepEService:
             dp = [c for c in df_train.columns if c.startswith("dprime_") and "_emb_" in c]
             if dp:
                 nonzero_ratio = float((df_train[dp].abs().sum(axis=1) > 1e-9).mean())
-                if nonzero_ratio < 0.5:
-                    match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 0.0))
-                    if match_ratio < 0.10:
-                        raise RuntimeError(
-                            f"StepD' embeddings merge mismatch (match_ratio={match_ratio:.3f}). "
-                            f"Generate embeddings with export-split all (stepDprime_*_embeddings_all.csv) first."
-                        )
-                    # If the dates merged fine but values are small/zero, don't hard-fail; keep running.
-                    print(
-                        f"[StepE] WARN StepD' embeddings are mostly zero in TRAIN (nonzero_ratio={nonzero_ratio:.3f}, "
-                        f"match_ratio={match_ratio:.3f}). Continuing anyway."
-                    )
+                used_manifest["stepD_prime_nonzero_ratio"] = nonzero_ratio
+
+        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
+            "stepdprime_join_status": "PASS",
+            "reuse_eligible": True,
+            "failure_reason": "",
+            "embedding_join_ratio": 1.0,
+            "embedding_nonzero_ratio": 1.0,
+            "nan_fill_count": 0,
+        }
+        if stepdprime_quality["stepdprime_join_status"] != "PASS":
+            self._write_stepdprime_failure_artifacts(
+                out_root=out_root,
+                mode=mode,
+                cfg=cfg,
+                symbol=symbol,
+                quality=stepdprime_quality,
+                rows_train=len(df_train),
+                rows_test=len(df_test),
+            )
+            raise RuntimeError(f"StepD' quality gate failed: {stepdprime_quality['failure_reason']}")
 
         # Observation columns
         with timing.stage("stepE.agent.select_obs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
@@ -301,6 +394,7 @@ class StepEService:
             print(f"[StepE] obs_cols_count={len(obs_cols)}")
             print(f"[StepE] obs_cols(first5)={obs_cols[:5]}")
             print("[LEAK_GUARD] OK forbidden_hit=0")
+        feature_summary = self._input_feature_summary(obs_cols)
 
         # Prepare tensors
         X_train, r_soxl_train, r_soxs_train, dates_train = self._build_obs_and_returns(df_train, obs_cols)
@@ -341,7 +435,11 @@ class StepEService:
                     test_start=test_start,
                     test_end=test_end,
                     rows_train=len(df_train),
-                        rows_test=len(df_test),
+                    rows_test=len(df_test),
+                    used_manifest=used_manifest,
+                    device_warnings=device_warnings,
+                    resolved_device_name=actual_device_name,
+                    feature_summary=feature_summary,
                     )
                 timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)})
                 return
@@ -353,9 +451,7 @@ class StepEService:
                 policy_kind = "diffpg"
 
         # Train policy (diffPG)
-        device_name = str(cfg.device).strip().lower()
-        if device_name in ("", "none", "auto"):
-            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        device_name = actual_device_name
         device = torch.device(device_name)
         torch.manual_seed(int(cfg.seed))
         np.random.seed(int(cfg.seed))
@@ -496,6 +592,14 @@ class StepEService:
         df_log["gross"] = gross_arr
         df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
         df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
+        df_log["source_device"] = device_name
+        df_log["device_requested"] = str(cfg.device)
+        df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
+        df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
+        df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
+        df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
+        df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
+        df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
 
         # Also provide Action/Position columns for StepF compatibility
         df_log["Position"] = df_log["pos"]
@@ -519,6 +623,14 @@ class StepEService:
         # Read back from saved daily log to guarantee summary uses persisted data.
         df_log_for_summary = pd.read_csv(log_path)
         metrics = compute_split_metrics(df_log_for_summary, split="test", equity_col="equity", ret_col="ret")
+        stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
+            "stepdprime_join_status": "PASS",
+            "reuse_eligible": True,
+            "failure_reason": "",
+            "embedding_join_ratio": 1.0,
+            "embedding_nonzero_ratio": 1.0,
+            "nan_fill_count": 0,
+        }
         legacy_metrics = {
             "test_return_pct": metrics["total_return_pct"],
             "test_sharpe": metrics["sharpe"],
@@ -538,9 +650,16 @@ class StepEService:
             "test_end": str(test_end.date()),
             "rows_train": int(len(df_train)),
             "rows_test": int(len(df_test)),
-            **_training_config_summary(cfg, device=str(getattr(cfg, "device", "auto") or "auto")),
+            **_training_config_summary(cfg, device=device_name),
+            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **metrics,
             **legacy_metrics,
+            **feature_summary,
+            **stepdprime_quality,
+            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "degraded": bool(used_manifest.get("degraded", False)),
+            "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
+            "stepdprime_legacy_read": bool(used_manifest.get("stepDprime_legacy_read", False)),
         }
 
         summ_path = out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json"
@@ -561,6 +680,21 @@ class StepEService:
             print(f"[StepE] wrote daily_log={log_path}")
             print(f"[StepE] wrote summary={summ_path}")
             print(f"[StepE] wrote model={mdl_path}")
+        audit_dir = out_root / "audit" / mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_payload = {
+            "agent": cfg.agent,
+            "symbol": symbol,
+            "mode": mode,
+            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
+            **feature_summary,
+            **stepdprime_quality,
+            "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
+            "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
+            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "status": "PASS",
+        }
+        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _train_and_eval_ppo(
         self,
@@ -587,6 +721,10 @@ class StepEService:
         test_end: pd.Timestamp,
         rows_train: int,
         rows_test: int,
+        used_manifest: Dict[str, object],
+        device_warnings: List[str],
+        resolved_device_name: str,
+        feature_summary: Dict[str, object],
     ) -> None:
         try:
             from stable_baselines3 import PPO
@@ -620,9 +758,7 @@ class StepEService:
         vec_env = DummyVecEnv([lambda: train_env])
         vec_env.seed(seed)
 
-        device_name = str(cfg.device).strip().lower()
-        if device_name in ("", "none", "auto"):
-            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        device_name = resolved_device_name
 
         model = PPO(
             "MlpPolicy",
@@ -683,6 +819,14 @@ class StepEService:
         df_log["gross"] = gross_arr
         df_log["ret"] = df_log["reward_next"].shift(1).fillna(0.0)
         df_log["equity"] = (1.0 + df_log["ret"]).cumprod()
+        df_log["source_device"] = device_name
+        df_log["device_requested"] = str(cfg.device)
+        df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
+        df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
+        df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
+        df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
+        df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
+        df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
         df_log["Position"] = df_log["pos"]
         df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
 
@@ -720,8 +864,15 @@ class StepEService:
             "rows_train": int(rows_train),
             "rows_test": int(rows_test),
             **_training_config_summary(cfg, device=device_name),
+            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **metrics,
             **legacy_metrics,
+            **feature_summary,
+            **stepdprime_quality,
+            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "degraded": bool(used_manifest.get("degraded", False)),
+            "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
+            "stepdprime_legacy_read": bool(used_manifest.get("stepDprime_legacy_read", False)),
         }
         summ_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -741,6 +892,21 @@ class StepEService:
             print(f"[StepE] wrote summary={summ_path}")
             print(f"[StepE] wrote model(zip)={mdl_zip_path}")
             print(f"[StepE] wrote model(pt)={mdl_pt_path}")
+        audit_dir = Path(cfg.output_root or "output") / "audit" / mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_payload = {
+            "agent": cfg.agent,
+            "symbol": symbol,
+            "mode": mode,
+            **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
+            **feature_summary,
+            **stepdprime_quality,
+            "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
+            "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
+            "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "status": "PASS",
+        }
+        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # -----------------------
     # Load & merge
@@ -748,6 +914,7 @@ class StepEService:
 
     def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
+        used_manifest: dict[str, object] = {"warnings": [], "degraded": False}
 
         if cfg.use_dprime_state:
             df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol)
@@ -758,8 +925,6 @@ class StepEService:
             )
         else:
             df = df_prices.copy()
-
-        used_manifest: dict[str, object] = {}
 
         if not cfg.use_dprime_state:
             # merge periodic and tech if available
@@ -777,40 +942,27 @@ class StepEService:
         # StepD' embeddings
         if cfg.use_stepd_prime:
             self._ensure_dprime_sources(cfg)
-            try:
-                dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol)
-            except Exception as e:
-                print(f"[StepE] WARN: StepD' embeddings unavailable ({e}). Falling back to use_stepd_prime=False and continue.")
-                cfg.use_stepd_prime = False
-                dprime_df = None
+            dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol, used_manifest=used_manifest)
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+            dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
 
-            if dprime_df is not None:
-                # Normalize dates defensively (time-of-day differences can cause a full join miss)
-                df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
-                dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
+            dprime_dates = dprime_df["Date"].dropna().unique()
+            match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
+            used_manifest["stepD_prime_match_ratio"] = match_ratio
+            if match_ratio < 0.95:
+                df_min, df_max = df["Date"].min(), df["Date"].max()
+                dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
+                raise RuntimeError(
+                    "StepD' merge mismatch: "
+                    f"match_ratio={match_ratio:.3f} df={df_min}..{df_max} dprime={dp_min}..{dp_max}"
+                )
 
-                dprime_dates = dprime_df["Date"].dropna().unique()
-                match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
-                used_manifest["stepD_prime_match_ratio"] = match_ratio
-                if match_ratio < 0.10:
-                    # Keep StepE runnable: when embeddings/date alignment is broken, degrade gracefully
-                    # to non-DPrime mode so daily logs/equity artifacts are still produced.
-                    df_min, df_max = df["Date"].min(), df["Date"].max()
-                    dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
-                    print(
-                        "[StepE] WARN: StepD' merge mismatch "
-                        "(match_ratio={:.3f}, df={}..{}, dprime={}..{}). "
-                        "Fallback to use_stepd_prime=False for this agent.".format(match_ratio, df_min, df_max, dp_min, dp_max)
-                    )
-                    cfg.use_stepd_prime = False
-                    dprime_df = None
-
-                if dprime_df is not None:
-                    df = df.merge(dprime_df, on="Date", how="left")
-                # missing embeddings -> 0 (warmup rows are expected to be missing)
-                dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
-                if dp_cols:
-                    df[dp_cols] = df[dp_cols].fillna(0.0)
+            df = df.merge(dprime_df, on="Date", how="left")
+            dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
+            if dp_cols:
+                nan_fill_count = int(df[dp_cols].isna().sum().sum())
+                used_manifest["stepD_prime_nan_fill_count"] = nan_fill_count
+                df[dp_cols] = df[dp_cols].fillna(0.0)
 
         # Pair-trade daily next returns (D->D+1 confirmed, no leakage)
         pair_trade_enabled = bool(cfg.pair_trade) and symbol.upper() in {str(cfg.long_symbol).upper(), str(cfg.short_symbol).upper(), "SOXL", "SOXS"}
@@ -902,8 +1054,11 @@ class StepEService:
         if not profile:
             raise ValueError("dprime_profile is empty while use_dprime_state=True")
 
-        p_tr = out_root / "stepDprime" / mode / f"stepDprime_state_train_{profile}_{symbol}.csv"
-        p_te = out_root / "stepDprime" / mode / f"stepDprime_state_test_{profile}_{symbol}.csv"
+        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        for warning in warnings:
+            print(f"[StepE][STEPDPRIME_WARN] {warning}")
+        p_tr = stepd_root / f"stepDprime_state_train_{profile}_{symbol}.csv"
+        p_te = stepd_root / f"stepDprime_state_test_{profile}_{symbol}.csv"
         if not (p_tr.exists() and p_te.exists()):
             raise FileNotFoundError(f"Missing StepD' state CSVs: {p_tr} / {p_te}")
 
@@ -944,12 +1099,19 @@ class StepEService:
 
         return out
 
-    def _load_stepD_prime_embeddings(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+    def _load_stepD_prime_embeddings(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str, used_manifest: Optional[dict[str, object]] = None) -> pd.DataFrame:
         """
         Load embeddings with profile-first resolution. If profile is missing, fallback to
         source/horizon style for backward compatibility.
         """
-        base = out_root / "stepDprime" / mode / "embeddings"
+        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        if used_manifest is not None:
+            used_manifest["stepDprime_root"] = str(stepd_root)
+            used_manifest["stepDprime_legacy_read"] = bool(legacy_read)
+            used_manifest["warnings"] = list(dict.fromkeys([*list(used_manifest.get("warnings", []) or []), *warnings]))
+        for warning in warnings:
+            print(f"[StepE][STEPDPRIME_WARN] {warning}")
+        base = stepd_root / "embeddings"
 
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         merged: Optional[pd.DataFrame] = None

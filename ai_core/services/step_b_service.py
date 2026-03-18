@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-
 from ai_core.config.app_config import AppConfig
 from ai_core.config.step_b_config import StepBConfig, WaveletMambaTrainConfig
 from ai_core.services.step_b_mamba_runner import rollout_periodic_h1_future, run_stepB_mamba
@@ -61,6 +61,40 @@ class StepBService:
             print(f"[StepB:mode_dir:FAIL] repo_cache_mode_dir_detected={p}", file=sys.stderr)
             raise RuntimeError(f"StepBService mode_dir points to repo cache output path: {p}")
         return p
+
+    def _device_evidence(self, *named_results) -> dict:
+        agent_details = {}
+        summary = {
+            "device_requested": "auto",
+            "device_execution": "unknown",
+            "device_execution_verified": False,
+            "device_execution_evidence": {},
+            "device_resolution_source": "",
+            "device_fallback_reason": "missing_device_execution_evidence",
+            "device_evidence_source": "service_default_missing_agent_evidence",
+        }
+        for name, result in named_results:
+            info = getattr(result, "info", None)
+            if not isinstance(info, dict):
+                info = {}
+            evidence = info.get("device_execution_evidence", {})
+            if not isinstance(evidence, dict):
+                evidence = {}
+            detail = {
+                "device_requested": str(info.get("device_requested", "auto") or "auto"),
+                "device_execution": str(getattr(result, "device_execution", info.get("device_execution", "")) or ""),
+                "device_execution_verified": bool(info.get("device_execution_verified", False)),
+                "device_execution_evidence": evidence,
+                "device_resolution_source": str(info.get("device_resolution_source", "") or ""),
+                "device_fallback_reason": str(info.get("device_fallback_reason", "") or ""),
+                "device_evidence_source": "agent_result.info.device_execution_evidence" if evidence else ("agent_result.info" if info else "agent_result"),
+            }
+            agent_details[str(name)] = detail
+            if detail["device_execution"] and summary["device_execution"] == "unknown":
+                summary = dict(detail)
+                summary["device_evidence_source"] = f"agent_result[{name}]"
+        summary["agent_device_evidence"] = agent_details
+        return summary
 
     def _load_stepa_split_df(self, symbol: str, run_mode: str, kind: str, split: str) -> pd.DataFrame:
         p = self._mode_dir(run_mode) / f"stepA_{kind}_{split}_{symbol}.csv"
@@ -546,6 +580,39 @@ class StepBService:
                 info["pred_nextday_mamba_path"] = str(nextday)
             if future is not None:
                 info["pred_future_mamba_periodic_path"] = str(future)
+            stepb_dir = self._out_dir(run_mode)
+            feature_contract = {
+                "prices_rows": int(len(prices_df)),
+                "prices_test_rows": int(len(prices_test_df)),
+                "tech_rows": int(len(tech_df)),
+                "periodic_rows": int(len(periodic_df)),
+                "full_feature_dim": int(len([c for c in features_df.columns if c != "Date"])),
+                "periodic_feature_dim": int(len([c for c in periodic_df.columns if c != "Date"])),
+                "full_feature_columns_preview": [c for c in features_df.columns if c != "Date"][:12],
+                "periodic_feature_columns_preview": [c for c in periodic_df.columns if c != "Date"][:12],
+            }
+            if feature_contract["full_feature_dim"] <= 0 or feature_contract["periodic_feature_dim"] <= 0:
+                raise RuntimeError(f"StepB feature_dim mismatch: {feature_contract}")
+            summary = {
+                "symbol": symbol,
+                "mode": run_mode,
+                "output_root": str(self._out_root()),
+                "pred_time_all_path": str(pred_time_all_path),
+                "prediction_paths": {
+                    "full": str(getattr(full_res, "pred_close_path", "")),
+                    "periodic": str(getattr(periodic_res, "pred_close_path", "")),
+                },
+                "feature_contract": feature_contract,
+                "model_variants": {
+                    "full": "fusion",
+                    "periodic": "periodic_only",
+                },
+            }
+            summary.update(self._device_evidence(("full", full_res), ("periodic", periodic_res)))
+            (stepb_dir / f"stepB_summary_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            audit_dir = self._out_root() / "audit" / run_mode
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            (audit_dir / f"stepB_audit_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
         return StepBResult(
             success=bool(getattr(full_res, "success", True) and getattr(periodic_res, "success", True)),
