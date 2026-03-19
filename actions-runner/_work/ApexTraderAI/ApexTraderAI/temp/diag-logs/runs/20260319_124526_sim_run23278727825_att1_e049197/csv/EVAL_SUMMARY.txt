@@ -1,0 +1,72 @@
+status=OK
+StepA:
+  test_rows=63
+  test_date_start=2022-01-03 test_date_end=2022-04-01
+  missing_ohlcv_count=0
+StepB:
+  prediction_files_found=4
+    - stepB_pred_close_mamba_SOXL.csv
+    - stepB_pred_close_mamba_periodic_SOXL.csv
+    - stepB_pred_path_mamba_SOXL.csv
+    - stepB_pred_time_all_SOXL.csv
+  stepB_pred_close_mamba_SOXL.csv::Pred_Close_MAMBA nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=4.7624 corr=0.8869
+  stepB_pred_close_mamba_periodic_SOXL.csv::Pred_Close_MAMBA_PERIODIC_h01 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=3.3360 corr=0.9251
+  stepB_pred_close_mamba_periodic_SOXL.csv::Delta_Close_pred_MAMBA_PERIODIC_h01 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=44.5305 corr=0.0425
+  stepB_pred_close_mamba_periodic_SOXL.csv::Pred_Close_MAMBA_PERIODIC_h05 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=5.6725 corr=0.8289
+  stepB_pred_close_mamba_periodic_SOXL.csv::Delta_Close_pred_MAMBA_PERIODIC_h05 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=42.9560 corr=0.0940
+  stepB_pred_close_mamba_periodic_SOXL.csv::Pred_Close_MAMBA_PERIODIC_h10 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=7.7209 corr=0.6831
+  stepB_pred_close_mamba_periodic_SOXL.csv::Delta_Close_pred_MAMBA_PERIODIC_h10 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=43.1753 corr=-0.2070
+  stepB_pred_close_mamba_periodic_SOXL.csv::Pred_Close_MAMBA_PERIODIC_h20 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=12.8284 corr=0.5961
+  stepB_pred_close_mamba_periodic_SOXL.csv::Delta_Close_pred_MAMBA_PERIODIC_h20 nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=40.7455 corr=0.1083
+  stepB_pred_close_mamba_periodic_SOXL.csv::Pred_Close_MAMBA_PERIODIC nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=3.3360 corr=0.9251
+  stepB_pred_close_mamba_periodic_SOXL.csv::Delta_Close_pred_MAMBA_PERIODIC nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=44.5305 corr=0.0425
+  stepB_pred_time_all_SOXL.csv::Pred_Close_MAMBA nn_ratio=1.0000 first_valid_date=2022-01-03 coverage_ratio_over_test=1.0000 mae=4.7624 corr=0.8869
+DPrimeCluster:
+  status=OK summary=embeddings found
+  cluster_embeddings_count=80 cluster_state_count=0 cluster_input_count=0
+DPrimeRL:
+  status=OK summary=RL state files found under stepDprime/sim
+  rl_state_count=40 rl_profiles_count=10
+  traceback_count=0 failure_summary_count=0 failure_reason=
+StepE:
+  dprime_all_features_3scale::stepE_daily_log_dprime_all_features_3scale_SOXL.csv test_days=63 equity_multiple=0.9786 max_dd=-0.4030 mean_ret=0.0034 std_ret=0.0764 sharpe=0.7105
+  dprime_all_features_h01::stepE_daily_log_dprime_all_features_h01_SOXL.csv test_days=63 equity_multiple=1.0080 max_dd=-0.3607 mean_ret=0.0016 std_ret=0.0695 sharpe=0.3587
+  dprime_all_features_h02::stepE_daily_log_dprime_all_features_h02_SOXL.csv test_days=63 equity_multiple=0.6355 max_dd=-0.3756 mean_ret=-0.0056 std_ret=0.0713 sharpe=-1.2452
+  dprime_all_features_h03::stepE_daily_log_dprime_all_features_h03_SOXL.csv test_days=63 equity_multiple=1.3253 max_dd=-0.3435 mean_ret=0.0084 std_ret=0.0788 sharpe=1.6931
+  dprime_bnf_3scale::stepE_daily_log_dprime_bnf_3scale_SOXL.csv test_days=63 equity_multiple=0.8068 max_dd=-0.5156 mean_ret=0.0006 std_ret=0.0798 sharpe=0.1275
+  dprime_bnf_h01::stepE_daily_log_dprime_bnf_h01_SOXL.csv test_days=63 equity_multiple=0.5879 max_dd=-0.6082 mean_ret=-0.0055 std_ret=0.0636 sharpe=-1.3714
+  dprime_bnf_h02::stepE_daily_log_dprime_bnf_h02_SOXL.csv test_days=63 equity_multiple=0.5789 max_dd=-0.5521 mean_ret=-0.0054 std_ret=0.0692 sharpe=-1.2294
+  dprime_mix_3scale::stepE_daily_log_dprime_mix_3scale_SOXL.csv test_days=63 equity_multiple=1.3251 max_dd=-0.3377 mean_ret=0.0081 std_ret=0.0739 sharpe=1.7332
+  dprime_mix_h01::stepE_daily_log_dprime_mix_h01_SOXL.csv test_days=63 equity_multiple=0.6824 max_dd=-0.5018 mean_ret=-0.0028 std_ret=0.0724 sharpe=-0.6211
+  dprime_mix_h02::stepE_daily_log_dprime_mix_h02_SOXL.csv test_days=63 equity_multiple=0.5405 max_dd=-0.5653 mean_ret=-0.0063 std_ret=0.0718 sharpe=-1.3909
+StepF:
+  stepF_equity_marl_SOXL.csv test_days=63 split_source=csv equity_multiple=0.8976 max_dd=-0.2652 mean_ret=-0.0008 std_ret=0.0447 sharpe=-0.2744
+StepFCompare:
+  status=OK summary=current StepF vs fixed-best expert vs daily oracle
+  current_stepf_equity_multiple=0.8976
+  fixed_best_expert=dprime_all_features_h03
+  fixed_best_equity_multiple=1.3253
+  oracle_equity_multiple=45.5567
+  regret_vs_fixed_best=0.4276
+  regret_vs_oracle=44.6591
+  stepf_win_days_vs_fixed_best=28
+  stepf_pick_match_rate_vs_oracle=0.0476
+  StepFRewardCompare status=OK summary=reward mode comparison across current/baseline/oracle
+    reward_legacy equity_multiple=0.8950 regret_vs_fixed_best=0.5064 pick_match_rate_vs_oracle=0.0476
+    current_stepf equity_multiple=0.8950 regret_vs_fixed_best=0.5064 pick_match_rate_vs_oracle=0.0476
+    reward_profit_basic equity_multiple=0.8938 regret_vs_fixed_best=0.5077 pick_match_rate_vs_oracle=0.0952
+    fixed_best equity_multiple=1.3253 regret_vs_fixed_best=0.0000 pick_match_rate_vs_oracle=NA
+    daily_oracle equity_multiple=45.5567 regret_vs_fixed_best=-44.2315 pick_match_rate_vs_oracle=NA
+Diversity:
+  status=OK max_corr=0.7590 max_match_ratio=0.5397 pairs_over_0_9999=0/45 identical_all_agents=False
+  summary=agent positions look diverse
+PLOTS:
+  equity_stepE_topN.png exists=yes
+  equity_stepF.png exists=yes
+  bar_stepE_return.png exists=yes
+  scatter_stepE_dd_vs_ret.png exists=yes
+  equity_stepF_vs_fixed_best_vs_oracle.png exists=yes
+  bar_stepF_regret.png exists=yes
+  equity_stepF_reward_modes.png exists=yes
+  bar_stepF_reward_mode_regret.png exists=yes
+  note=StepF_vs_best_StepE: StepF(0.8976) は best StepE(1.3253) に負けてる
