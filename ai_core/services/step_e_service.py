@@ -772,15 +772,14 @@ class StepEService:
         cache_key = self._merge_cache_key(cfg, date_range=date_range, out_root=out_root, mode=mode, symbol=symbol)
         with self._merge_cache_lock:
             cached = self._merge_cache.get(cache_key)
+        cache_hit = cached is not None
         if cached is None:
             df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
-            cache_hit = False
             with self._merge_cache_lock:
-                cached = self._merge_cache.setdefault(cache_key, (df_all, used_manifest))
-                if cached[0] is not df_all:
-                    cache_hit = True
-        else:
-            cache_hit = True
+                cached = self._merge_cache.get(cache_key)
+                if cached is None:
+                    cached = (df_all, used_manifest)
+                    self._merge_cache[cache_key] = cached
         cache_info = {
             "merge_cache_hit": bool(cache_hit),
             "merge_cache_key": "|".join(str(part) for part in cache_key),
