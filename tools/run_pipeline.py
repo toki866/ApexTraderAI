@@ -313,6 +313,19 @@ def _ensure_run_log_file(run_id: str, output_root: Path) -> Optional[Path]:
         return None
 
 
+def _append_run_log(run_log_path: Optional[Path], text: str) -> None:
+    try:
+        if run_log_path is None:
+            return
+        run_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with run_log_path.open("a", encoding="utf-8") as fh:
+            fh.write(str(text))
+            if not str(text).endswith("\n"):
+                fh.write("\n")
+    except Exception as exc:
+        print(f"[PIPELINE] WARN run log append failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 
 def snap_prev_by_prices(date, available_dates_sorted):
     """Snap to previous available trading date (floor). If none, use min."""
@@ -2053,6 +2066,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 pass
 
+    def _finalize_manifest_step(step_key: str, *, status: str, elapsed_sec: Optional[float], audit_status: Optional[str] = None) -> None:
+        if _run_manifest is None:
+            return
+        try:
+            _run_manifest.mark_step(step_key, status)
+            if elapsed_sec is not None:
+                _run_manifest.mark_step_elapsed(step_key, float(elapsed_sec))
+            if audit_status is not None:
+                _run_manifest.mark_step_audit(step_key, audit_status)
+            try:
+                step_data = _run_manifest._data.setdefault("steps", {}).setdefault(step_key.upper(), {})
+                if status == "failed":
+                    step_data["failed"] = True
+                    step_data["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                _run_manifest._data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                pass
+            _run_manifest.save()
+        except Exception as _manifest_step_e:
+            print(
+                f"[reuse] WARNING manifest finalize failed step={step_key} "
+                f"reason={type(_manifest_step_e).__name__}: {_manifest_step_e}",
+                file=sys.stderr,
+            )
+
     def _mark_step_verified(step_key: str, status: str, *, audit_status: Optional[str] = None, invalid_status: str = "pending") -> bool:
         if _run_manifest is None:
             return True
@@ -2897,12 +2935,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _mark_step("B", "running")
                     _t0_b = time.perf_counter()
                     _t0_b_wall = time.time()
+                    _stepb_status_emitted = False
                     try:
-                        try:
-                            with timing.stage("stepB.run"):
-                                results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
-                        finally:
-                            _elapsed_b = time.perf_counter() - _t0_b
+                        with timing.stage("stepB.run"):
+                            results["stepB_result"] = _run_stepB(app_config, symbol, date_range, enable_mamba, args.enable_mamba_periodic, args.mamba_lookback, mamba_horizons_list)
+                        _elapsed_b = time.perf_counter() - _t0_b
                         print(f"[StepB] agents: mamba={enable_mamba}")
                         # Ensure contract artifact exists
                         try:
@@ -2921,19 +2958,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if _post_stepb_missing:
                             _miss_b.extend(_post_stepb_missing)
                         if _miss_b:
-                            if _run_manifest is not None:
-                                _run_manifest.mark_step_elapsed("B", _elapsed_b)
-                                _run_manifest.mark_step_audit("B", "FAIL")
-                            _mark_step("B", "failed")
+                            _finalize_manifest_step("B", status="failed", elapsed_sec=_elapsed_b, audit_status="FAIL")
                             _emit_step_status("B", status="fail", started_at=_t0_b_wall, ended_at=time.time(), validated=False, detail="contract_or_coverage")
+                            _stepb_status_emitted = True
                             raise RuntimeError("StepB contract missing/invalid: " + ", ".join(_miss_b))
-                        _mark_step("B", "complete")
-                        if _run_manifest is not None:
-                            _run_manifest.mark_step_elapsed("B", _elapsed_b)
-                            _run_manifest.mark_step_audit("B", "PASS")
+                        _finalize_manifest_step("B", status="complete", elapsed_sec=_elapsed_b, audit_status="PASS")
                         _emit_step_status("B", status="run", started_at=_t0_b_wall, ended_at=time.time(), validated=True)
+                        _stepb_status_emitted = True
                         print("[StepB] done")
                     except Exception:
+                        _elapsed_b = time.perf_counter() - _t0_b
+                        _tb_text = traceback.format_exc()
+                        _append_run_log(run_log_path, "[PIPELINE][StepB] exception begin")
+                        _append_run_log(run_log_path, _tb_text)
+                        _append_run_log(run_log_path, "[PIPELINE][StepB] exception end")
+                        _finalize_manifest_step("B", status="failed", elapsed_sec=_elapsed_b, audit_status="FAIL")
                         traceback.print_exc(file=sys.stderr)
                         # Make downstream skip-reason explicit in run log / ONE_TAP parsers.
                         for _downstream in ("C", "DPRIME", "E", "F"):
@@ -2946,8 +2985,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                     validated=None,
                                     detail="skip_due_to_stepB_failure",
                                 )
+                        if not _stepb_status_emitted:
+                            _emit_step_status("B", status="fail", started_at=_t0_b_wall, ended_at=time.time(), validated=False, detail="exception")
                         print("[PIPELINE] downstream_blocked_by=StepB reason=skip_due_to_stepB_failure", file=sys.stderr)
                         raise
+                    finally:
+                        if _run_manifest is not None:
+                            try:
+                                _run_manifest.save()
+                            except Exception as _manifest_flush_e:
+                                print(
+                                    f"[reuse] WARNING manifest flush failed after StepB: "
+                                    f"{type(_manifest_flush_e).__name__}: {_manifest_flush_e}",
+                                    file=sys.stderr,
+                                )
 
             if "C" in steps:
                 if _can_reuse_step("C"):

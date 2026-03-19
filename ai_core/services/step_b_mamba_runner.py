@@ -52,6 +52,7 @@ import random
 import os
 import re
 import time
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -163,18 +164,225 @@ def _require_torch() -> None:
         import torch.nn as nn  # noqa: F401
         from torch.utils.data import DataLoader, TensorDataset  # noqa: F401
     except Exception as e:
-        raise RuntimeError(
-            "PyTorch import failed. StepB(Mamba) requires torch. "
-            f"Original error: {e}"
+        raise StepBFailure(
+            fail_reason="missing_torch",
+            message=(
+                "PyTorch import failed. StepB(Mamba) requires torch. "
+                f"Original error: {e}"
+            ),
+            payload={"dependency": "torch"},
         ) from e
 
 
 def _require_mamba_ssm() -> None:
     if not _MAMBA_SSM_AVAILABLE or _MambaSSM is None:
-        raise RuntimeError(
-            "StepB(Mamba) requires mamba-ssm, but it is not available. "
-            "Install it (pip install mamba-ssm) and re-run."
+        raise StepBFailure(
+            fail_reason="missing_mamba_ssm",
+            message=(
+                "StepB(Mamba) requires mamba-ssm, but it is not available. "
+                "Install it (pip install mamba-ssm) and re-run."
+            ),
+            payload={"dependency": "mamba_ssm"},
         )
+
+
+class StepBFailure(RuntimeError):
+    def __init__(self, fail_reason: str, message: str, *, payload: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.fail_reason = str(fail_reason or "stepb_failure")
+        self.payload = dict(payload or {})
+
+
+def _variant_name(cfg: Any) -> str:
+    return "periodic" if _is_periodic_variant(cfg) else "full"
+
+
+def _phase_name(timing_stage_prefix: Optional[str], cfg: Any) -> str:
+    prefix = str(timing_stage_prefix or "").strip().lower()
+    if prefix.endswith("full"):
+        return "predict_full"
+    if prefix.endswith("periodic"):
+        return "predict_periodic"
+    return f"predict_{_variant_name(cfg)}"
+
+
+def _stepb_json_path(stepb_dir: Path, kind: str, symbol: str, variant: str) -> Path:
+    return stepb_dir / f"{kind}_{symbol}_{variant}.json"
+
+
+def _dependency_status() -> Dict[str, Any]:
+    status: Dict[str, Any] = {
+        "python_version": os.sys.version,
+        "torch": {"available": False, "version": "", "error": ""},
+        "pywt": {"available": False, "version": "", "error": ""},
+        "mamba_ssm": {"available": False, "version": "", "error": ""},
+    }
+    try:
+        import torch  # type: ignore
+
+        status["torch"] = {
+            "available": True,
+            "version": str(getattr(torch, "__version__", "unknown")),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "error": "",
+        }
+    except Exception as exc:
+        status["torch"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        import pywt  # type: ignore
+
+        status["pywt"] = {
+            "available": True,
+            "version": str(getattr(pywt, "__version__", "unknown")),
+            "error": "",
+        }
+    except Exception as exc:
+        status["pywt"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        import mamba_ssm  # type: ignore
+
+        status["mamba_ssm"] = {
+            "available": True,
+            "version": str(getattr(mamba_ssm, "__version__", "unknown")),
+            "error": "",
+        }
+    except Exception as exc:
+        status["mamba_ssm"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    return status
+
+
+def _input_contract(app_config: Any, symbol: str, prices_df: pd.DataFrame, features_df: pd.DataFrame, cfg: Any) -> Dict[str, Any]:
+    contract: Dict[str, Any] = {
+        "symbol": str(symbol),
+        "variant": _variant_name(cfg),
+        "prices_rows": int(len(prices_df)),
+        "features_rows": int(len(features_df)),
+        "prices_columns": list(map(str, prices_df.columns.tolist())),
+        "features_columns_preview": list(map(str, features_df.columns.tolist()[:20])),
+        "prices_required_columns_present": all(col in prices_df.columns for col in ("Date", "Close")),
+        "features_required_columns_present": "Date" in features_df.columns,
+        "missing_prices_columns": [col for col in ("Date", "Close") if col not in prices_df.columns],
+        "missing_features_columns": [col for col in ("Date",) if col not in features_df.columns],
+        "cfg": {
+            "mode": str(_get(cfg, "mode", "")),
+            "lookback_days": _get(cfg, "lookback_days", None),
+            "horizons": _parse_horizons(cfg),
+            "use_wavelet": bool(_get(cfg, "use_wavelet", False)),
+            "periodic_use_wavelet": bool(_get(cfg, "periodic_use_wavelet", False)),
+        },
+        "split": {},
+        "split_error": "",
+    }
+    try:
+        train_start, train_end, test_start, test_end, mode = _infer_split(app_config, cfg)
+        contract["split"] = {
+            "mode": str(mode),
+            "train_start": str(pd.Timestamp(train_start).date()),
+            "train_end": str(pd.Timestamp(train_end).date()),
+            "test_start": str(pd.Timestamp(test_start).date()),
+            "test_end": str(pd.Timestamp(test_end).date()),
+        }
+    except Exception as exc:
+        contract["split_error"] = f"{type(exc).__name__}: {exc}"
+    return contract
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_jsonify(payload), indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _extract_fail_reason(exc: BaseException) -> str:
+    fail_reason = getattr(exc, "fail_reason", "")
+    if str(fail_reason).strip():
+        return str(fail_reason).strip()
+    payload = getattr(exc, "payload", None)
+    if isinstance(payload, dict):
+        payload_reason = payload.get("fail_reason")
+        if str(payload_reason or "").strip():
+            return str(payload_reason).strip()
+    msg = str(exc)
+    if "STEPB_FAIL_REASON=" in msg:
+        return msg.split("STEPB_FAIL_REASON=", 1)[1].split()[0].strip()
+    return f"{type(exc).__name__}".lower()
+
+
+def _preflight_stepb(
+    app_config: Any,
+    symbol: str,
+    prices_df: pd.DataFrame,
+    features_df: pd.DataFrame,
+    cfg: Any,
+    timing_stage_prefix: Optional[str],
+) -> Dict[str, Any]:
+    out_root = _infer_output_root(app_config)
+    variant = _variant_name(cfg)
+    split_contract = _input_contract(app_config, symbol, prices_df, features_df, cfg)
+    phase = _phase_name(timing_stage_prefix, cfg)
+    try:
+        _, _, _, _, mode = _infer_split(app_config, cfg)
+    except Exception:
+        mode = str(_get(cfg, "mode", "sim") or "sim").strip().lower() or "sim"
+    stepb_dir = out_root / "stepB" / mode
+    dependency_status = _dependency_status()
+    preflight = {
+        "status": "preflight",
+        "symbol": str(symbol),
+        "variant": variant,
+        "phase": phase,
+        "output_root": str(out_root),
+        "stepb_dir": str(stepb_dir),
+        "dependency_status": dependency_status,
+        "input_contract": split_contract,
+        "created_at_epoch": time.time(),
+    }
+    _write_json(_stepb_json_path(stepb_dir, "stepB_preflight", str(symbol), variant), preflight)
+
+    if not split_contract["prices_required_columns_present"]:
+        raise StepBFailure(
+            fail_reason="input_contract_prices_columns_missing",
+            message=f"prices_df must contain Date and Close. missing={split_contract['missing_prices_columns']}",
+            payload={"input_contract": split_contract},
+        )
+    if not split_contract["features_required_columns_present"]:
+        raise StepBFailure(
+            fail_reason="input_contract_features_columns_missing",
+            message=f"features_df must contain Date. missing={split_contract['missing_features_columns']}",
+            payload={"input_contract": split_contract},
+        )
+    if split_contract.get("split_error"):
+        raise StepBFailure(
+            fail_reason="split_resolution_failed",
+            message=str(split_contract["split_error"]),
+            payload={"input_contract": split_contract},
+        )
+    if not dependency_status["torch"]["available"]:
+        raise StepBFailure(
+            fail_reason="missing_torch",
+            message="PyTorch import failed during StepB preflight.",
+            payload={"dependency_status": dependency_status},
+        )
+    if not dependency_status["mamba_ssm"]["available"]:
+        raise StepBFailure(
+            fail_reason="missing_mamba_ssm",
+            message="mamba_ssm import failed during StepB preflight.",
+            payload={"dependency_status": dependency_status},
+        )
+    wavelet_required = bool(_get(cfg, "periodic_use_wavelet", False)) if _is_periodic_variant(cfg) else bool(_get(cfg, "use_wavelet", True))
+    env_wavelet_raw = os.getenv("STEPB_MAMBA_USE_WAVELET", "")
+    if str(env_wavelet_raw).strip() != "":
+        wavelet_required = _env_flag("STEPB_MAMBA_USE_WAVELET", wavelet_required)
+    if wavelet_required and not dependency_status["pywt"]["available"]:
+        raise StepBFailure(
+            fail_reason="missing_pywavelets",
+            message="PyWavelets import failed during StepB preflight.",
+            payload={"dependency_status": dependency_status},
+        )
+    return preflight
 
 
 @dataclass
@@ -1361,12 +1569,57 @@ def run_stepB_mamba(app_config, symbol, prices_df, features_df, cfg, timing_logg
     StepBService imports:
         from ai_core.services.step_b_mamba_runner import run_stepB_mamba
     """
-    return run_mamba_multi_model_by_horizon(
-        app_config=app_config,
-        symbol=symbol,
-        prices_df=prices_df,
-        features_df=features_df,
-        cfg=cfg,
-        timing_logger=timing_logger,
-        timing_stage_prefix=timing_stage_prefix,
-    )
+    try:
+        preflight = _preflight_stepb(
+            app_config=app_config,
+            symbol=symbol,
+            prices_df=prices_df,
+            features_df=features_df,
+            cfg=cfg,
+            timing_stage_prefix=timing_stage_prefix,
+        )
+        stepb_dir = Path(preflight["stepb_dir"])
+        return run_mamba_multi_model_by_horizon(
+            app_config=app_config,
+            symbol=symbol,
+            prices_df=prices_df,
+            features_df=features_df,
+            cfg=cfg,
+            timing_logger=timing_logger,
+            timing_stage_prefix=timing_stage_prefix,
+        )
+    except Exception as exc:
+        out_root = _infer_output_root(app_config)
+        try:
+            _, _, _, _, mode = _infer_split(app_config, cfg)
+        except Exception:
+            mode = str(_get(cfg, "mode", "sim") or "sim").strip().lower() or "sim"
+        stepb_dir = locals().get("stepb_dir", out_root / "stepB" / mode)
+        preflight = locals().get("preflight") or {
+            "variant": _variant_name(cfg),
+            "phase": _phase_name(timing_stage_prefix, cfg),
+            "dependency_status": _dependency_status(),
+            "input_contract": _input_contract(app_config, symbol, prices_df, features_df, cfg),
+        }
+        variant = str(preflight.get("variant") or _variant_name(cfg))
+        failure_payload = {
+            "status": "failed",
+            "symbol": str(symbol),
+            "variant": variant,
+            "phase": str(preflight.get("phase") or _phase_name(timing_stage_prefix, cfg)),
+            "fail_reason": _extract_fail_reason(exc),
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "traceback": traceback.format_exc(),
+            "dependency_status": preflight.get("dependency_status", {}),
+            "input_contract": preflight.get("input_contract", {}),
+            "preflight_path": str(_stepb_json_path(stepb_dir, "stepB_preflight", str(symbol), variant)),
+        }
+        payload_extra = getattr(exc, "payload", None)
+        if isinstance(payload_extra, dict):
+            failure_payload["exception_payload"] = payload_extra
+        _write_json(_stepb_json_path(stepb_dir, "stepB_failure", str(symbol), variant), failure_payload)
+        setattr(exc, "stepb_failure_payload", failure_payload)
+        if not getattr(exc, "fail_reason", None):
+            setattr(exc, "fail_reason", failure_payload["fail_reason"])
+        raise

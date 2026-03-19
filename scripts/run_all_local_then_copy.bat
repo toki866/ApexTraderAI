@@ -173,19 +173,19 @@ if errorlevel 1 (
 
 echo [RUN] mamba_ssm importable in WSL; proceeding with wsl_mamba backend>> "%LOG_FILE%"
 
-rem Verify pywt is importable in WSL runtime env before StepB starts
-wsl.exe %WSL_DIST_FLAG% %WSL_PYTHON% -c "import pywt; print('pywt_available=1', pywt.__version__)" >> "%LOG_FILE%" 2>&1
+rem Verify StepB runtime dependencies are importable in the actual WSL env before StepB starts
+wsl.exe %WSL_DIST_FLAG% %WSL_PYTHON% -c "import json, torch, pywt, mamba_ssm; print(json.dumps({'torch': getattr(torch, '__version__', 'unknown'), 'pywt': getattr(pywt, '__version__', 'unknown'), 'mamba_ssm': getattr(mamba_ssm, '__version__', 'unknown'), 'cuda_available': bool(torch.cuda.is_available())}, ensure_ascii=False))" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-  echo [StepB:mamba:mamba] pywt_available=False>> "%LOG_FILE%"
-  echo STEPB_FAIL_REASON=missing_pywavelets>> "%LOG_FILE%"
-  echo [FATAL] ENABLE_MAMBA=1 but pywt not importable via WSL python=%WSL_PYTHON%>> "%LOG_FILE%"
-  echo [FATAL] ENABLE_MAMBA=1 but pywt not importable via WSL python=%WSL_PYTHON%
-  set "LAST_CMD=wsl pywt import check"
+  echo [StepB:preflight] dependency_import_failed runtime=wsl python=%WSL_PYTHON%>> "%LOG_FILE%"
+  echo STEPB_FAIL_REASON=dependency_preflight_failed>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but torch/pywt/mamba_ssm preflight failed via WSL python=%WSL_PYTHON%>> "%LOG_FILE%"
+  echo [FATAL] ENABLE_MAMBA=1 but torch/pywt/mamba_ssm preflight failed via WSL python=%WSL_PYTHON%
+  set "LAST_CMD=wsl stepb dependency preflight"
   set "LAST_EXIT=5"
   goto :failed
 )
 
-echo [RUN] pywt importable in WSL runtime env>> "%LOG_FILE%"
+echo [RUN] StepB dependency preflight importable in WSL runtime env>> "%LOG_FILE%"
 set "EFFECTIVE_ENABLE_MAMBA=%ENABLE_MAMBA%"
 set "EFFECTIVE_ENABLE_MAMBA_PERIODIC=%ENABLE_MAMBA_PERIODIC%"
 
