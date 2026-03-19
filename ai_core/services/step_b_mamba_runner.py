@@ -196,6 +196,18 @@ class StepBAgentResult:
 def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
+
+PERIODIC_FEATURE_DIM = 44
+
+
+def _format_feature_cols(cols: List[str], *, limit: int = 44) -> str:
+    if not cols:
+        return "(none)"
+    shown = list(cols[:limit])
+    suffix = "" if len(cols) <= limit else f" ... (+{len(cols) - limit} more)"
+    return ", ".join(shown) + suffix
+
+
 def _is_periodic_variant(cfg: Any) -> bool:
     v = str(_get(cfg, 'variant', 'full')).strip().lower()
     return v in ('periodic', 'periodic_only', 'p', 'cal', 'calendar')
@@ -229,11 +241,10 @@ def _select_periodic_feature_cols(df: pd.DataFrame) -> List[str]:
             cols_per.append(str(c))
 
     if len(cols_per) > 0:
-        if strict and len(cols_per) != 44:
-            preview = ", ".join(cols_per[:14]) + (" ..." if len(cols_per) > 14 else "")
+        if strict and len(cols_per) != PERIODIC_FEATURE_DIM:
             raise RuntimeError(
-                f"Periodic-only feature selection expected 44 'per_*' columns, got {len(cols_per)}. "
-                f"Check StepA periodic feature generation. Selected: [{preview}]"
+                f"Periodic-only feature selection expected {PERIODIC_FEATURE_DIM} 'per_*' columns, got {len(cols_per)}. "
+                f"Check StepA periodic feature generation. Selected columns=[{_format_feature_cols(cols_per)}]"
             )
         return cols_per
 
@@ -263,14 +274,39 @@ def _select_periodic_feature_cols(df: pd.DataFrame) -> List[str]:
 
     cols_primary = [c for c in cols_primary if pd.api.types.is_numeric_dtype(df[c])]
 
-    if strict and len(cols_primary) != 44:
-        preview = ", ".join(cols_primary[:14]) + (" ..." if len(cols_primary) > 14 else "")
+    if strict and len(cols_primary) != PERIODIC_FEATURE_DIM:
         raise RuntimeError(
-            f"Periodic-only feature selection expected 44 columns, got {len(cols_primary)}. "
-            f"Check StepA periodic feature names. Selected: [{preview}]"
+            f"Periodic-only feature selection expected {PERIODIC_FEATURE_DIM} columns, got {len(cols_primary)}. "
+            f"Check StepA periodic feature names. Selected columns=[{_format_feature_cols(cols_primary)}]"
         )
 
     return cols_primary
+
+
+def prepare_periodic_feature_frame(
+    df: pd.DataFrame,
+    *,
+    variant_name: str = "periodic",
+    require_exact_dim: bool = True,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    if "Date" not in df.columns:
+        raise ValueError(f"Periodic-only feature input must include Date. variant={variant_name}")
+
+    feature_cols = _select_periodic_feature_cols(df)
+    feature_dim = int(len(feature_cols))
+    prepared = df[["Date"] + feature_cols].copy()
+    diag = {
+        "variant": str(variant_name),
+        "feature_dim": feature_dim,
+        "feature_columns": list(feature_cols),
+    }
+    if require_exact_dim and feature_dim != PERIODIC_FEATURE_DIM:
+        raise RuntimeError(
+            f"Periodic-only feature_dim mismatch before runner execution. "
+            f"variant={variant_name} expected_feature_dim={PERIODIC_FEATURE_DIM} actual_feature_dim={feature_dim} "
+            f"feature_columns=[{_format_feature_cols(feature_cols)}]"
+        )
+    return prepared, diag
 
 
 def _get_target_mode(cfg: Any, is_periodic: bool) -> str:
@@ -658,6 +694,25 @@ def run_mamba_multi_model_by_horizon(
     #   - periodic: sin/cos 44 columns only (strict by default)
     if is_periodic:
         feature_cols = _select_periodic_feature_cols(df)
+        feature_dim = int(len(feature_cols))
+        if feature_dim != PERIODIC_FEATURE_DIM:
+            raise RuntimeError(
+                f"Periodic-only feature_dim mismatch before training/inference. "
+                f"variant={getattr(cfg, 'variant', 'periodic')} expected_feature_dim={PERIODIC_FEATURE_DIM} "
+                f"actual_feature_dim={feature_dim} feature_columns=[{_format_feature_cols(feature_cols)}]"
+            )
+        print(
+            f"[StepB:mamba:{out_tag}] input_contract "
+            f"variant={getattr(cfg, 'variant', 'periodic')} selected_column_count={feature_dim} "
+            f"feature_dim={feature_dim} feature_columns=[{_format_feature_cols(feature_cols)}]"
+        )
+        na_counts = df[feature_cols].isna().sum()
+        na_cols = [f"{col}:{int(cnt)}" for col, cnt in na_counts.items() if int(cnt) > 0]
+        if na_cols:
+            print(
+                f"[StepB:mamba:{out_tag}:DIAG] periodic_missing_values_before_fill "
+                f"feature_dim={feature_dim} columns_with_missing=[{_format_feature_cols(na_cols, limit=20)}]"
+            )
     else:
         feature_cols: List[str] = []
         for c in df.columns:
@@ -1220,14 +1275,20 @@ def rollout_periodic_h1_future(
         dfx.dropna(subset=["Date"], inplace=True)
         dfx.sort_values("Date", inplace=True)
 
-    feature_cols = _select_periodic_feature_cols(hist)
+    hist, hist_diag = prepare_periodic_feature_frame(hist, variant_name="periodic_rollout_history")
+    feature_cols = list(hist_diag["feature_columns"])
     if not feature_cols:
         raise RuntimeError("No periodic feature columns found for rollout")
 
-    for c in feature_cols:
-        if c not in fut.columns:
-            fut[c] = 0.0
-    hist = hist[["Date"] + feature_cols].copy()
+    missing_future_cols = [c for c in feature_cols if c not in fut.columns]
+    if missing_future_cols:
+        raise RuntimeError(
+            f"Periodic future feature mismatch before rollout. "
+            f"expected_feature_dim={PERIODIC_FEATURE_DIM} actual_available_feature_dim="
+            f"{len([c for c in fut.columns if c != 'Date'])} "
+            f"missing_columns=[{_format_feature_cols(missing_future_cols)}] "
+            f"required_columns=[{_format_feature_cols(feature_cols)}]"
+        )
     fut = fut[["Date"] + feature_cols].copy()
 
     hist[feature_cols] = hist[feature_cols].apply(pd.to_numeric, errors="coerce").ffill().fillna(0.0)
