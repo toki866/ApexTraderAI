@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from ai_core.utils.manifest_path_utils import resolve_output_artifact_path
+
 # ---------------------------------------------------------------------------
 # Official StepE agent list (mirrors _OFFICIAL_STEPE_AGENTS in run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -162,7 +164,7 @@ def _validate_stepa_daily_manifest(output_root: Path, symbol: str, mode: str) ->
         return False
     for c in required_cols:
         for raw in manifest[c].fillna("").astype(str):
-            p = Path(raw.strip())
+            p = resolve_output_artifact_path(raw, canonical_output_root=output_root)
             if not raw.strip() or not p.exists():
                 return False
     return True

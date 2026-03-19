@@ -17,6 +17,8 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Sequence
 
+from ai_core.utils.manifest_path_utils import resolve_output_artifact_path
+
 
 def validate_step_a(output_root: Path, symbol: str, mode: str) -> List[str]:
     """Return missing artifact paths for StepA complete output set."""
@@ -54,7 +56,8 @@ def validate_step_a(output_root: Path, symbol: str, mode: str) -> List[str]:
                     missing.append(f"{manifest_path}::missing_column({col})")
                     continue
                 for raw in manifest[col].fillna("").astype(str):
-                    if not raw.strip() or not Path(raw).exists():
+                    resolved = resolve_output_artifact_path(raw, canonical_output_root=output_root)
+                    if not raw.strip() or not resolved.exists():
                         missing.append(f"{manifest_path}::missing_path({col})={raw}")
                         break
         except Exception as e:
