@@ -9,7 +9,12 @@ from typing import Dict, Optional
 import pandas as pd
 from ai_core.config.app_config import AppConfig
 from ai_core.config.step_b_config import StepBConfig, WaveletMambaTrainConfig
-from ai_core.services.step_b_mamba_runner import rollout_periodic_h1_future, run_stepB_mamba
+from ai_core.services.step_b_mamba_runner import (
+    PERIODIC_FEATURE_DIM,
+    prepare_periodic_feature_frame,
+    rollout_periodic_h1_future,
+    run_stepB_mamba,
+)
 from ai_core.types.step_b_types import StepBResult
 from ai_core.utils.timing_logger import TimingLogger
 
@@ -543,6 +548,23 @@ class StepBService:
         fut_df.to_csv(out_path, index=False, encoding="utf-8")
         return out_path
 
+    def _prepare_periodic_features(self, periodic_df: pd.DataFrame, *, variant_name: str) -> tuple[pd.DataFrame, dict]:
+        prepared_df, diag = prepare_periodic_feature_frame(periodic_df, variant_name=variant_name, require_exact_dim=True)
+        feature_columns = list(diag.get("feature_columns", []))
+        feature_dim = int(diag.get("feature_dim", 0))
+        print(
+            f"[StepB] periodic_input_contract "
+            f"variant={variant_name} selected_column_count={feature_dim} "
+            f"feature_dim={feature_dim} feature_columns={json.dumps(feature_columns, ensure_ascii=False)}"
+        )
+        if feature_dim != PERIODIC_FEATURE_DIM:
+            raise RuntimeError(
+                f"StepB periodic-only feature_dim mismatch before runner execution. "
+                f"variant={variant_name} expected_feature_dim={PERIODIC_FEATURE_DIM} actual_feature_dim={feature_dim} "
+                f"feature_columns={json.dumps(feature_columns, ensure_ascii=False)}"
+            )
+        return prepared_df, diag
+
 
     def run(self, config: StepBConfig | None = None, *args, **kwargs) -> StepBResult:
         stepb_config: Optional[StepBConfig] = config if isinstance(config, StepBConfig) else None
@@ -571,6 +593,7 @@ class StepBService:
                 tech_df = self._load_stepa_df(symbol, run_mode, "tech")
                 periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
                 features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
+                periodic_features_df, periodic_feature_diag = self._prepare_periodic_features(periodic_df, variant_name="periodic")
             print("[StepB] load_stepa_inputs ok")
 
             forced_cfg = self._force_spec(cfg_all.mamba)
@@ -628,7 +651,7 @@ class StepBService:
                         app_config=self.app_config,
                         symbol=symbol,
                         prices_df=prices_df,
-                        features_df=periodic_df,
+                        features_df=periodic_features_df,
                         cfg=periodic_cfg,
                         timing_logger=timing,
                         timing_stage_prefix="stepB.periodic",
@@ -663,7 +686,7 @@ class StepBService:
                 with timing.stage("stepB.write_live_nextday"):
                     nextday = self._write_live_nextday(symbol, run_mode)
                 with timing.stage("stepB.write_live_future"):
-                    future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_df, run_mode)
+                    future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_features_df, run_mode)
             if nextday is not None:
                 info["pred_nextday_mamba_path"] = str(nextday)
             if future is not None:
@@ -675,11 +698,16 @@ class StepBService:
                 "tech_rows": int(len(tech_df)),
                 "periodic_rows": int(len(periodic_df)),
                 "full_feature_dim": int(len([c for c in features_df.columns if c != "Date"])),
-                "periodic_feature_dim": int(len([c for c in periodic_df.columns if c != "Date"])),
+                "periodic_feature_dim": int(len([c for c in periodic_features_df.columns if c != "Date"])),
                 "full_feature_columns_preview": [c for c in features_df.columns if c != "Date"][:12],
-                "periodic_feature_columns_preview": [c for c in periodic_df.columns if c != "Date"][:12],
+                "periodic_feature_columns_preview": [c for c in periodic_features_df.columns if c != "Date"][:12],
+                "periodic_feature_columns": list(periodic_feature_diag.get("feature_columns", [])),
             }
-            if feature_contract["full_feature_dim"] <= 0 or feature_contract["periodic_feature_dim"] <= 0:
+            if (
+                feature_contract["full_feature_dim"] <= 0
+                or feature_contract["periodic_feature_dim"] <= 0
+                or feature_contract["periodic_feature_dim"] != PERIODIC_FEATURE_DIM
+            ):
                 raise RuntimeError(f"StepB feature_dim mismatch: {feature_contract}")
             summary = {
                 "symbol": symbol,
