@@ -400,7 +400,25 @@ class StepBAgentResult:
     out_dir: str
     csv_paths: Dict[str, str]
     metrics: Dict[str, Any]
+    device_requested: str = "auto"
+    device_execution: str = ""
+    device_execution_verified: bool = False
+    device_execution_evidence: Dict[str, List[str]] = field(default_factory=dict)
+    device_resolution_source: str = ""
+    device_fallback_reason: str = ""
+    info: Dict[str, Any] = field(default_factory=dict)
     csv_paths_list: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.info:
+            self.info = {
+                "device_requested": str(self.device_requested or "auto"),
+                "device_execution": str(self.device_execution or ""),
+                "device_execution_verified": bool(self.device_execution_verified),
+                "device_execution_evidence": dict(self.device_execution_evidence or {}),
+                "device_resolution_source": str(self.device_resolution_source or ""),
+                "device_fallback_reason": str(self.device_fallback_reason or ""),
+            }
 
     def iter_csv_paths(self) -> List[str]:
         if self.csv_paths_list:
@@ -628,9 +646,12 @@ def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     if torch is not None:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        try:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+        except Exception:
+            pass
 
 
 def _jsonify(x: Any) -> Any:
