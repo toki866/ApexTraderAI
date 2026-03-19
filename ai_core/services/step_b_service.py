@@ -218,29 +218,6 @@ class StepBService:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         return df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
 
-    def _periodic_feature_columns(self, df: pd.DataFrame) -> list[str]:
-        cols = []
-        for c in df.columns:
-            if str(c) == "Date":
-                continue
-            if str(c).startswith("per_") and pd.api.types.is_numeric_dtype(df[c]):
-                cols.append(str(c))
-        return cols
-
-    def _extract_periodic_only_features(self, periodic_df: pd.DataFrame) -> pd.DataFrame:
-        if "Date" not in periodic_df.columns:
-            raise ValueError("StepB periodic_df must include Date")
-        feature_cols = self._periodic_feature_columns(periodic_df)
-        feature_dim = len(feature_cols)
-        print(f"[StepB][periodic] feature_dim={feature_dim}")
-        print(f"[StepB][periodic] feature_columns={feature_cols}")
-        if feature_dim != 44:
-            raise RuntimeError(
-                "StepB periodic-only feature_dim must be 44 before run_stepB_mamba. "
-                f"feature_dim={feature_dim} columns={feature_cols}"
-            )
-        return periodic_df[["Date", *feature_cols]].copy()
-
     def _force_spec(self, cfg: WaveletMambaTrainConfig) -> WaveletMambaTrainConfig:
         return replace(
             cfg,
@@ -593,7 +570,6 @@ class StepBService:
                 prices_test_df = self._load_stepa_split_df(symbol, run_mode, "prices", "test")
                 tech_df = self._load_stepa_df(symbol, run_mode, "tech")
                 periodic_df = self._load_stepa_df(symbol, run_mode, "periodic")
-                periodic_features_df = self._extract_periodic_only_features(periodic_df)
                 features_df = tech_df.merge(periodic_df, on="Date", how="inner") if "Date" in tech_df.columns and "Date" in periodic_df.columns else tech_df
             print("[StepB] load_stepa_inputs ok")
 
@@ -652,7 +628,7 @@ class StepBService:
                         app_config=self.app_config,
                         symbol=symbol,
                         prices_df=prices_df,
-                        features_df=periodic_features_df,
+                        features_df=periodic_df,
                         cfg=periodic_cfg,
                         timing_logger=timing,
                         timing_stage_prefix="stepB.periodic",
@@ -687,7 +663,7 @@ class StepBService:
                 with timing.stage("stepB.write_live_nextday"):
                     nextday = self._write_live_nextday(symbol, run_mode)
                 with timing.stage("stepB.write_live_future"):
-                    future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_features_df, run_mode)
+                    future = self._write_live_future_periodic(symbol, periodic_cfg, prices_test_df, periodic_df, run_mode)
             if nextday is not None:
                 info["pred_nextday_mamba_path"] = str(nextday)
             if future is not None:
@@ -698,11 +674,10 @@ class StepBService:
                 "prices_test_rows": int(len(prices_test_df)),
                 "tech_rows": int(len(tech_df)),
                 "periodic_rows": int(len(periodic_df)),
-                "periodic_filtered_rows": int(len(periodic_features_df)),
                 "full_feature_dim": int(len([c for c in features_df.columns if c != "Date"])),
-                "periodic_feature_dim": int(len([c for c in periodic_features_df.columns if c != "Date"])),
+                "periodic_feature_dim": int(len([c for c in periodic_df.columns if c != "Date"])),
                 "full_feature_columns_preview": [c for c in features_df.columns if c != "Date"][:12],
-                "periodic_feature_columns_preview": [c for c in periodic_features_df.columns if c != "Date"][:44],
+                "periodic_feature_columns_preview": [c for c in periodic_df.columns if c != "Date"][:12],
             }
             if feature_contract["full_feature_dim"] <= 0 or feature_contract["periodic_feature_dim"] <= 0:
                 raise RuntimeError(f"StepB feature_dim mismatch: {feature_contract}")

@@ -25,8 +25,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from ai_core.utils.pipeline_artifact_utils import resolve_output_artifact_path, resolve_stepdprime_root
-
 # ---------------------------------------------------------------------------
 # Official StepE agent list (mirrors _OFFICIAL_STEPE_AGENTS in run_pipeline.py)
 # ---------------------------------------------------------------------------
@@ -96,7 +94,7 @@ def required_outputs_for_step(step: str, symbol: str, mode: str) -> Tuple[str, .
     if s == "C":
         return (f"stepC/{mode}/stepC_features_{sym}.csv", "split_summary.json")
     if s == "DPRIME":
-        return ("split_summary.json",)
+        return (f"stepDprime/{mode}/stepDprime_state_test_dprime_all_features_h01_{sym}.csv", "split_summary.json")
     if s == "E":
         return (f"stepE/{mode}/stepE_daily_log_dprime_all_features_h01_{sym}.csv", "split_summary.json")
     if s == "F":
@@ -164,10 +162,8 @@ def _validate_stepa_daily_manifest(output_root: Path, symbol: str, mode: str) ->
         return False
     for c in required_cols:
         for raw in manifest[c].fillna("").astype(str):
-            if not raw.strip():
-                return False
-            p = resolve_output_artifact_path(raw.strip(), output_root=output_root)
-            if not p.exists():
+            p = Path(raw.strip())
+            if not raw.strip() or not p.exists():
                 return False
     return True
 
@@ -184,7 +180,7 @@ def validate_step_outputs(step: str, output_root: Path, symbol: str, mode: str) 
         "A": [(f"stepA/{mode}/stepA_prices_train_{symbol}.csv", ("Date", "Open", "High", "Low", "Close", "Volume"))],
         "B": [(f"stepB/{mode}/stepB_pred_time_all_{symbol}.csv", ("Date",))],
         "C": [(f"stepC/{mode}/stepC_features_{symbol}.csv", ("Date",))],
-        "DPRIME": [],
+        "DPRIME": [(f"stepDprime/{mode}/stepDprime_state_test_dprime_all_features_h01_{symbol}.csv", ("Date",))],
         "E": [(f"stepE/{mode}/stepE_daily_log_dprime_all_features_h01_{symbol}.csv", ("Date",))],
         "F": [(f"stepF/{mode}/stepF_daily_log_router_{symbol}.csv", ("Date",))],
     }
@@ -194,11 +190,6 @@ def validate_step_outputs(step: str, output_root: Path, symbol: str, mode: str) 
             return False, "invalid_output_data"
     if step.upper() == "A" and not _validate_stepa_daily_manifest(Path(output_root), symbol, mode):
         return False, "invalid_output_data"
-    if step.upper() == "DPRIME":
-        d, _warnings, _legacy_read = resolve_stepdprime_root(Path(output_root), mode)
-        p = d / f"stepDprime_state_test_dprime_all_features_h01_{symbol}.csv"
-        if not _csv_valid(p, ("Date",)):
-            return False, "invalid_output_data"
     return True, "reuse"
 
 
@@ -486,7 +477,7 @@ def check_step_artifacts(
         return any(d.glob(f"*{symbol}*.csv"))
 
     if step_upper == "DPRIME":
-        d, _warnings, _legacy_read = resolve_stepdprime_root(base, mode)
+        d = base / "stepDprime" / mode
         emb = d / "embeddings"
         for profile in _OFFICIAL_STEPE_AGENTS:
             # StepDPrime success is defined by state+embedding artifacts.

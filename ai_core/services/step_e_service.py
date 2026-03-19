@@ -51,7 +51,7 @@ import torch
 
 from ai_core.utils.metrics_utils import compute_split_metrics
 from ai_core.utils.timing_logger import TimingLogger
-from ai_core.utils.pipeline_artifact_utils import resolve_stepdprime_root
+from ai_core.services.stepdprime_path_utils import resolve_stepdprime_dir, stepdprime_read_candidates
 
 
 # ---------------------------
@@ -742,41 +742,31 @@ class StepEService:
             "status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._persist_agent_manifest_state(agent=str(cfg.agent), symbol=symbol, mode=mode)
-
-    def _persist_agent_manifest_state(self, *, agent: str, symbol: str, mode: str) -> None:
-        manifest = getattr(self.app_config, "_run_manifest", None)
-        if manifest is None:
-            return
-        try:
-            from tools.run_manifest import check_stepe_agent_artifact
-        except Exception:
-            return
-        output_root = Path(getattr(self.app_config, "resolved_output_root", getattr(self.app_config, "output_root", "output")))
-        artifact_ok = check_stepe_agent_artifact(agent, output_root, symbol, mode)
-        if not artifact_ok:
-            return
-        try:
-            manifest.mark_stepe_agent(agent, "complete")
-            manifest.mark_stepe_agent_audit(agent, "PASS")
-            configured_agents = []
-            raw_cfgs = getattr(self.app_config, "stepE", None)
-            if raw_cfgs is None:
-                configured_agents = [agent]
-            elif isinstance(raw_cfgs, (list, tuple)):
-                configured_agents = [str(getattr(cfg, "agent", "") or "").strip() for cfg in raw_cfgs]
-            else:
-                configured_agents = [str(getattr(raw_cfgs, "agent", "") or "").strip()]
-            configured_agents = [name for name in configured_agents if name]
-            if configured_agents and all(check_stepe_agent_artifact(name, output_root, symbol, mode) for name in configured_agents):
-                manifest.mark_step("E", "complete")
-                manifest.mark_step_audit("E", "PASS")
-        except Exception:
-            return
 
     # -----------------------
     # Load & merge
     # -----------------------
+
+    def _stepdprime_explicit_root(self) -> Optional[str]:
+        return str(getattr(self.app_config, "stepDprime_root", "") or "").strip() or None
+
+    def _resolve_stepdprime_context(self, *, out_root: Path, mode: str) -> tuple[Path, List[str], bool, List[str]]:
+        explicit_root = self._stepdprime_explicit_root()
+        checked_roots = [str(p) for p in stepdprime_read_candidates(out_root=out_root, mode=mode)]
+        stepd_root = resolve_stepdprime_dir(out_root, mode, explicit_root=explicit_root, for_write=False)
+        warnings: List[str] = []
+        legacy_read = False
+        if explicit_root:
+            checked_roots = [str(Path(explicit_root))]
+        else:
+            canonical_root = Path(checked_roots[0])
+            legacy_root = Path(checked_roots[1])
+            if stepd_root == legacy_root and legacy_root.exists() and not canonical_root.exists():
+                warnings.append(f"legacy_read:{legacy_root}")
+                legacy_read = True
+            elif canonical_root.exists() and legacy_root.exists():
+                warnings.append(f"legacy_duplicate_detected:{legacy_root}")
+        return stepd_root, warnings, legacy_read, checked_roots
 
     def _merge_cache_key(self, cfg: StepEConfig, *, date_range, out_root: Path, mode: str, symbol: str) -> Tuple[object, ...]:
         return (
@@ -809,13 +799,14 @@ class StepEService:
         }
         if not needs_stepdprime:
             return shared_context
-        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        stepd_root, warnings, legacy_read, checked_roots = self._resolve_stepdprime_context(out_root=out_root, mode=mode)
         shared_context.update(
             {
                 "stepDprime_root": str(stepd_root),
                 "stepDprime_root_resolved": True,
                 "stepDprime_legacy_read": bool(legacy_read),
                 "stepDprime_warnings": list(dict.fromkeys(str(w) for w in warnings if str(w))),
+                "stepDprime_checked_roots": list(dict.fromkeys(str(p) for p in checked_roots if str(p))),
             }
         )
         return shared_context
@@ -899,6 +890,7 @@ class StepEService:
             used_manifest["stepDprime_root"] = str(shared_context.get("stepDprime_root", "") or "")
             used_manifest["stepDprime_legacy_read"] = bool(shared_context.get("stepDprime_legacy_read", False))
             used_manifest["warnings"] = list(dict.fromkeys([*list(used_manifest.get("warnings", []) or []), *list(shared_context.get("stepDprime_warnings", []) or [])]))
+            used_manifest["stepDprime_checked_roots"] = list(shared_context.get("stepDprime_checked_roots", []) or [])
 
         if cfg.use_dprime_state:
             df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol, shared_context=shared_context)
@@ -1041,14 +1033,17 @@ class StepEService:
         shared_context = dict(shared_context or {})
         stepd_root = Path(shared_context.get("stepDprime_root", "") or "") if shared_context.get("stepDprime_root") else None
         warnings = list(shared_context.get("stepDprime_warnings", []) or [])
+        checked_roots = list(shared_context.get("stepDprime_checked_roots", []) or [])
         if stepd_root is None:
-            stepd_root, warnings, _legacy_read = resolve_stepdprime_root(out_root, mode)
+            stepd_root, warnings, _legacy_read, checked_roots = self._resolve_stepdprime_context(out_root=out_root, mode=mode)
         for warning in warnings:
             print(f"[StepE][STEPDPRIME_WARN] {warning}")
         p_tr = stepd_root / f"stepDprime_state_train_{profile}_{symbol}.csv"
         p_te = stepd_root / f"stepDprime_state_test_{profile}_{symbol}.csv"
         if not (p_tr.exists() and p_te.exists()):
-            raise FileNotFoundError(f"Missing StepD' state CSVs: {p_tr} / {p_te}")
+            raise FileNotFoundError(
+                f"Missing StepD' state CSVs: {p_tr} / {p_te}; checked_roots={checked_roots}"
+            )
 
         df = pd.concat([pd.read_csv(p_tr), pd.read_csv(p_te)], axis=0, ignore_index=True)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
@@ -1095,16 +1090,18 @@ class StepEService:
         shared_context = dict(shared_context or {})
         stepd_root = Path(shared_context.get("stepDprime_root", "") or "") if shared_context.get("stepDprime_root") else None
         warnings = list(shared_context.get("stepDprime_warnings", []) or [])
+        checked_roots = list(shared_context.get("stepDprime_checked_roots", []) or [])
         legacy_read = bool(shared_context.get("stepDprime_legacy_read", False))
         if stepd_root is None:
-            stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+            stepd_root, warnings, legacy_read, checked_roots = self._resolve_stepdprime_context(out_root=out_root, mode=mode)
         if used_manifest is not None:
             used_manifest["stepDprime_root"] = str(stepd_root)
             used_manifest["stepDprime_legacy_read"] = bool(legacy_read)
+            used_manifest["stepDprime_checked_roots"] = list(checked_roots)
             used_manifest["warnings"] = list(dict.fromkeys([*list(used_manifest.get("warnings", []) or []), *warnings]))
         for warning in warnings:
             print(f"[StepE][STEPDPRIME_WARN] {warning}")
-        base = stepd_root / "embeddings"
+        base = resolve_stepdprime_dir(out_root, mode, explicit_root=stepd_root, for_write=False) / "embeddings"
 
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         merged: Optional[pd.DataFrame] = None
@@ -1157,7 +1154,7 @@ class StepEService:
                 ]
                 p = next((q for q in cands if q.exists()), None)
                 if p is None:
-                    raise FileNotFoundError(f"Missing StepD' embeddings: expected one of {cands[0].name} ... under {base}")
+                    raise FileNotFoundError(f"Missing StepD' embeddings: expected one of {cands[0].name} ... under {base}; checked_roots={checked_roots}")
                 sub = _read_one(p, f"{src}_{hh}")
                 merged = sub if merged is None else merged.merge(sub, on="Date", how="outer")
 

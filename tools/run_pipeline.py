@@ -65,7 +65,6 @@ from ai_core.utils.step_contract_utils import (
     validate_step_f,
 )
 from ai_core.utils.timing_logger import TimingLogger
-from ai_core.utils.pipeline_artifact_utils import normalize_output_artifact_path
 class _DateRangeShim:
     """Wrapper for DateRange that can carry extra attributes like `future_end` safely."""
 
@@ -2005,15 +2004,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _run_manifest.mark_source_output_root(str(resolved_output_root))
             except Exception:
                 pass
-            try:
-                setattr(app_config, "_run_manifest", _run_manifest)
-                setattr(app_config, "resolved_output_root", str(resolved_output_root))
-                setattr(app_config, "canonical_output_root", str(canonical_output_root))
-                setattr(app_config, "_run_manifest_symbol", str(symbol))
-                setattr(app_config, "_run_manifest_mode", str(resolved_mode))
-                setattr(app_config, "_run_manifest_reuse_output", bool(reuse_output))
-            except Exception:
-                pass
         except Exception as _e:
             print(f"[reuse] ERROR: failed to initialise run manifest: {type(_e).__name__}: {_e}", file=sys.stderr)
             try:
@@ -2056,24 +2046,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return False
 
     def _mark_step(step_key: str, status: str) -> None:
-        if _run_manifest is None:
-            return
-        try:
-            step_upper = str(step_key).upper()
-            if status in ("complete", "reuse"):
-                if step_upper == "E":
-                    _agents_for_step = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
-                    _artifacts_ready = all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _agents_for_step)
-                else:
-                    _required_reward_modes = _stepf_required_reward_modes() if step_upper == "F" else tuple()
-                    _artifacts_ready = check_step_artifacts(step_upper, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes)
-                if not _artifacts_ready:
-                    print(f"[reuse] skip mark_step step={step_upper} status={status} reason=artifacts_missing", file=sys.stderr)
-                    _run_manifest.mark_step(step_upper, "pending")
-                    return
-            _run_manifest.mark_step(step_upper, status)
-        except Exception:
-            pass
+        if _run_manifest is not None:
+            try:
+                _run_manifest.mark_step(step_key, status)
+            except Exception:
+                pass
 
     def _normalize_manifest_reuse_statuses() -> None:
         if _run_manifest is None:
@@ -2082,31 +2059,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
                 _artifact_ok = check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes)
-                _manifest_status = _run_manifest.step_status(_step)
-                if _artifact_ok:
-                    if _manifest_status not in ("complete", "reuse"):
-                        _run_manifest.mark_step(_step, "reuse" if reuse_output else "complete")
-                    _run_manifest.mark_step_audit(_step, "PASS")
-                elif _manifest_status in ("complete", "reuse"):
+                if not _artifact_ok and _run_manifest.step_status(_step) in ("complete", "reuse"):
                     _run_manifest.mark_step(_step, "pending")
-
-            _stepe_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
-            for _agent in _stepe_agents:
-                _agent_artifact_ok = check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode)
-                _agent_status = _run_manifest.stepe_agent_status(_agent)
-                if _agent_artifact_ok:
-                    if _agent_status not in ("complete", "reuse"):
-                        _run_manifest.mark_stepe_agent(_agent, "reuse" if reuse_output else "complete")
-                    _run_manifest.mark_stepe_agent_audit(_agent, "PASS")
-                elif _agent_status in ("complete", "reuse"):
+            for _agent in _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS):
+                if not check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) and _run_manifest.stepe_agent_status(_agent) in ("complete", "reuse"):
                     _run_manifest.mark_stepe_agent(_agent, "pending")
-
-            if _stepe_agents and all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
-                if _run_manifest.step_status("E") not in ("complete", "reuse"):
-                    _run_manifest.mark_step("E", "reuse" if reuse_output else "complete")
-                _run_manifest.mark_step_audit("E", "PASS")
-            elif _run_manifest.step_status("E") in ("complete", "reuse"):
-                _run_manifest.mark_step("E", "pending")
+            _stepe_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
+            if _stepe_agents and not all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
+                if _run_manifest.step_status("E") in ("complete", "reuse"):
+                    _run_manifest.mark_step("E", "pending")
         except Exception as _manifest_norm_e:
             print(f"[reuse] WARNING manifest normalization failed: {type(_manifest_norm_e).__name__}: {_manifest_norm_e}", file=sys.stderr)
 
@@ -2549,16 +2510,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         try:
                             import pandas as _pd
                             _manifest_df = _pd.read_csv(_manifest_path)
+                            _resolved_prefix = str(Path(resolved_output_root).resolve()).replace('\\', '/')
+                            _canonical_prefix = str(Path(canonical_output_root).resolve()).replace('\\', '/')
                             for _col in ("prices_path", "periodic_path", "tech_path", "features_path", "window_features_path", "periodic_future_path"):
                                 if _col in _manifest_df.columns:
-                                    _manifest_df[_col] = _manifest_df[_col].fillna("").astype(str).map(
-                                        lambda _raw: normalize_output_artifact_path(
-                                            _raw,
-                                            canonical_output_root=Path(canonical_output_root),
-                                            resolved_output_root=Path(resolved_output_root),
-                                            prefer_relative=True,
-                                        ) if str(_raw).strip() else ""
-                                    )
+                                    _manifest_df[_col] = _manifest_df[_col].fillna("").astype(str).str.replace(_resolved_prefix, _canonical_prefix, regex=False)
                             _manifest_df.to_csv(_manifest_path, index=False)
                         except Exception as _manifest_e:
                             print(f"[STEPA_VERIFY] manifest_rewrite=fail reason={type(_manifest_e).__name__}:{_manifest_e}")
@@ -2754,10 +2710,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     setattr(app_config, "_effective_output_root", str(resolved_output_root))
                     setattr(app_config, "resolved_output_root", str(resolved_output_root))
                     setattr(app_config, "canonical_output_root", str(canonical_output_root))
-                    setattr(app_config, "_run_manifest", _run_manifest)
-                    setattr(app_config, "_run_manifest_symbol", str(symbol))
-                    setattr(app_config, "_run_manifest_mode", str(resolved_mode))
-                    setattr(app_config, "_run_manifest_reuse_output", bool(reuse_output))
                 except Exception:
                     pass
                 print(f"[PIPELINE] args_output_root={args.output_root}")

@@ -1030,17 +1030,16 @@ class StepAService:
                         fut.to_csv(p_future_path, index=False)
                         p_future = str(p_future_path)
 
-                output_root = out_dir_mode.parent.parent
                 manifest_rows.append(
                     {
                         "Date": dt.strftime("%Y-%m-%d"),
                         "scope": str(scope),
-                        "prices_path": normalize_output_artifact_path(p_prices, canonical_output_root=output_root, prefer_relative=True),
-                        "periodic_path": normalize_output_artifact_path(p_periodic, canonical_output_root=output_root, prefer_relative=True),
-                        "tech_path": normalize_output_artifact_path(p_tech, canonical_output_root=output_root, prefer_relative=True),
-                        "features_path": normalize_output_artifact_path(p_combined, canonical_output_root=output_root, prefer_relative=True),
-                        "window_features_path": normalize_output_artifact_path(p_window, canonical_output_root=output_root, prefer_relative=True) if p_window else "",
-                        "periodic_future_path": normalize_output_artifact_path(p_future, canonical_output_root=output_root, prefer_relative=True) if p_future else "",
+                        "prices_path": str(p_prices),
+                        "periodic_path": str(p_periodic),
+                        "tech_path": str(p_tech),
+                        "features_path": str(p_combined),
+                        "window_features_path": p_window,
+                        "periodic_future_path": p_future,
                     }
                 )
 
