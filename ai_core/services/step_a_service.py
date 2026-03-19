@@ -65,6 +65,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
 from ai_core.utils.paths import get_repo_root
 from ai_core.utils.timing_logger import TimingLogger
 
@@ -1030,16 +1031,17 @@ class StepAService:
                         fut.to_csv(p_future_path, index=False)
                         p_future = str(p_future_path)
 
+                output_root = out_dir_mode.parents[1]
                 manifest_rows.append(
                     {
                         "Date": dt.strftime("%Y-%m-%d"),
                         "scope": str(scope),
-                        "prices_path": str(p_prices),
-                        "periodic_path": str(p_periodic),
-                        "tech_path": str(p_tech),
-                        "features_path": str(p_combined),
-                        "window_features_path": p_window,
-                        "periodic_future_path": p_future,
+                        "prices_path": normalize_output_artifact_path(p_prices, output_root=output_root),
+                        "periodic_path": normalize_output_artifact_path(p_periodic, output_root=output_root),
+                        "tech_path": normalize_output_artifact_path(p_tech, output_root=output_root),
+                        "features_path": normalize_output_artifact_path(p_combined, output_root=output_root),
+                        "window_features_path": normalize_output_artifact_path(p_window, output_root=output_root),
+                        "periodic_future_path": normalize_output_artifact_path(p_future, output_root=output_root),
                     }
                 )
 

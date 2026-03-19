@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from ai_core.utils.manifest_path_utils import resolve_output_artifact_path
+
 
 @dataclass(frozen=True)
 class StepBSignature:
@@ -220,7 +222,7 @@ def repair_stepb_daily_from_pred_path(repo_root: Path, symbol: str, mode: str, l
             expected = full_map.get(d)
             if expected is None:
                 continue
-            fpath = repo_root / pred_path.replace("/", os.sep)
+            fpath = resolve_output_artifact_path(pred_path, canonical_output_root=repo_root / "output")
             if not fpath.exists():
                 # Create minimal daily file if missing
                 daily_rows = [{
@@ -297,7 +299,7 @@ def repair_stepb_daily_from_pred_path(repo_root: Path, symbol: str, mode: str, l
             if expected20 is None:
                 skipped += 1
                 continue
-            fpath = repo_root / pred_path.replace("/", os.sep)
+            fpath = resolve_output_artifact_path(pred_path, canonical_output_root=repo_root / "output")
             if not fpath.exists():
                 skipped += 1
                 continue
@@ -370,7 +372,7 @@ def run_sanity_check(repo_root: Path, symbol: str, mode: str, report_path: Path,
             if expected is None:
                 lines.append(f"FULL {d}: SKIP (no pred_path)")
                 continue
-            fpath = repo_root / pred_path.replace("/", os.sep)
+            fpath = resolve_output_artifact_path(pred_path, canonical_output_root=repo_root / "output")
             if not fpath.exists():
                 ok = False
                 lines.append(f"FULL {d}: FAIL (missing daily file)")
@@ -408,7 +410,7 @@ def run_sanity_check(repo_root: Path, symbol: str, mode: str, report_path: Path,
             if expected is None:
                 lines.append(f"PER {d}: SKIP (no pred_path)")
                 continue
-            fpath = repo_root / pred_path.replace("/", os.sep)
+            fpath = resolve_output_artifact_path(pred_path, canonical_output_root=repo_root / "output")
             if not fpath.exists():
                 ok = False
                 lines.append(f"PER {d}: FAIL (missing daily file)")

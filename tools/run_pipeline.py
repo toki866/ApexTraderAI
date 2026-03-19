@@ -56,6 +56,7 @@ from ai_core.utils.leak_audit_utils import (
     audit_stepf_now,
     write_audit_reports,
 )
+from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
 from ai_core.utils.step_contract_utils import (
     validate_step_a,
     validate_step_b,
@@ -2510,11 +2511,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         try:
                             import pandas as _pd
                             _manifest_df = _pd.read_csv(_manifest_path)
-                            _resolved_prefix = str(Path(resolved_output_root).resolve()).replace('\\', '/')
-                            _canonical_prefix = str(Path(canonical_output_root).resolve()).replace('\\', '/')
                             for _col in ("prices_path", "periodic_path", "tech_path", "features_path", "window_features_path", "periodic_future_path"):
                                 if _col in _manifest_df.columns:
-                                    _manifest_df[_col] = _manifest_df[_col].fillna("").astype(str).str.replace(_resolved_prefix, _canonical_prefix, regex=False)
+                                    _manifest_df[_col] = _manifest_df[_col].fillna("").astype(str).map(
+                                        lambda _raw: normalize_output_artifact_path(_raw, output_root=Path(canonical_output_root))
+                                    )
                             _manifest_df.to_csv(_manifest_path, index=False)
                         except Exception as _manifest_e:
                             print(f"[STEPA_VERIFY] manifest_rewrite=fail reason={type(_manifest_e).__name__}:{_manifest_e}")

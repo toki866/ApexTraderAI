@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from contextlib import nullcontext
 from pathlib import Path
 
-from ai_core.utils.paths import resolve_repo_path
+from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
 from typing import Any, Dict, List, Tuple, Optional
 
 import json
@@ -1091,7 +1091,7 @@ def run_mamba_multi_model_by_horizon(
                 dates_ext.extend([pd.Timestamp(x) for x in ext])
                 last_known = dates_ext[-1].normalize()
 
-            row: Dict[str, Any] = {"Date": ds_n.strftime("%Y-%m-%d"), "agent": out_tag, "stepA_features_path": str(fp).replace("\\", "/")}
+            row: Dict[str, Any] = {"Date": ds_n.strftime("%Y-%m-%d"), "agent": out_tag, "stepA_features_path": normalize_output_artifact_path(fp, output_root=out_root)}
             # per horizon daily file
             for H in horizons:
                 model = _load_horizon_model(H, input_dim=Xw.shape[1])
@@ -1116,7 +1116,7 @@ def run_mamba_multi_model_by_horizon(
                         "Close_anchor": anchor_close,
                         "mode": mode,
                         "symbol": sym,
-                        "stepA_features_path": str(fp).replace("\\", "/"),
+                        "stepA_features_path": normalize_output_artifact_path(fp, output_root=out_root),
                         "step_ahead_bdays": int(step),
                         "Date_target": pd.Timestamp(tgt).strftime("%Y-%m-%d"),
                         "Pred_y_from_anchor": pred_y,
@@ -1130,7 +1130,7 @@ def run_mamba_multi_model_by_horizon(
                 snap_path = daily_dir / snap_name
                 pd.DataFrame(rows).to_csv(snap_path, index=False, encoding="utf-8-sig")
 
-                pred_rel = str(resolve_repo_path("output") / "stepB" / mode / daily_dirname / snap_name).replace("\\", "/")
+                pred_rel = normalize_output_artifact_path(snap_path, output_root=out_root)
                 row[f"pred_path_h{H:02d}"] = pred_rel
 
             manifest_rows.append(row)
