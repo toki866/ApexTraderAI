@@ -126,6 +126,8 @@ class StepFService:
         "profit_regret",
         "profit_light_risk",
     )
+    PLACEHOLDER_WARN_RATIO = 0.0
+    PLACEHOLDER_FAIL_RATIO = 0.5
 
     def __init__(self, app_config):
         self.app_config = app_config
@@ -506,8 +508,20 @@ class StepFService:
         return match.group(1).strip("_") or None
 
     @staticmethod
-    def _ensure_daily_audit_columns(daily: pd.DataFrame, *, agents: List[str], source_device: str, selected_expert_definition: str) -> pd.DataFrame:
+    def _ensure_daily_audit_columns(daily: pd.DataFrame, *, agents: List[str], source_device: str, selected_expert_definition: str) -> Tuple[pd.DataFrame, Dict[str, object]]:
         out = daily.copy()
+        row_count = int(len(out))
+        safe_row_count = max(row_count, 1)
+        placeholder_counts: Dict[str, int] = {
+            "selected_expert_placeholder_count": 0,
+            "source_device_placeholder_count": 0,
+            "mixture_weight_placeholder_count": 0,
+            "input_feature_summary_placeholder_count": 0,
+            "has_regime_placeholder_count": 0,
+            "has_cluster_placeholder_count": 0,
+            "has_past_block_placeholder_count": 0,
+            "has_pred_block_placeholder_count": 0,
+        }
 
         if "Date" in out.columns and "date" not in out.columns:
             out["date"] = out["Date"]
@@ -517,8 +531,10 @@ class StepFService:
             out["realized_ret"] = out["ret"]
         if "selected_expert" not in out.columns:
             out["selected_expert"] = ""
+            placeholder_counts["selected_expert_placeholder_count"] = row_count
         if "source_device" not in out.columns:
             out["source_device"] = source_device
+            placeholder_counts["source_device_placeholder_count"] = row_count
         if "mixture_weights_json" not in out.columns:
             weight_payload = []
             for _, row in out.iterrows():
@@ -541,9 +557,11 @@ class StepFService:
                     out[col] = pd.to_numeric(out[f"w_{agent}"], errors="coerce").fillna(0.0)
                 else:
                     out[col] = 0.0
+                placeholder_counts["mixture_weight_placeholder_count"] += row_count
 
         if "input_feature_summary" not in out.columns:
             out["input_feature_summary"] = "{}"
+            placeholder_counts["input_feature_summary_placeholder_count"] = row_count
         if "input_feature_count" not in out.columns:
             out["input_feature_count"] = 0
         if "nonzero_feature_count" not in out.columns:
@@ -552,18 +570,67 @@ class StepFService:
         if "has_regime" not in out.columns:
             src = "input_has_regime" if "input_has_regime" in out.columns else None
             out["has_regime"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+            placeholder_counts["has_regime_placeholder_count"] = row_count
         if "has_cluster" not in out.columns:
             src = "input_has_cluster" if "input_has_cluster" in out.columns else None
             out["has_cluster"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+            placeholder_counts["has_cluster_placeholder_count"] = row_count
         if "has_past_block" not in out.columns:
             src = "input_has_past_block" if "input_has_past_block" in out.columns else None
             out["has_past_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+            placeholder_counts["has_past_block_placeholder_count"] = row_count
         if "has_pred_block" not in out.columns:
             src = "input_has_pred_block" if "input_has_pred_block" in out.columns else None
             out["has_pred_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
+            placeholder_counts["has_pred_block_placeholder_count"] = row_count
 
         out["selected_expert_definition"] = selected_expert_definition
-        return out
+        mixture_denominator = max(row_count * max(len(agents), 1), 1)
+        placeholder_metrics: Dict[str, object] = {
+            **placeholder_counts,
+            "selected_expert_placeholder_ratio": float(placeholder_counts["selected_expert_placeholder_count"] / safe_row_count),
+            "source_device_placeholder_ratio": float(placeholder_counts["source_device_placeholder_count"] / safe_row_count),
+            "mixture_weight_placeholder_ratio": float(placeholder_counts["mixture_weight_placeholder_count"] / mixture_denominator),
+            "input_feature_summary_placeholder_ratio": float(placeholder_counts["input_feature_summary_placeholder_count"] / safe_row_count),
+            "has_regime_placeholder_ratio": float(placeholder_counts["has_regime_placeholder_count"] / safe_row_count),
+            "has_cluster_placeholder_ratio": float(placeholder_counts["has_cluster_placeholder_count"] / safe_row_count),
+            "has_past_block_placeholder_ratio": float(placeholder_counts["has_past_block_placeholder_count"] / safe_row_count),
+            "has_pred_block_placeholder_ratio": float(placeholder_counts["has_pred_block_placeholder_count"] / safe_row_count),
+            "daily_audit_row_count": row_count,
+        }
+        return out, placeholder_metrics
+
+    def _evaluate_placeholder_audit(self, placeholder_metrics: Dict[str, object], cfg: StepFRouterConfig) -> Dict[str, object]:
+        warn_ratio = float(getattr(cfg, "placeholder_warn_ratio", self.PLACEHOLDER_WARN_RATIO) or self.PLACEHOLDER_WARN_RATIO)
+        fail_ratio = float(getattr(cfg, "placeholder_fail_ratio", self.PLACEHOLDER_FAIL_RATIO) or self.PLACEHOLDER_FAIL_RATIO)
+        ratio_fields = [
+            "selected_expert_placeholder_ratio",
+            "source_device_placeholder_ratio",
+            "mixture_weight_placeholder_ratio",
+            "input_feature_summary_placeholder_ratio",
+            "has_regime_placeholder_ratio",
+            "has_cluster_placeholder_ratio",
+            "has_past_block_placeholder_ratio",
+            "has_pred_block_placeholder_ratio",
+        ]
+        max_ratio = max(float(placeholder_metrics.get(field, 0.0) or 0.0) for field in ratio_fields) if ratio_fields else 0.0
+        reasons = [
+            f"{field}={float(placeholder_metrics.get(field, 0.0) or 0.0):.3f}"
+            for field in ratio_fields
+            if float(placeholder_metrics.get(field, 0.0) or 0.0) > warn_ratio
+        ]
+        audit_status = "PASS"
+        if max_ratio > fail_ratio:
+            audit_status = "FAIL"
+        elif reasons:
+            audit_status = "WARN"
+        return {
+            "audit_status": audit_status,
+            "placeholder_warn_ratio_threshold": warn_ratio,
+            "placeholder_fail_ratio_threshold": fail_ratio,
+            "placeholder_max_ratio": max_ratio,
+            "placeholder_status_reason": ";".join(reasons),
+        }
 
     def _resolve_agents(self, out_root: Path, input_mode: str, symbol: str, requested_agents_raw: object) -> Tuple[List[str], List[Path], List[str], Path]:
         candidate_roots = self._resolve_step_e_root_candidates(out_root=out_root, input_mode=input_mode)
@@ -774,12 +841,13 @@ class StepFService:
 
             with timing.stage("stepF.write_outputs", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}):
                 cluster_diag = getattr(self, "_last_cluster_diag", {}) or {}
-                daily = self._ensure_daily_audit_columns(
+                daily, placeholder_metrics = self._ensure_daily_audit_columns(
                     daily,
                     agents=agents,
                     source_device=actual_device_name,
                     selected_expert_definition=selected_expert_definition,
                 )
+                placeholder_audit = self._evaluate_placeholder_audit(placeholder_metrics, cfg)
                 daily["device_requested"] = str(getattr(cfg, "device", "auto"))
                 daily["device_execution"] = actual_device_name
                 daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")
@@ -871,6 +939,8 @@ class StepFService:
                         "stable_regime_count": int(cluster_diag.get("stable_regime_count", 0) or 0),
                         "cluster_main_source": cluster_diag.get("cluster_main_source", "stable"),
                         "rare_flag_raw20_count": int(cluster_diag.get("rare_flag_raw20_count", 0) or 0),
+                        **placeholder_metrics,
+                        **placeholder_audit,
                     }
                 )
                 policy_compare = self._build_policy_compare_audit(daily=daily, merged=merged, agents=agents)
@@ -930,6 +1000,8 @@ class StepFService:
                     "all_zero_input_detected": bool(policy_compare["all_zero_input_detected"]),
                     "constant_output_detected": bool(policy_compare["constant_output_detected"]),
                     "policy_compare": policy_compare["summary"],
+                    **placeholder_metrics,
+                    **placeholder_audit,
                 }
                 if persist_primary_outputs:
                     stepf_audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -38,6 +38,7 @@ Notes
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -150,6 +151,8 @@ class StepEService:
           - stepE (list[StepEConfig])
         """
         self.app_config = app_config
+        self._merge_cache: Dict[Tuple[object, ...], tuple[pd.DataFrame, dict[str, object]]] = {}
+        self._merge_cache_lock = threading.Lock()
 
     def _timing(self) -> TimingLogger:
         t = getattr(self.app_config, "_timing_logger", None)
@@ -237,7 +240,17 @@ class StepEService:
         resolved_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
         if resolved_mode in {"ops", "prod", "production", "real"}:
             resolved_mode = "live"
-        self._run_one(cfg, date_range=date_range, symbol=symbol, mode=resolved_mode)
+        self._run_one(
+            cfg,
+            date_range=date_range,
+            symbol=symbol,
+            mode=resolved_mode,
+            execution_context={
+                "requested_parallel_agents": int(getattr(cfg, "max_parallel_agents", 1) or 1),
+                "effective_parallel_agents": 1,
+                "parallelism_warning": "",
+            },
+        )
         return {"agent": str(cfg.agent), "status": "done", "mode": resolved_mode, "symbol": symbol}
 
     def run(self, date_range, symbol: str, agents: Optional[List[str]] = None, mode: Optional[str] = None):
@@ -266,28 +279,48 @@ class StepEService:
                     "mode": mode,
                 }
 
+            requested_parallel_agents = max(int(getattr(cfg, "max_parallel_agents", 1) or 1) for cfg in cfgs)
             max_parallel_agents = min(
                 2,
-                max(1, max(int(getattr(cfg, "max_parallel_agents", 1) or 1) for cfg in cfgs)),
+                max(1, requested_parallel_agents),
             )
-            if max_parallel_agents < max(int(getattr(cfg, "max_parallel_agents", 1) or 1) for cfg in cfgs):
+            parallelism_warnings: List[str] = []
+            if max_parallel_agents < requested_parallel_agents:
+                warning = "max_parallel_agents_capped_at_2_for_safety"
+                parallelism_warnings.append(warning)
                 print("[StepE][PARALLEL_WARN] max_parallel_agents capped at 2 for safety.")
 
             requested_devices = [str(getattr(cfg, "device", "auto") or "auto") for cfg in cfgs]
             if max_parallel_agents > 1 and any(dev.startswith("cuda") or dev == "auto" for dev in requested_devices):
+                warning = "cuda_parallel_agents_gt_1_may_oversubscribe_gpu"
+                parallelism_warnings.append(warning)
                 print(
                     "[StepE][PARALLEL_WARN] max_parallel_agents>1 may oversubscribe a single GPU. "
                     "Keep StepE parallelism conservative on CUDA runs."
                 )
 
+            effective_parallel_agents = min(max_parallel_agents, len(cfgs))
+            parallelism_warning = ";".join(dict.fromkeys(parallelism_warnings))
+            run_context = {
+                "requested_parallel_agents": int(requested_parallel_agents),
+                "max_parallel_agents": int(max_parallel_agents),
+                "effective_parallel_agents": int(effective_parallel_agents),
+                "parallelism_warning": parallelism_warning,
+            }
+            print(
+                f"[StepE][PARALLEL] requested_parallel_agents={requested_parallel_agents} "
+                f"effective_parallel_agents={effective_parallel_agents} "
+                f"parallelism_warning={(parallelism_warning or '(none)')}"
+            )
+
             if max_parallel_agents == 1 or len(cfgs) == 1:
                 for cfg in cfgs:
-                    self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode)
+                    self._run_one(cfg, date_range=date_range, symbol=symbol, mode=mode, execution_context=run_context)
             else:
                 print(f"[StepE] running {len(cfgs)} agents with max_parallel_agents={max_parallel_agents}")
                 with ThreadPoolExecutor(max_workers=max_parallel_agents, thread_name_prefix="stepE-agent") as executor:
                     futures = [
-                        executor.submit(self._run_one, cfg, date_range=date_range, symbol=symbol, mode=mode)
+                        executor.submit(self._run_one, cfg, date_range=date_range, symbol=symbol, mode=mode, execution_context=run_context)
                         for cfg in cfgs
                     ]
                     done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
@@ -304,15 +337,19 @@ class StepEService:
                 "configs_run": len(cfgs),
                 "symbol": symbol,
                 "mode": mode,
+                "requested_parallel_agents": requested_parallel_agents,
                 "max_parallel_agents": max_parallel_agents,
+                "effective_parallel_agents": effective_parallel_agents,
+                "parallelism_warning": parallelism_warning,
             }
 
     # -----------------------
     # Main per-agent run
     # -----------------------
 
-    def _run_one(self, cfg: StepEConfig, date_range, symbol: str, mode: str) -> None:
+    def _run_one(self, cfg: StepEConfig, date_range, symbol: str, mode: str, execution_context: Optional[Dict[str, object]] = None) -> None:
         timing = self._timing()
+        execution_context = dict(execution_context or {})
         with timing.stage("stepE.agent.total", agent_id=str(cfg.agent), meta={"stage_group": "stepE_agent", "mode": str(mode), "agent_kind": "expert", "expert_name": str(cfg.agent)}):
             out_root = Path(cfg.output_root or getattr(self.app_config, "output_root", "output"))
             out_dir = out_root / "stepE" / mode
@@ -339,7 +376,13 @@ class StepEService:
 
         # Load & merge inputs (train+test)
         with timing.stage("stepE.agent.merge_inputs", agent_id=str(cfg.agent), meta={"agent_kind": "expert", "expert_name": str(cfg.agent)}):
-            df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            df_all, used_manifest, merge_cache_info = self._get_shared_merge_inputs(
+                cfg,
+                date_range=date_range,
+                out_root=out_root,
+                mode=mode,
+                symbol=symbol,
+            )
 
         # Split bounds
         train_start = pd.to_datetime(getattr(date_range, "train_start"))
@@ -444,6 +487,8 @@ class StepEService:
                 device_warnings=device_warnings,
                 resolved_device_name=actual_device_name,
                 feature_summary=feature_summary,
+                execution_context=execution_context,
+                merge_cache_info=merge_cache_info,
             )
         timing.emit("stepE.agent.eval_and_save", elapsed_ms=0.0, agent_id=str(cfg.agent), meta={"policy": "ppo", "agent_kind": "expert", "expert_name": str(cfg.agent)})
 
@@ -476,6 +521,8 @@ class StepEService:
         device_warnings: List[str],
         resolved_device_name: str,
         feature_summary: Dict[str, object],
+        execution_context: Dict[str, object],
+        merge_cache_info: Dict[str, object],
     ) -> None:
         try:
             from stable_baselines3 import PPO
@@ -593,6 +640,9 @@ class StepEService:
         df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
         df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
         df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
+        df_log["effective_parallel_agents"] = int(execution_context.get("effective_parallel_agents", 1) or 1)
+        df_log["parallelism_warning"] = str(execution_context.get("parallelism_warning", "") or "")
+        df_log["merge_inputs_cache_hit"] = bool(merge_cache_info.get("merge_cache_hit", False))
         df_log["Position"] = df_log["pos"]
         df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
 
@@ -639,6 +689,11 @@ class StepEService:
             "degraded": bool(used_manifest.get("degraded", False)),
             "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
             "stepdprime_legacy_read": bool(used_manifest.get("stepDprime_legacy_read", False)),
+            "requested_parallel_agents": int(execution_context.get("requested_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
+            "effective_parallel_agents": int(execution_context.get("effective_parallel_agents", 1) or 1),
+            "parallelism_warning": str(execution_context.get("parallelism_warning", "") or ""),
+            "merge_inputs_cache_hit": bool(merge_cache_info.get("merge_cache_hit", False)),
+            "merge_cache_key": str(merge_cache_info.get("merge_cache_key", "") or ""),
         }
         summ_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -671,6 +726,11 @@ class StepEService:
             "all_zero_input_detected": bool(np.all(np.abs(X_train_s) < 1e-12)),
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
+            "requested_parallel_agents": int(execution_context.get("requested_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
+            "effective_parallel_agents": int(execution_context.get("effective_parallel_agents", 1) or 1),
+            "parallelism_warning": str(execution_context.get("parallelism_warning", "") or ""),
+            "merge_inputs_cache_hit": bool(merge_cache_info.get("merge_cache_hit", False)),
+            "merge_cache_key": str(merge_cache_info.get("merge_cache_key", "") or ""),
             "status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -678,6 +738,58 @@ class StepEService:
     # -----------------------
     # Load & merge
     # -----------------------
+
+    def _merge_cache_key(self, cfg: StepEConfig, *, date_range, out_root: Path, mode: str, symbol: str) -> Tuple[object, ...]:
+        return (
+            str(out_root.resolve()),
+            str(mode),
+            str(symbol),
+            str(pd.to_datetime(getattr(date_range, "train_start")).date()),
+            str(pd.to_datetime(getattr(date_range, "train_end")).date()),
+            str(pd.to_datetime(getattr(date_range, "test_start")).date()),
+            str(pd.to_datetime(getattr(date_range, "test_end")).date()),
+            bool(getattr(cfg, "use_dprime_state", False)),
+            bool(getattr(cfg, "use_stepd_prime", False)),
+            str(getattr(cfg, "dprime_state_variant", "") or ""),
+            str(getattr(cfg, "dprime_profile", "") or ""),
+            str(getattr(cfg, "dprime_sources", "") or ""),
+            str(getattr(cfg, "dprime_horizons", "") or ""),
+            str(getattr(cfg, "dprime_join", "") or ""),
+            bool(getattr(cfg, "pair_trade", True)),
+            str(getattr(cfg, "long_symbol", "SOXL") or "SOXL"),
+            str(getattr(cfg, "short_symbol", "SOXS") or "SOXS"),
+        )
+
+    def _get_shared_merge_inputs(
+        self,
+        cfg: StepEConfig,
+        *,
+        date_range,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+    ) -> tuple[pd.DataFrame, dict[str, object], Dict[str, object]]:
+        cache_key = self._merge_cache_key(cfg, date_range=date_range, out_root=out_root, mode=mode, symbol=symbol)
+        with self._merge_cache_lock:
+            cached = self._merge_cache.get(cache_key)
+        cache_hit = cached is not None
+        if cached is None:
+            df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            with self._merge_cache_lock:
+                cached = self._merge_cache.get(cache_key)
+                if cached is None:
+                    cached = (df_all, used_manifest)
+                    self._merge_cache[cache_key] = cached
+        cache_info = {
+            "merge_cache_hit": bool(cache_hit),
+            "merge_cache_key": "|".join(str(part) for part in cache_key),
+        }
+        print(
+            f"[StepE][MERGE_CACHE] agent={cfg.agent} cache_hit={str(cache_hit).lower()} "
+            f"mode={mode} symbol={symbol}"
+        )
+        shared_df_all, shared_manifest = cached
+        return shared_df_all.copy(deep=False), dict(shared_manifest), cache_info
 
     def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)

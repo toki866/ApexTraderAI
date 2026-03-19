@@ -150,6 +150,7 @@ The tree below was generated from the current repository state (depth-limited).
 - `DPRIME` is the **StepD superior version** and independently performs chart-compression (Phase2) plus RL state generation.
 - Internal responsibility separation for DPRIME is tracked in `specs/stepA_stepF_responsibility_reorg_ja.md` as **DPrimeCluster (cluster-only state)** and **DPrimeRL (RL input state)** while keeping external workflow/CLI compatibility on the single `DPRIME` step name.
 - `StepE` consumes `DPRIME` state as its primary observation input (plus embeddings when required by the selected policy/model mode), and the standard pipeline now treats StepE as PPO-only.
+- StepE agent parallelism remains operator-controlled (`--stepE-max-parallel-agents`, capped at 2). Recommended values are `sim=2` and `live=1` first, raising live to `2` only after confirming device headroom. Effective parallelism and warnings should be inspected in StepE summary/audit outputs.
 - There are two distinct "3-month" windows:
   1. Fixed-length compression window in `DPRIME`/Phase2
   2. Lookback observation window in `StepB`
