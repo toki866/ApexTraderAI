@@ -531,10 +531,14 @@ class StepFService:
             out["realized_ret"] = out["ret"]
         if "selected_expert" not in out.columns:
             out["selected_expert"] = ""
-            placeholder_counts["selected_expert_placeholder_count"] = row_count
+        selected_expert_missing = out["selected_expert"].isna() | (out["selected_expert"].astype(str).str.strip() == "")
+        placeholder_counts["selected_expert_placeholder_count"] = int(selected_expert_missing.sum())
+        out.loc[selected_expert_missing, "selected_expert"] = ""
         if "source_device" not in out.columns:
             out["source_device"] = source_device
-            placeholder_counts["source_device_placeholder_count"] = row_count
+        source_device_missing = out["source_device"].isna() | (out["source_device"].astype(str).str.strip() == "")
+        placeholder_counts["source_device_placeholder_count"] = int(source_device_missing.sum())
+        out.loc[source_device_missing, "source_device"] = source_device
         if "mixture_weights_json" not in out.columns:
             weight_payload = []
             for _, row in out.iterrows():
@@ -554,14 +558,18 @@ class StepFService:
             col = f"mixture_weight_{agent}"
             if col not in out.columns:
                 if f"w_{agent}" in out.columns:
-                    out[col] = pd.to_numeric(out[f"w_{agent}"], errors="coerce").fillna(0.0)
+                    out[col] = pd.to_numeric(out[f"w_{agent}"], errors="coerce")
                 else:
-                    out[col] = 0.0
-                placeholder_counts["mixture_weight_placeholder_count"] += row_count
+                    out[col] = np.nan
+            missing_mask = pd.to_numeric(out[col], errors="coerce").isna()
+            placeholder_counts["mixture_weight_placeholder_count"] += int(missing_mask.sum())
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
 
         if "input_feature_summary" not in out.columns:
             out["input_feature_summary"] = "{}"
-            placeholder_counts["input_feature_summary_placeholder_count"] = row_count
+        input_feature_summary_missing = out["input_feature_summary"].isna() | (out["input_feature_summary"].astype(str).str.strip() == "")
+        placeholder_counts["input_feature_summary_placeholder_count"] = int(input_feature_summary_missing.sum())
+        out.loc[input_feature_summary_missing, "input_feature_summary"] = "{}"
         if "input_feature_count" not in out.columns:
             out["input_feature_count"] = 0
         if "nonzero_feature_count" not in out.columns:
@@ -569,20 +577,28 @@ class StepFService:
             out["nonzero_feature_count"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
         if "has_regime" not in out.columns:
             src = "input_has_regime" if "input_has_regime" in out.columns else None
-            out["has_regime"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
-            placeholder_counts["has_regime_placeholder_count"] = row_count
+            out["has_regime"] = pd.to_numeric(out[src], errors="coerce") if src else np.nan
+        has_regime_missing = pd.to_numeric(out["has_regime"], errors="coerce").isna()
+        placeholder_counts["has_regime_placeholder_count"] = int(has_regime_missing.sum())
+        out["has_regime"] = pd.to_numeric(out["has_regime"], errors="coerce").fillna(0).astype(int)
         if "has_cluster" not in out.columns:
             src = "input_has_cluster" if "input_has_cluster" in out.columns else None
-            out["has_cluster"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
-            placeholder_counts["has_cluster_placeholder_count"] = row_count
+            out["has_cluster"] = pd.to_numeric(out[src], errors="coerce") if src else np.nan
+        has_cluster_missing = pd.to_numeric(out["has_cluster"], errors="coerce").isna()
+        placeholder_counts["has_cluster_placeholder_count"] = int(has_cluster_missing.sum())
+        out["has_cluster"] = pd.to_numeric(out["has_cluster"], errors="coerce").fillna(0).astype(int)
         if "has_past_block" not in out.columns:
             src = "input_has_past_block" if "input_has_past_block" in out.columns else None
-            out["has_past_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
-            placeholder_counts["has_past_block_placeholder_count"] = row_count
+            out["has_past_block"] = pd.to_numeric(out[src], errors="coerce") if src else np.nan
+        has_past_block_missing = pd.to_numeric(out["has_past_block"], errors="coerce").isna()
+        placeholder_counts["has_past_block_placeholder_count"] = int(has_past_block_missing.sum())
+        out["has_past_block"] = pd.to_numeric(out["has_past_block"], errors="coerce").fillna(0).astype(int)
         if "has_pred_block" not in out.columns:
             src = "input_has_pred_block" if "input_has_pred_block" in out.columns else None
-            out["has_pred_block"] = pd.to_numeric(out[src], errors="coerce").fillna(0).astype(int) if src else 0
-            placeholder_counts["has_pred_block_placeholder_count"] = row_count
+            out["has_pred_block"] = pd.to_numeric(out[src], errors="coerce") if src else np.nan
+        has_pred_block_missing = pd.to_numeric(out["has_pred_block"], errors="coerce").isna()
+        placeholder_counts["has_pred_block_placeholder_count"] = int(has_pred_block_missing.sum())
+        out["has_pred_block"] = pd.to_numeric(out["has_pred_block"], errors="coerce").fillna(0).astype(int)
 
         out["selected_expert_definition"] = selected_expert_definition
         mixture_denominator = max(row_count * max(len(agents), 1), 1)
@@ -596,6 +612,19 @@ class StepFService:
             "has_cluster_placeholder_ratio": float(placeholder_counts["has_cluster_placeholder_count"] / safe_row_count),
             "has_past_block_placeholder_ratio": float(placeholder_counts["has_past_block_placeholder_count"] / safe_row_count),
             "has_pred_block_placeholder_ratio": float(placeholder_counts["has_pred_block_placeholder_count"] / safe_row_count),
+            "placeholder_total_count": int(sum(placeholder_counts.values())),
+            "placeholder_any_detected": bool(any(int(v) > 0 for v in placeholder_counts.values())),
+            "placeholder_count_columns": sorted(list(placeholder_counts.keys())),
+            "placeholder_ratio_columns": [
+                "selected_expert_placeholder_ratio",
+                "source_device_placeholder_ratio",
+                "mixture_weight_placeholder_ratio",
+                "input_feature_summary_placeholder_ratio",
+                "has_regime_placeholder_ratio",
+                "has_cluster_placeholder_ratio",
+                "has_past_block_placeholder_ratio",
+                "has_pred_block_placeholder_ratio",
+            ],
             "daily_audit_row_count": row_count,
         }
         return out, placeholder_metrics
@@ -614,21 +643,33 @@ class StepFService:
             "has_pred_block_placeholder_ratio",
         ]
         max_ratio = max(float(placeholder_metrics.get(field, 0.0) or 0.0) for field in ratio_fields) if ratio_fields else 0.0
-        reasons = [
-            f"{field}={float(placeholder_metrics.get(field, 0.0) or 0.0):.3f}"
+        warn_fields = [
+            field
             for field in ratio_fields
             if float(placeholder_metrics.get(field, 0.0) or 0.0) > warn_ratio
         ]
+        fail_fields = [
+            field
+            for field in ratio_fields
+            if float(placeholder_metrics.get(field, 0.0) or 0.0) > fail_ratio
+        ]
+        reasons = [
+            f"{field}={float(placeholder_metrics.get(field, 0.0) or 0.0):.3f}"
+            for field in warn_fields
+        ]
         audit_status = "PASS"
-        if max_ratio > fail_ratio:
+        if fail_fields:
             audit_status = "FAIL"
-        elif reasons:
+        elif warn_fields:
             audit_status = "WARN"
         return {
             "audit_status": audit_status,
+            "status": audit_status,
             "placeholder_warn_ratio_threshold": warn_ratio,
             "placeholder_fail_ratio_threshold": fail_ratio,
             "placeholder_max_ratio": max_ratio,
+            "placeholder_warn_fields": warn_fields,
+            "placeholder_fail_fields": fail_fields,
             "placeholder_status_reason": ";".join(reasons),
         }
 
@@ -848,6 +889,12 @@ class StepFService:
                     selected_expert_definition=selected_expert_definition,
                 )
                 placeholder_audit = self._evaluate_placeholder_audit(placeholder_metrics, cfg)
+                if placeholder_audit.get("audit_status") in {"WARN", "FAIL"}:
+                    print(
+                        "[StepF][PLACEHOLDER_AUDIT] "
+                        f"status={placeholder_audit.get('audit_status')} "
+                        f"reason={placeholder_audit.get('placeholder_status_reason', '') or '(none)'}"
+                    )
                 daily["device_requested"] = str(getattr(cfg, "device", "auto"))
                 daily["device_execution"] = actual_device_name
                 daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")

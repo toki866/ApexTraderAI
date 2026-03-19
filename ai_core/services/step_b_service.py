@@ -150,6 +150,15 @@ class StepBService:
         if cpu_fallback_variants and len(cpu_fallback_variants) != len(execution_variants):
             mismatch_reasons.append(f"partial_cpu_fallback:{','.join(cpu_fallback_variants)}")
 
+        consistency_ok = (
+            _is_consistent(execution_variants)
+            and _is_consistent(model_variants)
+            and _is_consistent(tensor_variants)
+        )
+        consistency_status = "PASS" if consistency_ok else "WARN"
+        if cpu_fallback_variants and len(cpu_fallback_variants) == len(execution_variants):
+            consistency_status = "PASS"
+
         summary["device_execution_variants"] = execution_variants
         summary["device_execution_consistent"] = _is_consistent(execution_variants)
         summary["device_model_device_variants"] = model_variants
@@ -158,6 +167,19 @@ class StepBService:
         summary["device_tensor_device_consistent"] = _is_consistent(tensor_variants)
         summary["device_execution_cpu_fallback_variants"] = cpu_fallback_variants
         summary["device_mismatch_reason"] = ";".join(mismatch_reasons)
+        summary["device_consistency_status"] = consistency_status
+        summary["device_consistency_summary"] = {
+            "full": {
+                "execution": execution_variants.get("full", ""),
+                "model_device": model_variants.get("full", ""),
+                "tensor_device": tensor_variants.get("full", ""),
+            },
+            "periodic": {
+                "execution": execution_variants.get("periodic", ""),
+                "model_device": model_variants.get("periodic", ""),
+                "tensor_device": tensor_variants.get("periodic", ""),
+            },
+        }
         if not summary.get("device_execution_verified", False) and not summary.get("device_fallback_reason"):
             summary["device_fallback_reason"] = "device_execution_not_verified"
         return summary
@@ -675,6 +697,12 @@ class StepBService:
                 },
             }
             summary.update(self._device_evidence(("full", full_res), ("periodic", periodic_res)))
+            if str(summary.get("device_consistency_status", "PASS")).upper() != "PASS":
+                print(
+                    "[StepB][DEVICE_AUDIT] "
+                    f"status={summary.get('device_consistency_status')} "
+                    f"reason={summary.get('device_mismatch_reason', '') or '(none)'}"
+                )
             (stepb_dir / f"stepB_summary_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
             audit_dir = self._out_root() / "audit" / run_mode
             audit_dir.mkdir(parents=True, exist_ok=True)

@@ -30,7 +30,8 @@ python tools/run_pipeline.py --symbol SOXL --steps E --stepE-ppo-total-timesteps
 ```
 
 - 推奨運用値は **sim=2 / live=1** です。live で `2` を使うのは GPU/CPU 余力を確認した後にしてください。
-- 実行時は StepE summary / audit / log に `effective_parallel_agents` と `parallelism_warning` が残るため、実際に有効化された並列数を追跡できます。
+- 実行時は StepE summary / audit / log に `requested_parallel_agents` / `max_parallel_agents` / `effective_parallel_agents` / `parallelism_warning` が残るため、実際に有効化された並列数を追跡できます。
+- 同一 run 内で複数 agent を回す場合、StepE は merge 済み入力を共有し、summary / audit / log に `merge_inputs_cache_hit` と `merge_cache_key` を残します。
 
 - 既存の `run_*.py` は後方互換ラッパで、内部的に同じパイプライン実行に委譲します。
 - 相対パス（`config/`, `data/`, `output/`）はリポジトリルート基準で解決されるため、実行時 CWD に依存しません。
