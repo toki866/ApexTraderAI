@@ -58,6 +58,18 @@ import numpy as np
 import pandas as pd
 
 try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    _TORCH_IMPORT_ERROR = ""
+except Exception as _torch_exc:
+    torch = None  # type: ignore[assignment]
+    nn = None  # type: ignore[assignment]
+    DataLoader = None  # type: ignore[assignment]
+    TensorDataset = None  # type: ignore[assignment]
+    _TORCH_IMPORT_ERROR = f"{type(_torch_exc).__name__}: {_torch_exc}"
+
+try:
     from mamba_ssm import Mamba as _MambaSSM  # type: ignore
     _MAMBA_SSM_AVAILABLE = True
 except Exception:
@@ -159,19 +171,16 @@ def _zscore_1d(x: np.ndarray) -> np.ndarray:
 
 
 def _require_torch() -> None:
-    try:
-        import torch  # noqa: F401
-        import torch.nn as nn  # noqa: F401
-        from torch.utils.data import DataLoader, TensorDataset  # noqa: F401
-    except Exception as e:
+    if torch is None or nn is None or DataLoader is None or TensorDataset is None:
+        detail = _TORCH_IMPORT_ERROR or "torch import returned None"
         raise StepBFailure(
             fail_reason="missing_torch",
             message=(
                 "PyTorch import failed. StepB(Mamba) requires torch. "
-                f"Original error: {e}"
+                f"Original error: {detail}"
             ),
-            payload={"dependency": "torch"},
-        ) from e
+            payload={"dependency": "torch", "torch_import_error": detail},
+        )
 
 
 def _require_mamba_ssm() -> None:
@@ -217,17 +226,15 @@ def _dependency_status() -> Dict[str, Any]:
         "pywt": {"available": False, "version": "", "error": ""},
         "mamba_ssm": {"available": False, "version": "", "error": ""},
     }
-    try:
-        import torch  # type: ignore
-
+    if torch is not None:
         status["torch"] = {
             "available": True,
             "version": str(getattr(torch, "__version__", "unknown")),
             "cuda_available": bool(torch.cuda.is_available()),
             "error": "",
         }
-    except Exception as exc:
-        status["torch"]["error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        status["torch"]["error"] = _TORCH_IMPORT_ERROR
 
     try:
         import pywt  # type: ignore
@@ -620,13 +627,10 @@ def _as_date(x: Any) -> pd.Timestamp:
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
-    try:
-        import torch
+    if torch is not None:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-    except Exception:
-        pass
 
 
 def _jsonify(x: Any) -> Any:
@@ -644,6 +648,12 @@ def _jsonify(x: Any) -> Any:
 
 
 def _resolve_torch_device(device_request: Any) -> Tuple[torch.device, str, str, str]:
+    if torch is None:
+        raise StepBFailure(
+            fail_reason="missing_torch",
+            message="PyTorch is not available while resolving StepB runtime device.",
+            payload={"dependency": "torch", "torch_import_error": _TORCH_IMPORT_ERROR},
+        )
     requested = str(device_request or "auto").strip().lower()
     if requested in ("", "auto"):
         if torch.cuda.is_available():
@@ -783,7 +793,7 @@ class WaveletMambaRunner:
 
     @staticmethod
     def make_torch_model(input_dim: int, hidden_dim: int, out_dim: int):
-        import torch.nn as nn
+        _require_torch()
 
         class _WaveletMambaTorchModel(nn.Module):
             def __init__(self, input_dim: int, hidden_dim: int, out_dim: int) -> None:
@@ -839,9 +849,6 @@ def run_mamba_multi_model_by_horizon(
     timing_stage_prefix: Optional[str] = None,
 ) -> StepBAgentResult:
     _require_torch()
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
 
     sym = str(symbol)
     train_start, train_end, test_start, test_end, mode = _infer_split(app_config, cfg)
@@ -1215,7 +1222,6 @@ def run_mamba_multi_model_by_horizon(
         last_known = dates_ext[-1].normalize()
 
         # Cache: load each horizon model once and reuse it for all anchor days
-        import torch
         model_cache: Dict[int, torch.nn.Module] = {}
 
         def _load_horizon_model(H: int, input_dim: int):
@@ -1461,7 +1467,6 @@ def rollout_periodic_h1_future(
     Returns DataFrame with columns: Date, Pred_Close.
     """
     _require_torch()
-    import torch
 
     out_root = _infer_output_root(app_config)
     _, train_end, _, _, mode = _infer_split(app_config, cfg)
