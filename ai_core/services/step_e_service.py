@@ -799,19 +799,26 @@ class StepEService:
         symbol: str,
     ) -> tuple[pd.DataFrame, dict[str, object], Dict[str, object]]:
         cache_key = self._merge_cache_key(cfg, date_range=date_range, out_root=out_root, mode=mode, symbol=symbol)
-        should_compute = False
+        cached = None
         wait_event = None
+        is_owner = False
+        cache_hit = False
+
         with self._merge_cache_lock:
             cached = self._merge_cache.get(cache_key)
-            if cached is None:
+            if cached is not None:
+                # case A: cache already populated
+                cache_hit = True
+            else:
                 wait_event = self._merge_cache_inflight.get(cache_key)
                 if wait_event is None:
+                    # case B: current thread becomes the initial compute owner
                     wait_event = threading.Event()
                     self._merge_cache_inflight[cache_key] = wait_event
                     self._merge_cache_errors.pop(cache_key, None)
-                    should_compute = True
-        cache_hit = cached is not None or not should_compute
-        if should_compute:
+                    is_owner = True
+
+        if is_owner:
             try:
                 shared_context = self._build_stepdprime_shared_context(cfg=cfg, out_root=out_root, mode=mode)
                 df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol, shared_context=shared_context)
@@ -830,6 +837,7 @@ class StepEService:
                     if wait_event is not None:
                         wait_event.set()
         elif cached is None:
+            # case C: another thread is computing this key; wait and then read cache/error
             assert wait_event is not None
             wait_event.wait()
             with self._merge_cache_lock:
@@ -839,6 +847,8 @@ class StepEService:
                 if cached_error is not None:
                     raise RuntimeError(f"StepE shared merge_inputs failed for cache_key={cache_key}") from cached_error
                 raise RuntimeError(f"StepE shared merge_inputs missing cache entry for cache_key={cache_key}")
+            cache_hit = True
+
         cache_info = {
             "merge_cache_hit": bool(cache_hit),
             "merge_cache_key": "|".join(str(part) for part in cache_key),
