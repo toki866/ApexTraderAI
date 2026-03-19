@@ -1,0 +1,40 @@
+status=WARN
+StepA:
+  test_rows=63
+  test_date_start=2022-01-03 test_date_end=2022-04-01
+  missing_ohlcv_count=0
+StepB:
+  SKIP: no stepB prediction files found
+DPrimeCluster:
+  status=WARN summary=missing cluster embeddings/state/input
+  cluster_embeddings_count=0 cluster_state_count=0 cluster_input_count=0
+DPrimeRL:
+  status=WARN summary=missing RL state files
+  rl_state_count=0 rl_profiles_count=0
+  traceback_count=0 failure_summary_count=0 failure_reason=
+StepE:
+  SKIP: stepE_daily_log missing
+StepF:
+  SKIP: stepF_equity_marl missing
+StepFCompare:
+  status=WARN summary=compare skipped
+  StepFRewardCompare status=WARN summary=NA
+Diversity:
+  status=SKIP max_corr=NA max_match_ratio=NA pairs_over_0_9999=NA/NA identical_all_agents=NA
+  summary=not evaluated
+PLOTS:
+  equity_stepE_topN.png exists=yes
+  equity_stepF.png exists=yes
+  bar_stepE_return.png exists=yes
+  scatter_stepE_dd_vs_ret.png exists=yes
+  equity_stepF_vs_fixed_best_vs_oracle.png exists=yes
+  bar_stepF_regret.png exists=yes
+  equity_stepF_reward_modes.png exists=yes
+  bar_stepF_reward_mode_regret.png exists=yes
+  note=PLOT StepE topN: stepE_daily_log files were not found
+  note=PLOT StepF equity: stepF_equity_marl file not found
+  note=PLOT StepE return bar: no numeric StepE rows
+  note=PLOT StepE scatter: no numeric StepE DD/return pairs
+  note=StepF_vs_best_StepE: 比較に必要な equity_multiple が不足
+  note=PLOT StepF compare equity: comparison series unavailable
+  note=PLOT StepF regret: regret values unavailable
