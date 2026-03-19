@@ -16,6 +16,7 @@ import torch
 from sklearn.utils.extmath import randomized_svd
 
 from ai_core.utils.timing_logger import TimingLogger
+from ai_core.services.stepdprime_path_utils import resolve_stepdprime_dir
 from ai_core.services.dprime_cluster_components import (
     ClusterRuntimeConfig,
     DPrimeClusterService,
@@ -62,8 +63,8 @@ class StepDPrimeConfig:
     stepA_root: Optional[str] = None
     stepB_root: Optional[str] = None
     stepC_root: Optional[str] = None
-    stepDprime_root: Optional[str] = None
-    legacy_stepDprime_root: Optional[str] = None
+    stepDprime_root: Optional[str] = None  # explicit canonical StepDPrime dir; write path prefers this when set
+    legacy_stepDprime_root: Optional[str] = None  # legacy read fallback only; new writes never target stepD_prime
     profiles: Tuple[str, ...] = _PROFILES
     l_past: int = 63
     pred_k: int = 20
@@ -812,7 +813,7 @@ class StepDPrimeService:
             "stepa_dir": Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode,
             "stepb_dir": Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode,
             "stepc_dir": Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode,
-            "stepd_dir": Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode,
+            "stepd_dir": resolve_stepdprime_dir(out_root, mode, explicit_root=cfg.stepDprime_root, for_write=True),
         }
 
     def _build_all_df(self, cfg: StepDPrimeConfig, stepa_dir: Path) -> Tuple[Dict[str, str], pd.DataFrame]:
@@ -1048,7 +1049,7 @@ class StepDPrimeService:
             "mode": cfg.mode,
             "symbol": cfg.symbol,
             "profiles": profile_results,
-            "output_dir": str((Path(cfg.stepDprime_root) if cfg.stepDprime_root else Path(cfg.output_root) / "stepDprime" / _normalize_mode(cfg.mode))),
+            "output_dir": str(resolve_stepdprime_dir(Path(cfg.output_root), _normalize_mode(cfg.mode), explicit_root=cfg.stepDprime_root, for_write=True)),
             "dprime_cluster": {
                 "status": base.status,
                 "cluster_daily_path": base.cluster_daily_path,
