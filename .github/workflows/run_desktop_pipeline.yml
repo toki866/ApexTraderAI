@@ -5420,6 +5420,26 @@ jobs:
             Add-Content $rp "[NG] step_b invalid_wsl_output='$wslOut'"
             Write-Error "EFFECTIVE_WSL_OUTPUT not a /mnt/ path: '$wslOut'"; exit 1
           }
+          $stepBPreflightCmd = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' -c `"import json, torch, pywt, mamba_ssm; print(json.dumps({'torch': getattr(torch, '__version__', 'unknown'), 'pywt': getattr(pywt, '__version__', 'unknown'), 'mamba_ssm': getattr(mamba_ssm, '__version__', 'unknown'), 'cuda_available': bool(torch.cuda.is_available())}, ensure_ascii=False))`""
+          Add-Content $rp "[STEPB_PRE] dependency_preflight begin"
+          try {
+            $stepBPreflightOutput = wsl.exe -d $env:WSL_DISTRO -- bash -lc $stepBPreflightCmd 2>&1
+            $stepBPreflightRc = $LASTEXITCODE
+            $stepBPreflightOutput | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          }
+          catch {
+            $stepBPreflightOutput = @($_ | Out-String)
+            $stepBPreflightRc = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+          }
+          Add-Content $rp "[STEPB_PRE] dependency_preflight rc=$stepBPreflightRc"
+          if ($stepBPreflightOutput) {
+            ($stepBPreflightOutput | ForEach-Object { "[STEPB_PRE] dependency_preflight $_" }) | Add-Content $rp
+          }
+          if ($stepBPreflightRc -ne 0) {
+            Add-Content $rp "[STEPB_PRE] STEPB_FAIL_REASON=dependency_preflight_failed"
+            Write-Error "STEPB_FAIL_REASON=dependency_preflight_failed; torch/pywt/mamba_ssm preflight failed in WSL runtime."
+            exit $stepBPreflightRc
+          }
           $c = "cd '$env:WSL_REPO_ROOT' && '$env:WSL_PYTHON' tools/run_with_python.py tools/run_pipeline.py --symbol $sym1 --steps B --test-start '${{ inputs.test_start_date }}' --train-years ${{ inputs.train_years }} --test-months ${{ inputs.test_months }} --mode $env:MODE --output-root '$wslOut' --data-dir '$env:WSL_DATA_DIR' --auto-prepare-data 0 --enable-mamba --reuse-output $env:REUSE_OUTPUT --force-rebuild $env:FORCE_REBUILD --timing 1 --run-id '$env:APEX_RUN_ID' --branch-id '${{ github.ref_name }}' --execution-mode 'github_actions'"
           # [D] Log command before execution
           Write-Host "[PIPELINE] command=wsl.exe -d $env:WSL_DISTRO -- bash -c $c"

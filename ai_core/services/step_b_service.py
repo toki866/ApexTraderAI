@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 from ai_core.config.app_config import AppConfig
@@ -565,6 +566,38 @@ class StepBService:
             )
         return prepared_df, diag
 
+    def _feature_contract(
+        self,
+        prices_df: pd.DataFrame,
+        prices_test_df: pd.DataFrame,
+        tech_df: pd.DataFrame,
+        periodic_df: pd.DataFrame,
+        features_df: pd.DataFrame,
+        periodic_features_df: pd.DataFrame,
+        periodic_feature_diag: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "prices_rows": int(len(prices_df)),
+            "prices_test_rows": int(len(prices_test_df)),
+            "tech_rows": int(len(tech_df)),
+            "periodic_rows": int(len(periodic_df)),
+            "full_feature_dim": int(len([c for c in features_df.columns if c != "Date"])),
+            "periodic_feature_dim": int(len([c for c in periodic_features_df.columns if c != "Date"])),
+            "full_feature_columns_preview": [c for c in features_df.columns if c != "Date"][:12],
+            "periodic_feature_columns_preview": [c for c in periodic_features_df.columns if c != "Date"][:12],
+            "periodic_feature_columns": list(periodic_feature_diag.get("feature_columns", [])),
+        }
+
+    def _write_summary_artifacts(self, run_mode: str, symbol: str, payload: Dict[str, Any], *, failed: bool) -> Path:
+        stepb_dir = self._out_dir(run_mode)
+        summary_name = f"stepB_failure_summary_{symbol}.json" if failed else f"stepB_summary_{symbol}.json"
+        summary_path = stepb_dir / summary_name
+        summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        audit_dir = self._out_root() / "audit" / run_mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        (audit_dir / f"stepB_audit_{symbol}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return summary_path
+
 
     def run(self, config: StepBConfig | None = None, *args, **kwargs) -> StepBResult:
         stepb_config: Optional[StepBConfig] = config if isinstance(config, StepBConfig) else None
@@ -626,36 +659,105 @@ class StepBService:
                 enable_periodic_snapshots=True,
             )
 
+            feature_contract = self._feature_contract(
+                prices_df=prices_df,
+                prices_test_df=prices_test_df,
+                tech_df=tech_df,
+                periodic_df=periodic_df,
+                features_df=features_df,
+                periodic_features_df=periodic_features_df,
+                periodic_feature_diag=periodic_feature_diag,
+            )
+            if (
+                feature_contract["full_feature_dim"] <= 0
+                or feature_contract["periodic_feature_dim"] <= 0
+                or feature_contract["periodic_feature_dim"] != PERIODIC_FEATURE_DIM
+            ):
+                raise RuntimeError(f"StepB feature_dim mismatch: {feature_contract}")
+
+            def _result_csv_path(result: Any) -> str:
+                csv_paths = getattr(result, "csv_paths", None)
+                if isinstance(csv_paths, dict):
+                    value = csv_paths.get("pred_close")
+                    if value:
+                        return str(value)
+                return str(getattr(result, "pred_close_path", "") or getattr(result, "output_path", "") or "")
+
+            def _failure_payload(phase: str, exc: Exception, *, full_result: Any = None, periodic_result: Any = None) -> Dict[str, Any]:
+                fail_reason = str(getattr(exc, "fail_reason", "") or "").strip()
+                if not fail_reason:
+                    msg = str(exc)
+                    if "STEPB_FAIL_REASON=" in msg:
+                        fail_reason = msg.split("STEPB_FAIL_REASON=", 1)[1].split()[0].strip()
+                if not fail_reason:
+                    fail_reason = phase
+                payload: Dict[str, Any] = {
+                    "status": "failed",
+                    "symbol": symbol,
+                    "mode": run_mode,
+                    "output_root": str(self._out_root()),
+                    "phase": phase,
+                    "fail_reason": fail_reason,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "feature_contract": feature_contract,
+                    "prediction_paths": {
+                        "full": _result_csv_path(full_result),
+                        "periodic": _result_csv_path(periodic_result),
+                    },
+                    "model_variants": {
+                        "full": "fusion",
+                        "periodic": "periodic_only",
+                    },
+                    "failure": getattr(exc, "stepb_failure_payload", None),
+                }
+                if full_result is not None or periodic_result is not None:
+                    payload.update(self._device_evidence(("full", full_result), ("periodic", periodic_result)))
+                else:
+                    payload["device_evidence_source"] = "stepb_failure_before_results"
+                return payload
+
+            full_res = None
+            periodic_res = None
             print("[StepB] full.run begin")
-            with timing.stage("stepB.full.run"):
-                with timing.stage("stepB.train_full"):
-                    pass
-                with timing.stage("stepB.predict_full"):
-                    full_res = run_stepB_mamba(
-                        app_config=self.app_config,
-                        symbol=symbol,
-                        prices_df=prices_df,
-                        features_df=features_df,
-                        cfg=full_cfg,
-                        timing_logger=timing,
-                        timing_stage_prefix="stepB.full",
-                    )
+            try:
+                with timing.stage("stepB.full.run"):
+                    with timing.stage("stepB.train_full"):
+                        pass
+                    with timing.stage("stepB.predict_full"):
+                        full_res = run_stepB_mamba(
+                            app_config=self.app_config,
+                            symbol=symbol,
+                            prices_df=prices_df,
+                            features_df=features_df,
+                            cfg=full_cfg,
+                            timing_logger=timing,
+                            timing_stage_prefix="stepB.full",
+                        )
+            except Exception as exc:
+                self._write_summary_artifacts(run_mode, symbol, _failure_payload("predict_full", exc), failed=True)
+                raise
             print("[StepB] full.run ok")
 
             print("[StepB] periodic.run begin")
-            with timing.stage("stepB.periodic.run"):
-                with timing.stage("stepB.train_periodic"):
-                    pass
-                with timing.stage("stepB.predict_periodic"):
-                    periodic_res = run_stepB_mamba(
-                        app_config=self.app_config,
-                        symbol=symbol,
-                        prices_df=prices_df,
-                        features_df=periodic_features_df,
-                        cfg=periodic_cfg,
-                        timing_logger=timing,
-                        timing_stage_prefix="stepB.periodic",
-                    )
+            try:
+                with timing.stage("stepB.periodic.run"):
+                    with timing.stage("stepB.train_periodic"):
+                        pass
+                    with timing.stage("stepB.predict_periodic"):
+                        periodic_res = run_stepB_mamba(
+                            app_config=self.app_config,
+                            symbol=symbol,
+                            prices_df=prices_df,
+                            features_df=periodic_features_df,
+                            cfg=periodic_cfg,
+                            timing_logger=timing,
+                            timing_stage_prefix="stepB.periodic",
+                        )
+            except Exception as exc:
+                self._write_summary_artifacts(run_mode, symbol, _failure_payload("predict_periodic", exc, full_result=full_res), failed=True)
+                raise
             print("[StepB] periodic.run ok")
             print("[StepB] write_pred_time_all begin")
             try:
@@ -670,12 +772,32 @@ class StepBService:
                     reason = msg.split("STEPB_FAIL_REASON=", 1)[1].split()[0].strip()
                 print(f"[StepB] write_pred_time_all fail reason={reason}", file=sys.stderr)
                 print(f"STEPB_FAIL_REASON={reason}", file=sys.stderr)
+                self._write_summary_artifacts(
+                    run_mode,
+                    symbol,
+                    _failure_payload("write_pred_time_all", write_exc, full_result=full_res, periodic_result=periodic_res),
+                    failed=True,
+                )
                 raise
 
             print("[StepB] ensure_pred_time_all begin")
             if (not Path(pred_time_all_path).exists()) or Path(pred_time_all_path).stat().st_size <= 0:
                 print("[StepB] ensure_pred_time_all fail reason=missing_pred_time_all", file=sys.stderr)
                 print("STEPB_FAIL_REASON=missing_pred_time_all", file=sys.stderr)
+                self._write_summary_artifacts(
+                    run_mode,
+                    symbol,
+                    {
+                        **_failure_payload(
+                            "ensure_pred_time_all",
+                            FileNotFoundError(f"STEPB_FAIL_REASON=missing_pred_time_all path={pred_time_all_path}"),
+                            full_result=full_res,
+                            periodic_result=periodic_res,
+                        ),
+                        "pred_time_all_path": str(pred_time_all_path),
+                    },
+                    failed=True,
+                )
                 raise FileNotFoundError(f"STEPB_FAIL_REASON=missing_pred_time_all path={pred_time_all_path}")
             print("[StepB] ensure_pred_time_all ok")
 
@@ -692,31 +814,15 @@ class StepBService:
             if future is not None:
                 info["pred_future_mamba_periodic_path"] = str(future)
             stepb_dir = self._out_dir(run_mode)
-            feature_contract = {
-                "prices_rows": int(len(prices_df)),
-                "prices_test_rows": int(len(prices_test_df)),
-                "tech_rows": int(len(tech_df)),
-                "periodic_rows": int(len(periodic_df)),
-                "full_feature_dim": int(len([c for c in features_df.columns if c != "Date"])),
-                "periodic_feature_dim": int(len([c for c in periodic_features_df.columns if c != "Date"])),
-                "full_feature_columns_preview": [c for c in features_df.columns if c != "Date"][:12],
-                "periodic_feature_columns_preview": [c for c in periodic_features_df.columns if c != "Date"][:12],
-                "periodic_feature_columns": list(periodic_feature_diag.get("feature_columns", [])),
-            }
-            if (
-                feature_contract["full_feature_dim"] <= 0
-                or feature_contract["periodic_feature_dim"] <= 0
-                or feature_contract["periodic_feature_dim"] != PERIODIC_FEATURE_DIM
-            ):
-                raise RuntimeError(f"StepB feature_dim mismatch: {feature_contract}")
             summary = {
+                "status": "success",
                 "symbol": symbol,
                 "mode": run_mode,
                 "output_root": str(self._out_root()),
                 "pred_time_all_path": str(pred_time_all_path),
                 "prediction_paths": {
-                    "full": str(getattr(full_res, "pred_close_path", "")),
-                    "periodic": str(getattr(periodic_res, "pred_close_path", "")),
+                    "full": _result_csv_path(full_res),
+                    "periodic": _result_csv_path(periodic_res),
                 },
                 "feature_contract": feature_contract,
                 "model_variants": {
@@ -731,10 +837,7 @@ class StepBService:
                     f"status={summary.get('device_consistency_status')} "
                     f"reason={summary.get('device_mismatch_reason', '') or '(none)'}"
                 )
-            (stepb_dir / f"stepB_summary_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-            audit_dir = self._out_root() / "audit" / run_mode
-            audit_dir.mkdir(parents=True, exist_ok=True)
-            (audit_dir / f"stepB_audit_{symbol}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_summary_artifacts(run_mode, symbol, summary, failed=False)
 
         return StepBResult(
             success=bool(getattr(full_res, "success", True) and getattr(periodic_res, "success", True)),

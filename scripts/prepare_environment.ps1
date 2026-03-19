@@ -128,6 +128,8 @@ try {
 
   python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
   python -m pip install -r (Join-Path $RepoRoot 'requirements.txt') 2>&1 | Tee-Object -FilePath $bootstrap -Append | Write-Host
+  Write-PrepareLog '[PREPARE] dependency_install note=windows_python_installs_requirements_txt_only'
+  Write-PrepareLog '[PREPARE] dependency_install note=stepb_runtime_imports_are_verified_in_wsl_preflight_before_stepb'
 
   Invoke-PrepareData -DataDir $winDataDir
 
