@@ -15,6 +15,8 @@ def _write_stepf_primary(base: Path, symbol: str = "SOXL") -> None:
     _touch(base / f"stepF_daily_log_marl_{symbol}.csv")
     _touch(base / f"stepF_daily_log_router_{symbol}.csv")
     _touch(base / f"stepF_summary_router_{symbol}.json")
+    _touch(base / f"stepF_audit_router_{symbol}.json")
+    _touch(base.parent.parent / "audit" / base.name / f"stepF_policy_compare_{symbol}.json")
 
 
 def _write_reward_mode(base: Path, mode_name: str, symbol: str = "SOXL") -> None:

@@ -825,7 +825,12 @@ class RunManifest:
         return self._step_data(step).get("status", "pending")
 
     def can_reuse_step(self, step: str) -> bool:
-        """Return True if manifest says this step completed previously."""
+        """Return True if manifest says this step completed previously.
+
+        NOTE:
+        This only answers the manifest-side question. Callers must still verify
+        that the required artifacts exist before reusing the step.
+        """
         s = self._step_data(step)
         return s.get("status") in ("complete", "reuse") and str(s.get("audit_status") or "") == "PASS"
 
@@ -839,10 +844,60 @@ class RunManifest:
             s["reused"] = False
             s["rebuilt"] = False
             s["failed"] = False
+            s["completed_at"] = None
+            s["audit_status"] = None
+        elif status == "failed":
+            s["completed_at"] = None
         if status in ("complete", "reuse"):
             s["completed_at"] = _utcnow_iso()
         self._data["updated_at"] = _utcnow_iso()
         self.save()
+
+    def mark_step_verified(
+        self,
+        step: str,
+        status: str,
+        *,
+        artifacts_ok: bool,
+        audit_status: Optional[str] = None,
+        invalid_status: str = "pending",
+    ) -> bool:
+        """Persist a step status only when its artifact contract is satisfied.
+
+        Returns True when the requested terminal status was accepted.
+        When *status* is complete/reuse but artifacts are missing, the manifest is
+        downgraded to *invalid_status* instead.
+        """
+        desired = str(status).strip().lower()
+        accepted = True
+        final_status = desired
+        if desired in ("complete", "reuse") and not artifacts_ok:
+            final_status = str(invalid_status).strip().lower() or "pending"
+            accepted = False
+
+        s = self._data["steps"].setdefault(step.upper(), {})
+        s["status"] = final_status
+        s["reused"] = final_status == "reuse"
+        s["rebuilt"] = final_status == "complete"
+        s["failed"] = final_status == "failed"
+        if final_status in ("pending", "running"):
+            s["reused"] = False
+            s["rebuilt"] = False
+            s["failed"] = False
+            s["completed_at"] = None
+            if audit_status is None:
+                s["audit_status"] = None
+        elif final_status == "failed":
+            s["completed_at"] = None
+        elif final_status in ("complete", "reuse"):
+            s["completed_at"] = _utcnow_iso()
+        if audit_status is not None:
+            s["audit_status"] = str(audit_status)
+        elif not accepted and final_status == "pending":
+            s["audit_status"] = "FAIL"
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+        return accepted
 
     # ------------------------------------------------------------------
     # StepE per-agent helpers
@@ -861,10 +916,51 @@ class RunManifest:
     def mark_stepe_agent(self, agent: str, status: str) -> None:
         agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
         agents.setdefault(agent, {})["status"] = status
-        if status in ("complete", "reuse"):
+        if status in ("pending", "running"):
+            agents[agent]["completed_at"] = None
+            agents[agent]["audit_status"] = None
+        elif status == "failed":
+            agents[agent]["completed_at"] = None
+        elif status in ("complete", "reuse"):
             agents[agent]["completed_at"] = _utcnow_iso()
         self._data["updated_at"] = _utcnow_iso()
         self.save()
+
+    def mark_stepe_agent_verified(
+        self,
+        agent: str,
+        status: str,
+        *,
+        artifacts_ok: bool,
+        audit_status: Optional[str] = None,
+        invalid_status: str = "pending",
+    ) -> bool:
+        """Persist a StepE agent status only when its artifacts really exist."""
+        desired = str(status).strip().lower()
+        accepted = True
+        final_status = desired
+        if desired in ("complete", "reuse") and not artifacts_ok:
+            final_status = str(invalid_status).strip().lower() or "pending"
+            accepted = False
+
+        agents = self._data["steps"].setdefault("E", {}).setdefault("agents", {})
+        info = agents.setdefault(agent, {})
+        info["status"] = final_status
+        if final_status in ("pending", "running"):
+            info["completed_at"] = None
+            if audit_status is None:
+                info["audit_status"] = None
+        elif final_status == "failed":
+            info["completed_at"] = None
+        elif final_status in ("complete", "reuse"):
+            info["completed_at"] = _utcnow_iso()
+        if audit_status is not None:
+            info["audit_status"] = str(audit_status)
+        elif not accepted and final_status == "pending":
+            info["audit_status"] = "FAIL"
+        self._data["updated_at"] = _utcnow_iso()
+        self.save()
+        return accepted
 
     def mark_step_elapsed(self, step: str, elapsed_sec: float) -> None:
         s = self._data["steps"].setdefault(step.upper(), {})
