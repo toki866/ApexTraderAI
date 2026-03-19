@@ -151,7 +151,9 @@ class StepEService:
           - stepE (list[StepEConfig])
         """
         self.app_config = app_config
-        self._merge_cache: Dict[Tuple[object, ...], tuple[pd.DataFrame, dict[str, object]]] = {}
+        self._merge_cache: Dict[Tuple[object, ...], tuple[pd.DataFrame, dict[str, object], dict[str, object]]] = {}
+        self._merge_cache_inflight: Dict[Tuple[object, ...], threading.Event] = {}
+        self._merge_cache_errors: Dict[Tuple[object, ...], BaseException] = {}
         self._merge_cache_lock = threading.Lock()
 
     def _timing(self) -> TimingLogger:
@@ -247,6 +249,7 @@ class StepEService:
             mode=resolved_mode,
             execution_context={
                 "requested_parallel_agents": int(getattr(cfg, "max_parallel_agents", 1) or 1),
+                "max_parallel_agents": int(getattr(cfg, "max_parallel_agents", 1) or 1),
                 "effective_parallel_agents": 1,
                 "parallelism_warning": "",
             },
@@ -640,9 +643,12 @@ class StepEService:
         df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
         df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
         df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
+        df_log["requested_parallel_agents"] = int(execution_context.get("requested_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1)
+        df_log["max_parallel_agents"] = int(execution_context.get("max_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1)
         df_log["effective_parallel_agents"] = int(execution_context.get("effective_parallel_agents", 1) or 1)
         df_log["parallelism_warning"] = str(execution_context.get("parallelism_warning", "") or "")
         df_log["merge_inputs_cache_hit"] = bool(merge_cache_info.get("merge_cache_hit", False))
+        df_log["merge_cache_key"] = str(merge_cache_info.get("merge_cache_key", "") or "")
         df_log["Position"] = df_log["pos"]
         df_log["Action"] = np.where(df_log["pos"] > 0.15, 1, np.where(df_log["pos"] < -0.15, -1, 0))
 
@@ -690,6 +696,7 @@ class StepEService:
             "stepdprime_root": str(used_manifest.get("stepDprime_root", "")),
             "stepdprime_legacy_read": bool(used_manifest.get("stepDprime_legacy_read", False)),
             "requested_parallel_agents": int(execution_context.get("requested_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
+            "max_parallel_agents": int(execution_context.get("max_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
             "effective_parallel_agents": int(execution_context.get("effective_parallel_agents", 1) or 1),
             "parallelism_warning": str(execution_context.get("parallelism_warning", "") or ""),
             "merge_inputs_cache_hit": bool(merge_cache_info.get("merge_cache_hit", False)),
@@ -727,6 +734,7 @@ class StepEService:
             "constant_output_detected": bool(float(np.std(pos_arr)) < 1e-9),
             "warnings": list(dict.fromkeys([*device_warnings, *list(used_manifest.get("warnings", []) or [])])),
             "requested_parallel_agents": int(execution_context.get("requested_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
+            "max_parallel_agents": int(execution_context.get("max_parallel_agents", getattr(cfg, "max_parallel_agents", 1)) or 1),
             "effective_parallel_agents": int(execution_context.get("effective_parallel_agents", 1) or 1),
             "parallelism_warning": str(execution_context.get("parallelism_warning", "") or ""),
             "merge_inputs_cache_hit": bool(merge_cache_info.get("merge_cache_hit", False)),
@@ -760,6 +768,27 @@ class StepEService:
             str(getattr(cfg, "short_symbol", "SOXS") or "SOXS"),
         )
 
+    def _build_stepdprime_shared_context(self, *, cfg: StepEConfig, out_root: Path, mode: str) -> dict[str, object]:
+        needs_stepdprime = bool(getattr(cfg, "use_dprime_state", False) or getattr(cfg, "use_stepd_prime", False))
+        shared_context: dict[str, object] = {
+            "stepDprime_root": "",
+            "stepDprime_root_resolved": False,
+            "stepDprime_legacy_read": False,
+            "stepDprime_warnings": [],
+        }
+        if not needs_stepdprime:
+            return shared_context
+        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        shared_context.update(
+            {
+                "stepDprime_root": str(stepd_root),
+                "stepDprime_root_resolved": True,
+                "stepDprime_legacy_read": bool(legacy_read),
+                "stepDprime_warnings": list(dict.fromkeys(str(w) for w in warnings if str(w))),
+            }
+        )
+        return shared_context
+
     def _get_shared_merge_inputs(
         self,
         cfg: StepEConfig,
@@ -770,33 +799,68 @@ class StepEService:
         symbol: str,
     ) -> tuple[pd.DataFrame, dict[str, object], Dict[str, object]]:
         cache_key = self._merge_cache_key(cfg, date_range=date_range, out_root=out_root, mode=mode, symbol=symbol)
+        should_compute = False
+        wait_event = None
         with self._merge_cache_lock:
             cached = self._merge_cache.get(cache_key)
-        cache_hit = cached is not None
-        if cached is None:
-            df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            if cached is None:
+                wait_event = self._merge_cache_inflight.get(cache_key)
+                if wait_event is None:
+                    wait_event = threading.Event()
+                    self._merge_cache_inflight[cache_key] = wait_event
+                    self._merge_cache_errors.pop(cache_key, None)
+                    should_compute = True
+        cache_hit = cached is not None or not should_compute
+        if should_compute:
+            try:
+                shared_context = self._build_stepdprime_shared_context(cfg=cfg, out_root=out_root, mode=mode)
+                df_all, used_manifest = self._merge_inputs(cfg, out_root=out_root, mode=mode, symbol=symbol, shared_context=shared_context)
+                with self._merge_cache_lock:
+                    cached = self._merge_cache.get(cache_key)
+                    if cached is None:
+                        cached = (df_all, used_manifest, shared_context)
+                        self._merge_cache[cache_key] = cached
+            except BaseException as exc:
+                with self._merge_cache_lock:
+                    self._merge_cache_errors[cache_key] = exc
+                raise
+            finally:
+                with self._merge_cache_lock:
+                    wait_event = self._merge_cache_inflight.pop(cache_key, wait_event)
+                    if wait_event is not None:
+                        wait_event.set()
+        elif cached is None:
+            assert wait_event is not None
+            wait_event.wait()
             with self._merge_cache_lock:
                 cached = self._merge_cache.get(cache_key)
-                if cached is None:
-                    cached = (df_all, used_manifest)
-                    self._merge_cache[cache_key] = cached
+                cached_error = self._merge_cache_errors.get(cache_key)
+            if cached is None:
+                if cached_error is not None:
+                    raise RuntimeError(f"StepE shared merge_inputs failed for cache_key={cache_key}") from cached_error
+                raise RuntimeError(f"StepE shared merge_inputs missing cache entry for cache_key={cache_key}")
         cache_info = {
             "merge_cache_hit": bool(cache_hit),
             "merge_cache_key": "|".join(str(part) for part in cache_key),
         }
         print(
             f"[StepE][MERGE_CACHE] agent={cfg.agent} cache_hit={str(cache_hit).lower()} "
-            f"mode={mode} symbol={symbol}"
+            f"mode={mode} symbol={symbol} cache_key={cache_info['merge_cache_key']}"
         )
-        shared_df_all, shared_manifest = cached
+        shared_df_all, shared_manifest, _shared_context = cached
         return shared_df_all.copy(deep=False), dict(shared_manifest), cache_info
 
-    def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> tuple[pd.DataFrame, dict[str, object]]:
+    def _merge_inputs(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str, *, shared_context: Optional[dict[str, object]] = None) -> tuple[pd.DataFrame, dict[str, object]]:
         df_prices = self._load_stepA_prices(out_root, mode, symbol)
         used_manifest: dict[str, object] = {"warnings": [], "degraded": False}
+        shared_context = dict(shared_context or {})
+        if shared_context:
+            used_manifest["stepDprime_root"] = str(shared_context.get("stepDprime_root", "") or "")
+            used_manifest["stepDprime_legacy_read"] = bool(shared_context.get("stepDprime_legacy_read", False))
+            used_manifest["warnings"] = list(dict.fromkeys([*list(used_manifest.get("warnings", []) or []), *list(shared_context.get("stepDprime_warnings", []) or [])]))
 
         if cfg.use_dprime_state:
-            df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol)
+            df_state = self._load_stepD_prime_state(cfg, out_root=out_root, mode=mode, symbol=symbol, shared_context=shared_context)
             df = df_state.merge(
                 df_prices[["Date", "Open", "High", "Low", "Close", "Volume", "price_exec"]],
                 on="Date",
@@ -821,7 +885,7 @@ class StepEService:
         # StepD' embeddings
         if cfg.use_stepd_prime:
             self._ensure_dprime_sources(cfg)
-            dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol, used_manifest=used_manifest)
+            dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol, used_manifest=used_manifest, shared_context=shared_context)
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
             dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
 
@@ -924,7 +988,7 @@ class StepEService:
         df["price_exec"] = pd.to_numeric(df[pcol], errors="coerce").replace([np.inf, -np.inf], np.nan)
         return df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
 
-    def _load_stepD_prime_state(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str) -> pd.DataFrame:
+    def _load_stepD_prime_state(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str, *, shared_context: Optional[dict[str, object]] = None) -> pd.DataFrame:
         profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
         variant = str(cfg.dprime_state_variant or "").strip()
         if not profile and variant:
@@ -933,7 +997,11 @@ class StepEService:
         if not profile:
             raise ValueError("dprime_profile is empty while use_dprime_state=True")
 
-        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        shared_context = dict(shared_context or {})
+        stepd_root = Path(shared_context.get("stepDprime_root", "") or "") if shared_context.get("stepDprime_root") else None
+        warnings = list(shared_context.get("stepDprime_warnings", []) or [])
+        if stepd_root is None:
+            stepd_root, warnings, _legacy_read = resolve_stepdprime_root(out_root, mode)
         for warning in warnings:
             print(f"[StepE][STEPDPRIME_WARN] {warning}")
         p_tr = stepd_root / f"stepDprime_state_train_{profile}_{symbol}.csv"
@@ -978,12 +1046,17 @@ class StepEService:
 
         return out
 
-    def _load_stepD_prime_embeddings(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str, used_manifest: Optional[dict[str, object]] = None) -> pd.DataFrame:
+    def _load_stepD_prime_embeddings(self, cfg: StepEConfig, out_root: Path, mode: str, symbol: str, used_manifest: Optional[dict[str, object]] = None, *, shared_context: Optional[dict[str, object]] = None) -> pd.DataFrame:
         """
         Load embeddings with profile-first resolution. If profile is missing, fallback to
         source/horizon style for backward compatibility.
         """
-        stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
+        shared_context = dict(shared_context or {})
+        stepd_root = Path(shared_context.get("stepDprime_root", "") or "") if shared_context.get("stepDprime_root") else None
+        warnings = list(shared_context.get("stepDprime_warnings", []) or [])
+        legacy_read = bool(shared_context.get("stepDprime_legacy_read", False))
+        if stepd_root is None:
+            stepd_root, warnings, legacy_read = resolve_stepdprime_root(out_root, mode)
         if used_manifest is not None:
             used_manifest["stepDprime_root"] = str(stepd_root)
             used_manifest["stepDprime_legacy_read"] = bool(legacy_read)
