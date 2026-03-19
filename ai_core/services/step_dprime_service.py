@@ -807,12 +807,15 @@ class StepDPrimeService:
     def _resolve_paths(self, cfg: StepDPrimeConfig) -> Dict[str, Path]:
         mode = _normalize_mode(cfg.mode)
         out_root = Path(cfg.output_root)
+        canonical_stepd_dir = Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode
+        legacy_stepd_dir = Path(cfg.legacy_stepDprime_root) if cfg.legacy_stepDprime_root else out_root / "stepD_prime" / mode
         return {
             "mode": Path(mode),
             "stepa_dir": Path(cfg.stepA_root) if cfg.stepA_root else out_root / "stepA" / mode,
             "stepb_dir": Path(cfg.stepB_root) if cfg.stepB_root else out_root / "stepB" / mode,
             "stepc_dir": Path(cfg.stepC_root) if cfg.stepC_root else out_root / "stepC" / mode,
-            "stepd_dir": Path(cfg.stepDprime_root) if cfg.stepDprime_root else out_root / "stepDprime" / mode,
+            "stepd_dir": canonical_stepd_dir,
+            "legacy_stepd_dir": legacy_stepd_dir,
         }
 
     def _build_all_df(self, cfg: StepDPrimeConfig, stepa_dir: Path) -> Tuple[Dict[str, str], pd.DataFrame]:

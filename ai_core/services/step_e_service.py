@@ -742,6 +742,37 @@ class StepEService:
             "status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._persist_agent_manifest_state(agent=str(cfg.agent), symbol=symbol, mode=mode)
+
+    def _persist_agent_manifest_state(self, *, agent: str, symbol: str, mode: str) -> None:
+        manifest = getattr(self.app_config, "_run_manifest", None)
+        if manifest is None:
+            return
+        try:
+            from tools.run_manifest import check_stepe_agent_artifact
+        except Exception:
+            return
+        output_root = Path(getattr(self.app_config, "resolved_output_root", getattr(self.app_config, "output_root", "output")))
+        artifact_ok = check_stepe_agent_artifact(agent, output_root, symbol, mode)
+        if not artifact_ok:
+            return
+        try:
+            manifest.mark_stepe_agent(agent, "complete")
+            manifest.mark_stepe_agent_audit(agent, "PASS")
+            configured_agents = []
+            raw_cfgs = getattr(self.app_config, "stepE", None)
+            if raw_cfgs is None:
+                configured_agents = [agent]
+            elif isinstance(raw_cfgs, (list, tuple)):
+                configured_agents = [str(getattr(cfg, "agent", "") or "").strip() for cfg in raw_cfgs]
+            else:
+                configured_agents = [str(getattr(raw_cfgs, "agent", "") or "").strip()]
+            configured_agents = [name for name in configured_agents if name]
+            if configured_agents and all(check_stepe_agent_artifact(name, output_root, symbol, mode) for name in configured_agents):
+                manifest.mark_step("E", "complete")
+                manifest.mark_step_audit("E", "PASS")
+        except Exception:
+            return
 
     # -----------------------
     # Load & merge
