@@ -566,6 +566,35 @@ def check_stepe_agent_artifact(agent: str, output_root: Path, symbol: str, mode:
     return daily.exists() and summary.exists() and audit.exists() and (model_pt.exists() or model_zip.exists())
 
 
+def _read_json_payload(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_stepe_quality_status(agent: str, output_root: Path, symbol: str, mode: str) -> Optional[str]:
+    """Return normalized PASS/FAIL/WARN for a StepE agent from audit/summary payloads.
+
+    Preference order:
+    1) audit JSON's ``audit_status`` or ``status``
+    2) summary JSON's ``audit_status`` or ``status``
+
+    Returns ``None`` when no supported status key is present.
+    """
+    base = Path(output_root) / "stepE" / mode
+    audit_path = Path(output_root) / "audit" / mode / f"stepE_audit_{agent}_{symbol}.json"
+    summary_path = base / f"stepE_summary_{agent}_{symbol}.json"
+    for meta_path in (audit_path, summary_path):
+        payload = _read_json_payload(meta_path)
+        for key in ("audit_status", "status"):
+            raw = str(payload.get(key, "") or "").strip().upper()
+            if raw:
+                return raw
+    return None
+
+
 # ---------------------------------------------------------------------------
 # RunManifest
 # ---------------------------------------------------------------------------

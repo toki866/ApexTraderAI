@@ -2380,12 +2380,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _run_manifest is None:
             return
         try:
-            def _read_json_status(path: Path) -> str:
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    return ""
-                return str(payload.get("status", "") or "").upper() if isinstance(payload, dict) else ""
+            from tools.run_manifest import read_stepe_quality_status as _read_stepe_quality_status
 
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
@@ -2409,8 +2404,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _run_manifest.mark_stepe_agent_verified(_agent, "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
                     continue
                 if _agent_artifact_ok and _run_manifest.stepe_agent_status(_agent) not in ("complete", "reuse"):
-                    _agent_audit_path = Path(resolved_output_root) / "audit" / resolved_mode / f"stepE_audit_{_agent}_{symbol}.json"
-                    _agent_audit_status = _read_json_status(_agent_audit_path) or "PASS"
+                    _agent_audit_status = _read_stepe_quality_status(_agent, resolved_output_root, symbol, resolved_mode) or "PASS"
                     _run_manifest.mark_stepe_agent_verified(
                         _agent,
                         "complete" if _agent_audit_status == "PASS" else "failed",
@@ -2442,8 +2436,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     def _evaluate_stepe_final_state(requested_agents: List[str]) -> Dict[str, Any]:
-        """Recompute final StepE completion state from artifacts + manifest."""
-        from tools.run_manifest import check_stepe_agent_artifact as _check_agent_art_final  # lazy import
+        """Recompute final StepE completion state from artifacts + persisted quality payloads."""
+        from tools.run_manifest import (
+            check_stepe_agent_artifact as _check_agent_art_final,
+            read_stepe_quality_status as _read_stepe_quality_status_final,
+        )  # lazy import
 
         _daily_base = Path(resolved_output_root) / "stepE" / resolved_mode
         _model_base = _daily_base / "models"
@@ -2461,14 +2458,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 or (_model_base / f"stepE_{_agent}_{symbol}_ppo.zip").exists()
             )
             _artifact_ok = bool(_daily and _summary and _model)
+            _artifact_ok = _artifact_ok and _check_agent_art_final(_agent, resolved_output_root, symbol, resolved_mode)
+
+            _quality_status = _read_stepe_quality_status_final(_agent, resolved_output_root, symbol, resolved_mode)
+            _quality_ok = str(_quality_status or "").upper() == "PASS"
             _manifest_ok = False
             if _run_manifest is not None:
                 _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
+                if _artifact_ok and _quality_ok and not _manifest_ok:
+                    _run_manifest.mark_stepe_agent_verified(
+                        _agent,
+                        "complete",
+                        artifacts_ok=True,
+                        audit_status="PASS",
+                        invalid_status="pending",
+                    )
+                    _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
 
-            # keep parity with manifest artifact checker and ensure minimum contract.
-            _artifact_ok = _artifact_ok and _check_agent_art_final(_agent, resolved_output_root, symbol, resolved_mode)
-
-            if _artifact_ok and _manifest_ok:
+            if _artifact_ok and _quality_ok and (_manifest_ok or _run_manifest is None):
                 _complete_agents.append(_agent)
                 continue
 
@@ -2480,7 +2487,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _parts.append("summary")
             if not _model:
                 _parts.append("model")
-            if not _manifest_ok:
+            if not _quality_ok:
+                _parts.append(f"quality:{_quality_status or 'missing'}")
+            if _run_manifest is not None and not _manifest_ok:
                 _parts.append("manifest")
             _missing_detail[_agent] = _parts
 
