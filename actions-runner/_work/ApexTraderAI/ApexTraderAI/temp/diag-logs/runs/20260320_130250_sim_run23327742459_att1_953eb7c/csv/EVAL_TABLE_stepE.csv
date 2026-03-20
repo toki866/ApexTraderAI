@@ -1,0 +1,6 @@
+file,agent,test_days,equity_multiple,max_dd,mean_ret,std_ret,sharpe,split_source,split_col_present,train_rows,test_rows,status
+stepE_daily_log_dprime_all_features_3scale_SOXL.csv,dprime_all_features_3scale,63,1.3326737260303467,-0.24925305278074983,0.005057371536997127,0.047595658081801905,1.6867774810324871,csv,True,2014,63,OK
+stepE_daily_log_dprime_all_features_h01_SOXL.csv,dprime_all_features_h01,63,1.278743881622183,-0.08535155729461052,0.0039634073540057765,0.02401273675635795,2.6201570382103205,csv,True,2014,63,OK
+stepE_daily_log_dprime_all_features_h02_SOXL.csv,dprime_all_features_h02,63,1.4699244606680593,-0.13500607320501212,0.006044685739094384,0.03544901918304821,2.706884803204399,csv,True,2014,63,OK
+stepE_daily_log_dprime_all_features_h03_SOXL.csv,dprime_all_features_h03,63,1.1281916493042143,-0.37485583510674547,0.00328614619485221,0.050380013962248844,1.0354493680642944,csv,True,2014,63,OK
+stepE_daily_log_dprime_bnf_3scale_SOXL.csv,dprime_bnf_3scale,63,1.0516269122619208,-0.3475317977660013,0.001197482859846231,0.04428462346734996,0.4292562426890336,csv,True,2014,63,OK
