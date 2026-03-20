@@ -291,170 +291,28 @@ class StepFService:
             terminal_exc: BaseException | None = None
             for reward_mode in reward_modes:
                 with timing.stage("stepF.reward_mode.total", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "stage_group": "reward_mode", "agent_kind": "reward_mode"}):
-                    mode_cfg = deepcopy(cfg)
-                    mode_cfg.reward_mode = reward_mode
-                    self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
-                    retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
-                    mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
-                    mode_dir.mkdir(parents=True, exist_ok=True)
-                    status_started_at = self._utcnow_iso()
-                    status_started_perf = time.perf_counter()
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
-                    reusable, _, artifacts_manifest = self._load_reward_mode_reuse_status(mode_dir, symbol)
-                    if reusable:
-                        files_present = [p.name for p in sorted(mode_dir.glob("*"))]
-                        status_path = self._write_reward_mode_status(
-                            mode_dir,
-                            reward_mode=reward_mode,
-                            status="complete",
-                            started_at=status_started_at,
-                            started_perf=status_started_perf,
-                            run_id=run_id,
-                            required_artifacts_present=True,
-                            publish_ready=False,
-                        )
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_reuse={reward_mode}")
-                        mode_records.append(
-                            StepFModeRunRecord(
-                                mode=reward_mode,
-                                status="REUSED",
-                                output_dir=str(mode_dir),
-                                step_e_root=str(step_e_root),
-                                step_e_daily_log_count=len(step_e_daily_logs),
-                                files_present=files_present,
-                                status_path=str(status_path),
-                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
-                                reused=True,
-                                publish_ready=True,
-                            )
-                        )
-                        if primary_result is None:
-                            primary_result = StepFResult(
-                                daily_log_path=str(mode_dir / f"stepF_daily_log_router_{symbol}.csv"),
-                                summary_path=str(mode_dir / f"stepF_summary_router_{symbol}.json"),
-                                ratio_path="",
-                            )
-                        continue
-
-                    self._write_reward_mode_status(
-                        mode_dir,
-                        reward_mode=reward_mode,
-                        status="running",
-                        started_at=status_started_at,
-                        started_perf=status_started_perf,
-                        run_id=run_id,
-                        required_artifacts_present=False,
-                        publish_ready=False,
-                    )
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
-
                     try:
-                        self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
-                        mode_result = self._run_router(
-                            mode_cfg,
-                            date_range,
+                        mode_result, mode_record = self._run_one_reward_mode(
+                            base_cfg=cfg,
+                            date_range=date_range,
                             symbol=symbol,
-                            mode=resolved_mode,
-                            persist_primary_outputs=(not compare_enabled),
-                        )
-                        self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
-                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
-                        if not bool(artifacts_manifest.get("validation_passed", False)):
-                            missing = ",".join(artifacts_manifest.get("missing_artifacts", []))
-                            invalid = ",".join(artifacts_manifest.get("invalid_artifacts", []))
-                            raise RuntimeError(f"StepF reward_mode artifacts invalid: missing=[{missing}] invalid=[{invalid}]")
-                        status_path = self._write_reward_mode_status(
-                            mode_dir,
-                            reward_mode=reward_mode,
-                            status="complete",
-                            started_at=status_started_at,
-                            started_perf=status_started_perf,
+                            resolved_mode=resolved_mode,
+                            out_root=out_root,
+                            step_e_root=step_e_root,
+                            step_e_daily_logs=step_e_daily_logs,
                             run_id=run_id,
-                            required_artifacts_present=True,
-                            publish_ready=False,
+                            compare_enabled=compare_enabled,
+                            reward_mode=reward_mode,
                         )
-                        written_files = list(artifacts_manifest.get("present_artifacts", []))
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
-                        mode_records.append(
-                            StepFModeRunRecord(
-                                mode=reward_mode,
-                                status="COMPLETE",
-                                output_dir=str(mode_dir),
-                                step_e_root=str(step_e_root),
-                                step_e_daily_log_count=len(step_e_daily_logs),
-                                files_present=[p.name for p in sorted(mode_dir.glob("*"))],
-                                status_path=str(status_path),
-                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
-                                reused=False,
-                                publish_ready=True,
-                            )
-                        )
-                        if primary_result is None:
+                        mode_records.append(mode_record)
+                        if primary_result is None and mode_result is not None:
                             primary_result = mode_result
-                            primary_result.daily_log_path = str(mode_dir / f"stepF_daily_log_router_{symbol}.csv")
-                            primary_result.summary_path = str(mode_dir / f"stepF_summary_router_{symbol}.json")
-                    except Exception as exc:
-                        tb_text = traceback.format_exc()
-                        traceback_path = mode_dir / "traceback.txt"
-                        traceback_path.write_text(tb_text, encoding="utf-8")
-                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
-                        status_path = self._write_reward_mode_status(
-                            mode_dir,
-                            reward_mode=reward_mode,
-                            status="failed",
-                            started_at=status_started_at,
-                            started_perf=status_started_perf,
-                            run_id=run_id,
-                            required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
-                            publish_ready=False,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                            traceback_path=str(traceback_path),
-                        )
-                        files_present = [p.name for p in sorted(mode_dir.glob("*"))]
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
-                        self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
-                        print(tb_text)
-                        print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
-                        print(tb_text)
-                        print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
-                        mode_records.append(
-                            StepFModeRunRecord(
-                                mode=reward_mode,
-                                status="FAIL",
-                                output_dir=str(mode_dir),
-                                step_e_root=str(step_e_root),
-                                step_e_daily_log_count=len(step_e_daily_logs),
-                                traceback_path=str(traceback_path),
-                                error=f"{type(exc).__name__}: {exc}",
-                                files_present=files_present,
-                                status_path=str(status_path),
-                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
-                            )
-                        )
-                        terminal_exc = exc
-                        break
                     except (KeyboardInterrupt, SystemExit) as exc:
-                        tb_text = traceback.format_exc()
-                        traceback_path = mode_dir / "traceback.txt"
-                        traceback_path.write_text(tb_text, encoding="utf-8")
-                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
-                        status_path = self._write_reward_mode_status(
-                            mode_dir,
+                        mode_dir = self._reward_dir(
+                            out_root=out_root,
+                            mode=resolved_mode,
+                            retrain="on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off",
                             reward_mode=reward_mode,
-                            status="interrupted",
-                            started_at=status_started_at,
-                            started_perf=status_started_perf,
-                            run_id=run_id,
-                            required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
-                            publish_ready=False,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                            traceback_path=str(traceback_path),
                         )
                         mode_records.append(
                             StepFModeRunRecord(
@@ -463,11 +321,38 @@ class StepFService:
                                 output_dir=str(mode_dir),
                                 step_e_root=str(step_e_root),
                                 step_e_daily_log_count=len(step_e_daily_logs),
-                                traceback_path=str(traceback_path),
+                                traceback_path=str(mode_dir / "traceback.txt"),
                                 error=f"{type(exc).__name__}: {exc}",
-                                files_present=[p.name for p in sorted(mode_dir.glob("*"))],
-                                status_path=str(status_path),
+                                files_present=[p.name for p in sorted(mode_dir.glob("*"))] if mode_dir.exists() else [],
+                                status_path=str(mode_dir / "status.json"),
                                 artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                                reused=False,
+                                publish_ready=False,
+                            )
+                        )
+                        terminal_exc = exc
+                        break
+                    except Exception as exc:
+                        mode_dir = self._reward_dir(
+                            out_root=out_root,
+                            mode=resolved_mode,
+                            retrain="on" if str(getattr(cfg, "retrain", "off")).lower() == "on" else "off",
+                            reward_mode=reward_mode,
+                        )
+                        mode_records.append(
+                            StepFModeRunRecord(
+                                mode=reward_mode,
+                                status="FAIL",
+                                output_dir=str(mode_dir),
+                                step_e_root=str(step_e_root),
+                                step_e_daily_log_count=len(step_e_daily_logs),
+                                traceback_path=str(mode_dir / "traceback.txt"),
+                                error=f"{type(exc).__name__}: {exc}",
+                                files_present=[p.name for p in sorted(mode_dir.glob("*"))] if mode_dir.exists() else [],
+                                status_path=str(mode_dir / "status.json"),
+                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                                reused=False,
+                                publish_ready=False,
                             )
                         )
                         terminal_exc = exc
@@ -484,16 +369,7 @@ class StepFService:
                 )
                 for record in mode_records:
                     record.publish_ready = True
-                    self._write_reward_mode_status(
-                        Path(record.output_dir),
-                        reward_mode=record.mode,
-                        status="complete",
-                        started_at=self._utcnow_iso(),
-                        started_perf=time.perf_counter(),
-                        run_id=run_id,
-                        required_artifacts_present=True,
-                        publish_ready=True,
-                    )
+                    self._update_reward_mode_status_metadata(Path(record.output_dir), publish_ready=True)
 
             multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
             multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -620,6 +496,14 @@ class StepFService:
         os.replace(temp_name, path)
 
     @staticmethod
+    def _read_json_payload(path: Path) -> Dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
     def _csv_artifact_valid(path: Path, required_cols: Tuple[str, ...]) -> bool:
         if not path.exists() or path.stat().st_size <= 0:
             return False
@@ -686,6 +570,7 @@ class StepFService:
         required_artifacts_present: bool,
         publish_ready: bool,
         finished_at: Optional[str] = None,
+        reused: bool = False,
         error_type: str = "",
         error_message: str = "",
         traceback_path: str = "",
@@ -701,6 +586,7 @@ class StepFService:
             "run_id": run_id,
             "required_artifacts_present": bool(required_artifacts_present),
             "publish_ready": bool(publish_ready),
+            "reused": bool(reused),
         }
         if error_type:
             payload["error_type"] = error_type
@@ -709,6 +595,14 @@ class StepFService:
         if traceback_path:
             payload["traceback_path"] = traceback_path
         status_path = reward_dir / "status.json"
+        cls._write_json_atomic(status_path, payload)
+        return status_path
+
+    @classmethod
+    def _update_reward_mode_status_metadata(cls, reward_dir: Path, **updates: Any) -> Path:
+        status_path = reward_dir / "status.json"
+        payload = cls._read_json_payload(status_path)
+        payload.update(updates)
         cls._write_json_atomic(status_path, payload)
         return status_path
 
@@ -733,6 +627,176 @@ class StepFService:
         refreshed = cls._validate_reward_mode_artifacts(reward_dir, symbol)
         reusable = bool(refreshed.get("validation_passed", False))
         return reusable, status_payload, refreshed
+
+    def _run_one_reward_mode(
+        self,
+        *,
+        base_cfg: StepFRouterConfig,
+        date_range,
+        symbol: str,
+        resolved_mode: str,
+        out_root: Path,
+        step_e_root: Path,
+        step_e_daily_logs: List[Path],
+        run_id: str,
+        compare_enabled: bool,
+        reward_mode: str,
+    ) -> Tuple[Optional[StepFResult], StepFModeRunRecord]:
+        mode_cfg = deepcopy(base_cfg)
+        mode_cfg.reward_mode = reward_mode
+        retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
+        mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
+        mode_dir.mkdir(parents=True, exist_ok=True)
+        started_at = self._utcnow_iso()
+        started_perf = time.perf_counter()
+
+        self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+
+        reusable, _, _ = self._load_reward_mode_reuse_status(mode_dir, symbol)
+        if reusable:
+            status_path = self._write_reward_mode_status(
+                mode_dir,
+                reward_mode=reward_mode,
+                status="complete",
+                started_at=started_at,
+                started_perf=started_perf,
+                run_id=run_id,
+                required_artifacts_present=True,
+                publish_ready=False,
+                reused=True,
+            )
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_reuse={reward_mode}")
+            return (
+                StepFResult(
+                    daily_log_path=str(mode_dir / f"stepF_daily_log_router_{symbol}.csv"),
+                    summary_path=str(mode_dir / f"stepF_summary_router_{symbol}.json"),
+                    ratio_path="",
+                ),
+                StepFModeRunRecord(
+                    mode=reward_mode,
+                    status="REUSED",
+                    output_dir=str(mode_dir),
+                    step_e_root=str(step_e_root),
+                    step_e_daily_log_count=len(step_e_daily_logs),
+                    files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                    status_path=str(status_path),
+                    artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                    reused=True,
+                    publish_ready=False,
+                ),
+            )
+
+        self._write_reward_mode_status(
+            mode_dir,
+            reward_mode=reward_mode,
+            status="running",
+            started_at=started_at,
+            started_perf=started_perf,
+            run_id=run_id,
+            required_artifacts_present=False,
+            publish_ready=False,
+        )
+        self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
+
+        try:
+            self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
+            mode_result = self._run_router(
+                mode_cfg,
+                date_range,
+                symbol=symbol,
+                mode=resolved_mode,
+                persist_primary_outputs=(not compare_enabled),
+            )
+            self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
+            artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+            if not bool(artifacts_manifest.get("validation_passed", False)):
+                missing = ",".join(artifacts_manifest.get("missing_artifacts", []))
+                invalid = ",".join(artifacts_manifest.get("invalid_artifacts", []))
+                raise RuntimeError(f"StepF reward_mode artifacts invalid: missing=[{missing}] invalid=[{invalid}]")
+            status_path = self._write_reward_mode_status(
+                mode_dir,
+                reward_mode=reward_mode,
+                status="complete",
+                started_at=started_at,
+                started_perf=started_perf,
+                run_id=run_id,
+                required_artifacts_present=True,
+                publish_ready=False,
+                reused=False,
+            )
+            written_files = list(artifacts_manifest.get("present_artifacts", []))
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
+            mode_result.daily_log_path = str(mode_dir / f"stepF_daily_log_router_{symbol}.csv")
+            mode_result.summary_path = str(mode_dir / f"stepF_summary_router_{symbol}.json")
+            return (
+                mode_result,
+                StepFModeRunRecord(
+                    mode=reward_mode,
+                    status="COMPLETE",
+                    output_dir=str(mode_dir),
+                    step_e_root=str(step_e_root),
+                    step_e_daily_log_count=len(step_e_daily_logs),
+                    files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                    status_path=str(status_path),
+                    artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                    reused=False,
+                    publish_ready=False,
+                ),
+            )
+        except (KeyboardInterrupt, SystemExit) as exc:
+            tb_text = traceback.format_exc()
+            traceback_path = mode_dir / "traceback.txt"
+            traceback_path.write_text(tb_text, encoding="utf-8")
+            artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+            status_path = self._write_reward_mode_status(
+                mode_dir,
+                reward_mode=reward_mode,
+                status="interrupted",
+                started_at=started_at,
+                started_perf=started_perf,
+                run_id=run_id,
+                required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
+                publish_ready=False,
+                reused=False,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                traceback_path=str(traceback_path),
+            )
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
+            raise
+        except Exception as exc:
+            tb_text = traceback.format_exc()
+            traceback_path = mode_dir / "traceback.txt"
+            traceback_path.write_text(tb_text, encoding="utf-8")
+            artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+            status_path = self._write_reward_mode_status(
+                mode_dir,
+                reward_mode=reward_mode,
+                status="failed",
+                started_at=started_at,
+                started_perf=started_perf,
+                run_id=run_id,
+                required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
+                publish_ready=False,
+                reused=False,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                traceback_path=str(traceback_path),
+            )
+            files_present = [p.name for p in sorted(mode_dir.glob("*"))]
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
+            self._log_stepf_multi(f"[STEPF_MULTI] mode_existing_files={','.join(files_present) if files_present else '(none)'}")
+            print(tb_text)
+            print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_begin={reward_mode}")
+            print(tb_text)
+            print(f"[ONE_TAP][STEPF_MULTI] mode_fail_traceback_end={reward_mode}")
+            raise
 
     @classmethod
     def _publish_stepf_canonical_outputs(

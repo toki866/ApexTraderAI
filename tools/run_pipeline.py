@@ -2323,7 +2323,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             status_value = str(status_payload.get("status", "")).lower()
             if status_value == "complete":
                 completed.append(rm)
-                if bool(status_payload.get("publish_ready", False)):
+                if bool(status_payload.get("reused", False)):
                     reused.append(rm)
             elif status_value in {"failed", "interrupted"}:
                 failed.append(rm)
@@ -3526,6 +3526,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if step == "F" and _can_reuse_step("F"):
                     print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("F", "reuse")
+                    _update_stepf_manifest_fields("reuse")
                     timing.mark_step_reused("F")
                     timing.emit_instant(stage="stepF.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
@@ -3565,39 +3566,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             # StepE without per-agent reuse: audit all completed agents
                             _audit_root_ge = Path(resolved_output_root) / "audit" / resolved_mode
                             _ge_all_agents: List[str]
-                        _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
-                        if _ge_raw is not None:
-                            _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else [_ge_raw]
-                            _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
-                        else:
-                            _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
-                        for _ga in _ge_all_agents:
-                            from tools.run_manifest import check_stepe_agent_artifact as _chk_ge
-                            if _chk_ge(_ga, resolved_output_root, symbol, resolved_mode):
-                                try:
-                                    _ga_audit = audit_stepe_agent_now(
-                                        Path(resolved_output_root), resolved_mode, symbol, _ga, _audit_root_ge
-                                    )
-                                    _ga_status = _ga_audit.get("status", "FAIL")
-                                except Exception as _gae:
-                                    _ga_status = "FAIL"
-                                    print(f"[StepE] WARN audit agent={_ga}: {_gae}", file=sys.stderr)
-                                _mark_stepe_agent_verified(_ga, "complete", audit_status=_ga_status, invalid_status="pending")
-                                print(f"[StepE] agent={_ga} audit={_ga_status}")
-                        _ge_audits = [_run_manifest.stepe_agent_audit_status(a) for a in _ge_all_agents]
-                        _ge_step_status = "PASS" if _ge_audits and all(s == "PASS" for s in _ge_audits) else "FAIL"
-                        _miss_e = []
-                        for _ga in _ge_all_agents:
-                            _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
-                        if _miss_e:
-                            _ge_step_status = "FAIL"
-                            print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
-                        _mark_step_verified("E", "complete", audit_status=_ge_step_status, invalid_status="pending")
-                        if '_generic_agent_failures' in locals() and _generic_agent_failures:
-                            print(f"[StepE] WARN non-blocking agent failures={','.join(_generic_agent_failures)}", file=sys.stderr)
-                        if _ge_step_status != "PASS":
-                            _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
-                            raise RuntimeError("StepE contract/audit failed")
+                            _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                            if _ge_raw is not None:
+                                _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else [_ge_raw]
+                                _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
+                            else:
+                                _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
+                            for _ga in _ge_all_agents:
+                                from tools.run_manifest import check_stepe_agent_artifact as _chk_ge
+                                if _chk_ge(_ga, resolved_output_root, symbol, resolved_mode):
+                                    try:
+                                        _ga_audit = audit_stepe_agent_now(
+                                            Path(resolved_output_root), resolved_mode, symbol, _ga, _audit_root_ge
+                                        )
+                                        _ga_status = _ga_audit.get("status", "FAIL")
+                                    except Exception as _gae:
+                                        _ga_status = "FAIL"
+                                        print(f"[StepE] WARN audit agent={_ga}: {_gae}", file=sys.stderr)
+                                    _mark_stepe_agent_verified(_ga, "complete", audit_status=_ga_status, invalid_status="pending")
+                                    print(f"[StepE] agent={_ga} audit={_ga_status}")
+                            _ge_audits = [_run_manifest.stepe_agent_audit_status(a) for a in _ge_all_agents]
+                            _ge_step_status = "PASS" if _ge_audits and all(s == "PASS" for s in _ge_audits) else "FAIL"
+                            _miss_e = []
+                            for _ga in _ge_all_agents:
+                                _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
+                            if _miss_e:
+                                _ge_step_status = "FAIL"
+                                print(f"[StepE] contract missing: {_miss_e}", file=sys.stderr)
+                            _mark_step_verified("E", "complete", audit_status=_ge_step_status, invalid_status="pending")
+                            if '_generic_agent_failures' in locals() and _generic_agent_failures:
+                                print(f"[StepE] WARN non-blocking agent failures={','.join(_generic_agent_failures)}", file=sys.stderr)
+                            if _ge_step_status != "PASS":
+                                _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
+                                raise RuntimeError("StepE contract/audit failed")
                         elif step == "F":
                             from ai_core.services.step_f_service import StepFService
 
