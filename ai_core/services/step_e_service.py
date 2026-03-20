@@ -200,23 +200,41 @@ class StepEService:
     @staticmethod
     def _evaluate_stepdprime_join_quality(used_manifest: Dict[str, object]) -> Dict[str, object]:
         match_ratio = float(used_manifest.get("stepD_prime_match_ratio", 1.0) or 0.0)
+        match_ratio_after_warmup = float(used_manifest.get("stepD_prime_match_ratio_after_warmup", match_ratio) or 0.0)
         nonzero_ratio = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0) or 0.0)
         nan_fill_count = int(used_manifest.get("stepD_prime_nan_fill_count", 0) or 0)
+        warmup_rows = int(used_manifest.get("stepD_prime_warmup_rows", 0) or 0)
+        allowed_missing_rows = int(used_manifest.get("stepD_prime_allowed_missing_rows", warmup_rows) or 0)
+        unexpected_missing_rows = int(used_manifest.get("stepD_prime_unexpected_missing_rows", 0) or 0)
+        unexpected_nan_fill_count = int(used_manifest.get("stepD_prime_unexpected_nan_fill_count", 0) or 0)
+        first_valid_date = str(used_manifest.get("stepD_prime_first_valid_date", "") or "")
+        expected_join_ratio_after_warmup = float(
+            used_manifest.get("stepD_prime_expected_join_ratio_after_warmup", match_ratio_after_warmup) or 0.0
+        )
         failure_reasons: List[str] = []
-        if match_ratio < 0.95:
-            failure_reasons.append(f"embedding_join_ratio_below_threshold:{match_ratio:.3f}")
+        if match_ratio_after_warmup < 0.95:
+            failure_reasons.append(f"embedding_join_ratio_below_threshold_after_warmup:{match_ratio_after_warmup:.3f}")
         if nonzero_ratio < 0.80:
             failure_reasons.append(f"embedding_nonzero_ratio_below_threshold:{nonzero_ratio:.3f}")
-        if nan_fill_count > 0:
-            failure_reasons.append(f"dprime_nan_fill_detected:{nan_fill_count}")
+        if unexpected_missing_rows > 0:
+            failure_reasons.append(f"dprime_unexpected_missing_rows:{unexpected_missing_rows}")
+        if unexpected_nan_fill_count > 0:
+            failure_reasons.append(f"dprime_nan_fill_detected:{unexpected_nan_fill_count}")
         status = "PASS" if not failure_reasons else "FAIL"
         return {
             "stepdprime_join_status": status,
             "reuse_eligible": status == "PASS",
             "failure_reason": ";".join(failure_reasons),
             "embedding_join_ratio": match_ratio,
+            "embedding_join_ratio_after_warmup": match_ratio_after_warmup,
+            "expected_join_ratio_after_warmup": expected_join_ratio_after_warmup,
             "embedding_nonzero_ratio": nonzero_ratio,
             "nan_fill_count": nan_fill_count,
+            "unexpected_nan_fill_count": unexpected_nan_fill_count,
+            "warmup_rows": warmup_rows,
+            "allowed_missing_rows": allowed_missing_rows,
+            "unexpected_missing_rows": unexpected_missing_rows,
+            "first_valid_date": first_valid_date,
         }
 
     def _write_stepdprime_failure_artifacts(
@@ -244,6 +262,63 @@ class StepEService:
         }
         (out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps({"status": "FAIL", **summary_payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _compute_stepdprime_contract(
+        *,
+        base_dates: pd.Series,
+        embedding_dates: pd.Series,
+        contract_summary: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        base_dt = pd.to_datetime(base_dates, errors="coerce").dropna().drop_duplicates().sort_values().reset_index(drop=True)
+        emb_dt = pd.to_datetime(embedding_dates, errors="coerce").dropna().drop_duplicates().sort_values().reset_index(drop=True)
+        summary = dict(contract_summary or {})
+
+        first_valid_ts = pd.to_datetime(summary.get("first_valid_date"), errors="coerce")
+        if pd.isna(first_valid_ts) and not emb_dt.empty:
+            first_valid_ts = pd.to_datetime(emb_dt.iloc[0], errors="coerce")
+
+        warmup_rows = summary.get("warmup_rows")
+        try:
+            warmup_rows = int(warmup_rows) if warmup_rows is not None else None
+        except Exception:
+            warmup_rows = None
+        if warmup_rows is None:
+            warmup_rows = int((base_dt < first_valid_ts).sum()) if not pd.isna(first_valid_ts) else 0
+
+        expected_base_rows = summary.get("expected_base_rows")
+        try:
+            expected_base_rows = int(expected_base_rows) if expected_base_rows is not None else None
+        except Exception:
+            expected_base_rows = None
+        if expected_base_rows is None:
+            expected_base_rows = int(len(base_dt))
+
+        effective_embedding_rows = summary.get("effective_embedding_rows")
+        try:
+            effective_embedding_rows = int(effective_embedding_rows) if effective_embedding_rows is not None else None
+        except Exception:
+            effective_embedding_rows = None
+        if effective_embedding_rows is None:
+            effective_embedding_rows = int(len(emb_dt))
+
+        eligible_rows = max(0, int(expected_base_rows) - int(warmup_rows))
+        expected_join_ratio_after_warmup = summary.get("expected_join_ratio_after_warmup")
+        try:
+            expected_join_ratio_after_warmup = float(expected_join_ratio_after_warmup) if expected_join_ratio_after_warmup is not None else None
+        except Exception:
+            expected_join_ratio_after_warmup = None
+        if expected_join_ratio_after_warmup is None:
+            expected_join_ratio_after_warmup = float(effective_embedding_rows / eligible_rows) if eligible_rows > 0 else 1.0
+
+        return {
+            "warmup_rows": int(max(0, warmup_rows)),
+            "allowed_missing_rows": int(max(0, warmup_rows)),
+            "first_valid_date": "" if pd.isna(first_valid_ts) else str(first_valid_ts.date()),
+            "expected_base_rows": int(max(0, expected_base_rows)),
+            "effective_embedding_rows": int(max(0, effective_embedding_rows)),
+            "expected_join_ratio_after_warmup": float(expected_join_ratio_after_warmup),
+        }
 
     def run_agent(self, cfg: StepEConfig, *, date_range, symbol: str, mode: Optional[str] = None) -> Dict[str, object]:
         resolved_mode = str(mode or getattr(date_range, "mode", None) or "sim").strip().lower()
@@ -415,7 +490,12 @@ class StepEService:
             # A more reliable check: count non-zero on dprime columns (after fillna)
             dp = [c for c in df_train.columns if c.startswith("dprime_") and "_emb_" in c]
             if dp:
-                nonzero_ratio = float((df_train[dp].abs().sum(axis=1) > 1e-9).mean())
+                first_valid_date = pd.to_datetime(used_manifest.get("stepD_prime_first_valid_date"), errors="coerce")
+                if pd.isna(first_valid_date):
+                    eligible_train = df_train
+                else:
+                    eligible_train = df_train[pd.to_datetime(df_train["Date"], errors="coerce") >= first_valid_date]
+                nonzero_ratio = float((eligible_train[dp].abs().sum(axis=1) > 1e-9).mean()) if len(eligible_train) > 0 else 1.0
                 used_manifest["stepD_prime_nonzero_ratio"] = nonzero_ratio
 
         stepdprime_quality = self._evaluate_stepdprime_join_quality(used_manifest) if cfg.use_stepd_prime else {
@@ -645,8 +725,15 @@ class StepEService:
         df_log["source_device"] = device_name
         df_log["device_requested"] = str(cfg.device)
         df_log["embedding_join_ratio"] = float(used_manifest.get("stepD_prime_match_ratio", 1.0))
+        df_log["embedding_join_ratio_after_warmup"] = float(used_manifest.get("stepD_prime_match_ratio_after_warmup", used_manifest.get("stepD_prime_match_ratio", 1.0)))
+        df_log["expected_join_ratio_after_warmup"] = float(used_manifest.get("stepD_prime_expected_join_ratio_after_warmup", 1.0))
         df_log["embedding_nonzero_ratio"] = float(used_manifest.get("stepD_prime_nonzero_ratio", 1.0))
         df_log["nan_fill_count"] = int(used_manifest.get("stepD_prime_nan_fill_count", 0))
+        df_log["unexpected_nan_fill_count"] = int(used_manifest.get("stepD_prime_unexpected_nan_fill_count", 0))
+        df_log["warmup_rows"] = int(used_manifest.get("stepD_prime_warmup_rows", 0))
+        df_log["allowed_missing_rows"] = int(used_manifest.get("stepD_prime_allowed_missing_rows", 0))
+        df_log["unexpected_missing_rows"] = int(used_manifest.get("stepD_prime_unexpected_missing_rows", 0))
+        df_log["first_valid_date"] = str(used_manifest.get("stepD_prime_first_valid_date", "") or "")
         df_log["obs_cols_count"] = int(feature_summary["obs_cols_count"])
         df_log["obs_cols_signature"] = str(feature_summary["obs_cols_signature"])
         df_log["input_feature_summary"] = json.dumps(feature_summary, ensure_ascii=False)
@@ -774,6 +861,31 @@ class StepEService:
             elif canonical_root.exists() and legacy_root.exists():
                 warnings.append(f"legacy_duplicate_detected:{legacy_root}")
         return stepd_root, warnings, legacy_read, checked_roots
+
+    def _load_stepdprime_profile_summary(
+        self,
+        cfg: StepEConfig,
+        *,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+        shared_context: Optional[dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        profile = str(getattr(cfg, "dprime_profile", "") or "").strip()
+        if not profile:
+            return {}
+        shared = dict(shared_context or {})
+        stepd_root = Path(shared.get("stepDprime_root", "") or "") if shared.get("stepDprime_root") else None
+        if stepd_root is None:
+            stepd_root, _warnings, _legacy_read, _checked_roots = self._resolve_stepdprime_context(out_root=out_root, mode=mode)
+        summary_path = stepd_root / f"stepDprime_profile_summary_{profile}_{symbol}.json"
+        if not summary_path.exists():
+            return {}
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _merge_cache_key(self, cfg: StepEConfig, *, date_range, out_root: Path, mode: str, symbol: str) -> Tuple[object, ...]:
         return (
@@ -928,23 +1040,48 @@ class StepEService:
             dprime_df = self._load_stepD_prime_embeddings(cfg, out_root=out_root, mode=mode, symbol=symbol, used_manifest=used_manifest, shared_context=shared_context)
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
             dprime_df["Date"] = pd.to_datetime(dprime_df["Date"], errors="coerce").dt.normalize()
+            contract_summary = self._load_stepdprime_profile_summary(
+                cfg,
+                out_root=out_root,
+                mode=mode,
+                symbol=symbol,
+                shared_context=shared_context,
+            )
+            contract = self._compute_stepdprime_contract(
+                base_dates=df["Date"],
+                embedding_dates=dprime_df["Date"],
+                contract_summary=contract_summary,
+            )
+            used_manifest["stepD_prime_warmup_rows"] = int(contract["warmup_rows"])
+            used_manifest["stepD_prime_allowed_missing_rows"] = int(contract["allowed_missing_rows"])
+            used_manifest["stepD_prime_first_valid_date"] = str(contract["first_valid_date"])
+            used_manifest["stepD_prime_expected_base_rows"] = int(contract["expected_base_rows"])
+            used_manifest["stepD_prime_effective_embedding_rows"] = int(contract["effective_embedding_rows"])
+            used_manifest["stepD_prime_expected_join_ratio_after_warmup"] = float(contract["expected_join_ratio_after_warmup"])
 
             dprime_dates = dprime_df["Date"].dropna().unique()
             match_ratio = float(df["Date"].isin(dprime_dates).mean()) if len(dprime_dates) > 0 else 0.0
             used_manifest["stepD_prime_match_ratio"] = match_ratio
-            if match_ratio < 0.95:
-                df_min, df_max = df["Date"].min(), df["Date"].max()
-                dp_min, dp_max = dprime_df["Date"].min(), dprime_df["Date"].max()
-                raise RuntimeError(
-                    "StepD' merge mismatch: "
-                    f"match_ratio={match_ratio:.3f} df={df_min}..{df_max} dprime={dp_min}..{dp_max}"
-                )
 
             df = df.merge(dprime_df, on="Date", how="left")
             dp_cols = [c for c in df.columns if c.startswith("dprime_") and "_emb_" in c]
             if dp_cols:
+                first_valid_date = pd.to_datetime(contract["first_valid_date"], errors="coerce")
+                row_missing_mask = df[dp_cols].isna().any(axis=1)
+                if pd.isna(first_valid_date):
+                    allowed_missing_mask = pd.Series(False, index=df.index)
+                    eligible_mask = pd.Series(True, index=df.index)
+                else:
+                    allowed_missing_mask = pd.to_datetime(df["Date"], errors="coerce") < first_valid_date
+                    eligible_mask = ~allowed_missing_mask
+                used_manifest["stepD_prime_allowed_missing_row_count_observed"] = int((row_missing_mask & allowed_missing_mask).sum())
+                used_manifest["stepD_prime_unexpected_missing_rows"] = int((row_missing_mask & eligible_mask).sum())
+                eligible_total = int(eligible_mask.sum())
+                eligible_matched = int((~row_missing_mask & eligible_mask).sum())
+                used_manifest["stepD_prime_match_ratio_after_warmup"] = float(eligible_matched / eligible_total) if eligible_total > 0 else 1.0
                 nan_fill_count = int(df[dp_cols].isna().sum().sum())
                 used_manifest["stepD_prime_nan_fill_count"] = nan_fill_count
+                used_manifest["stepD_prime_unexpected_nan_fill_count"] = int(df.loc[eligible_mask, dp_cols].isna().sum().sum())
                 df[dp_cols] = df[dp_cols].fillna(0.0)
 
         # Pair-trade daily next returns (D->D+1 confirmed, no leakage)
