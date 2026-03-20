@@ -198,6 +198,8 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 - Run root: `C:\work\apex_work\runs\<run_id>`
 - Data: `...\data`
 - Pipeline outputs: `...\output`
+- Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>\logs\`
+  - includes copied run/console/error/step-exec/diagnostics logs plus `logs_manifest.json`
 - Logs: `...\logs\run_<run_id>.log`
 - Completion marker: `...\output\DONE.txt`
 - Run zip: `...\run_<run_id>.zip` (contains `output/` and `logs/`)
@@ -218,10 +220,13 @@ Snapshot zip naming:
 - Artifact name pattern: `desktop-run-<run_id>` (fallback `desktop-run-<github.run_id>`)
 - Staging root: `%GITHUB_WORKSPACE%\temp\desktop_artifacts`
 - Uploaded path: `%GITHUB_WORKSPACE%\temp\desktop_artifacts\**`
+- The workflow now copies distributed logs into the canonical output root before staging/upload so the output tree alone is enough for failure triage.
 - Staged files:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`
   - `run_<run_id>.zip`
+  - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>/logs/`
+  - `logs_manifest.json`
 - Additional publication branch for evaluation snapshots: `output-latest`
   - stores only the latest snapshot payload (`output_latest.zip`, checksum, run metadata, and lightweight eval/index/report files)
   - branch is force-pushed as latest-only distribution and is intentionally separated from `main` source history
