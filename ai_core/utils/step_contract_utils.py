@@ -163,14 +163,40 @@ def validate_step_dprime(
     """
     base = Path(output_root) / "stepDprime" / mode
     missing: List[str] = []
+    marker_dir = base / "pipeline_markers"
+
+    base_meta = base / f"stepDprime_base_meta_{symbol}.json"
+    base_ready = marker_dir / "DPrimeBaseCluster.READY.json"
+    base_running = marker_dir / "DPrimeBaseCluster.RUNNING.json"
+    if not base_meta.exists():
+        missing.append(str(base_meta))
+    if not base_ready.exists():
+        missing.append(str(base_ready))
+    if base_running.exists():
+        missing.append(f"stale_running_marker:{base_running}")
 
     for profile in agents:
+        train = base / f"stepDprime_state_train_{profile}_{symbol}.csv"
         p = base / f"stepDprime_state_test_{profile}_{symbol}.csv"
+        if not train.exists():
+            missing.append(str(train))
         if not p.exists():
             missing.append(str(p))
         emb = base / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_test.csv"
         if not emb.exists():
             missing.append(str(emb))
+        emb_all = base / "embeddings" / f"stepDprime_{profile}_{symbol}_embeddings_all.csv"
+        if not emb_all.exists():
+            missing.append(str(emb_all))
+        profile_summary = base / f"stepDprime_profile_summary_{profile}_{symbol}.json"
+        if not profile_summary.exists():
+            missing.append(str(profile_summary))
+        ready = marker_dir / f"DPrimeFinal_{profile}.READY.json"
+        if not ready.exists():
+            missing.append(str(ready))
+        running = marker_dir / f"DPrimeFinal_{profile}.RUNNING.json"
+        if running.exists():
+            missing.append(f"stale_running_marker:{running}")
 
     return missing
 

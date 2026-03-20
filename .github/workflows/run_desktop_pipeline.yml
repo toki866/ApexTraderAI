@@ -2587,6 +2587,191 @@ jobs:
 
           Write-Host "latestDiagZip=$($latestZip.FullName)"
 
+      - name: Aggregate canonical logs into output root
+        if: always()
+        id: aggregate_canonical_logs
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+          if (-not $outputRoot) {
+            $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $outputRoot = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $outputRoot = Join-Path $outputRoot $testStartForPath
+          }
+
+          if (-not $outputRoot) {
+            Write-Warning 'canonical output_root was not resolved; skipping log aggregation.'
+            exit 0
+          }
+
+          $logsDir = Join-Path $outputRoot 'logs'
+          New-Item -Path $logsDir -ItemType Directory -Force | Out-Null
+          $manifestPath = Join-Path $logsDir 'logs_manifest.json'
+          $items = New-Object System.Collections.Generic.List[object]
+
+          function New-ManifestItem {
+            param(
+              [string]$Kind,
+              [string]$Label,
+              [bool]$Expected,
+              [string]$SourcePath,
+              [string]$DestinationPath,
+              [bool]$CopyPerformed,
+              [string[]]$Notes
+            )
+            $sizeBytes = $null
+            $mtimeUtc = $null
+            $statPath = $null
+            if ($DestinationPath -and (Test-Path $DestinationPath)) {
+              $statPath = $DestinationPath
+            } elseif ($SourcePath -and (Test-Path $SourcePath)) {
+              $statPath = $SourcePath
+            }
+            if ($statPath) {
+              $it = Get-Item -LiteralPath $statPath
+              $sizeBytes = [int64]$it.Length
+              $mtimeUtc = $it.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            return [ordered]@{
+              kind = $Kind
+              label = $Label
+              expected = $Expected
+              found = [bool]($SourcePath -and (Test-Path $SourcePath))
+              source_path = $(if ($SourcePath) { $SourcePath } else { $null })
+              destination_path = $(if ($DestinationPath) { $DestinationPath } else { $null })
+              copy_performed = $CopyPerformed
+              size_bytes = $sizeBytes
+              mtime_utc = $mtimeUtc
+              notes = @($Notes | Where-Object { $_ })
+            }
+          }
+
+          function Add-ResolvedItem {
+            param(
+              [string]$Kind,
+              [string]$Label,
+              [bool]$Expected,
+              [string[]]$Candidates,
+              [string]$DestinationName
+            )
+            $sourcePath = $null
+            foreach ($candidate in @($Candidates | Where-Object { $_ })) {
+              if (Test-Path -LiteralPath $candidate) {
+                $sourcePath = (Resolve-Path -LiteralPath $candidate).Path
+                break
+              }
+            }
+
+            $destinationPath = $null
+            $copyPerformed = $false
+            $notes = @()
+            if ($sourcePath) {
+              $leafName = if ($DestinationName) { $DestinationName } else { Split-Path -Path $sourcePath -Leaf }
+              $destinationPath = Join-Path $logsDir $leafName
+              if ($sourcePath -ne $destinationPath) {
+                Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+                $copyPerformed = $true
+              } else {
+                $notes += 'source_already_in_logs_dir'
+              }
+            } else {
+              $notes += 'source_not_found'
+            }
+
+            $items.Add((New-ManifestItem -Kind $Kind -Label $Label -Expected $Expected -SourcePath $sourcePath -DestinationPath $destinationPath -CopyPerformed $copyPerformed -Notes $notes)) | Out-Null
+          }
+
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+          if ((-not $runDir) -and $env:APEX_RUN_ID) {
+            $candidateRunDir = Join-Path 'C:\work\apex_work\runs' $env:APEX_RUN_ID
+            if (Test-Path $candidateRunDir) { $runDir = $candidateRunDir }
+          }
+
+          $runLogCandidates = @()
+          $resolvedRunLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ($resolvedRunLog) { $runLogCandidates += $resolvedRunLog }
+          if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
+          if ($runDir) {
+            $runLogCandidates += (Join-Path (Join-Path $runDir 'logs') ('run_{0}.log' -f $env:APEX_RUN_ID))
+            $runLogCandidates += Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
+          }
+          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          if (Test-Path $sessionLogRoot) {
+            $runLogCandidates += Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
+          }
+          Add-ResolvedItem -Kind 'run_log' -Label ('run_{0}.log' -f $env:APEX_RUN_ID) -Expected $true -Candidates $runLogCandidates -DestinationName $null
+
+          $consoleCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'),
+            (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
+          )
+          if ($env:RUN_CONSOLE_LOG) { $consoleCandidates = @($env:RUN_CONSOLE_LOG) + $consoleCandidates }
+          Add-ResolvedItem -Kind 'console_log' -Label 'run_all_local_then_copy_console.log' -Expected $true -Candidates $consoleCandidates -DestinationName 'run_all_local_then_copy_console.log'
+
+          $oneTapCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt')
+          )
+          if ($runDir) { $oneTapCandidates += (Join-Path $runDir 'logs\ONE_TAP_ERROR_REPORT.txt') }
+          Add-ResolvedItem -Kind 'one_tap_error_report' -Label 'ONE_TAP_ERROR_REPORT.txt' -Expected $true -Candidates $oneTapCandidates -DestinationName 'ONE_TAP_ERROR_REPORT.txt'
+
+          $stepExecLogs = @()
+          $stepExecBases = @((Join-Path $env:GITHUB_WORKSPACE 'temp'))
+          if ($runDir) { $stepExecBases += (Join-Path $runDir 'logs') }
+          foreach ($stepExecBase in $stepExecBases) {
+            if (Test-Path $stepExecBase) {
+              $stepExecLogs += Get-ChildItem -Path $stepExecBase -Filter 'step*_exec.log' -File -ErrorAction SilentlyContinue
+            }
+          }
+          $stepExecLogs = @($stepExecLogs | Sort-Object FullName -Unique)
+          foreach ($stepExec in $stepExecLogs) {
+            Add-ResolvedItem -Kind 'step_exec_log' -Label $stepExec.Name -Expected $false -Candidates @($stepExec.FullName) -DestinationName $stepExec.Name
+          }
+
+          $diagDir = '${{ steps.package_diag.outputs.diag_dir }}'
+          $diagZip = $null
+          if ($diagDir -and (Test-Path $diagDir)) {
+            $diagZip = Get-ChildItem -Path $diagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
+          if ($diagZip) {
+            Add-ResolvedItem -Kind 'diagnostics_zip' -Label $diagZip.Name -Expected $false -Candidates @($diagZip.FullName) -DestinationName $diagZip.Name
+          } else {
+            $items.Add((New-ManifestItem -Kind 'diagnostics_zip' -Label 'diag_latest.zip' -Expected $false -SourcePath $null -DestinationPath $null -CopyPerformed $false -Notes @('source_not_found'))) | Out-Null
+          }
+
+          $manifest = [ordered]@{
+            generated_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            output_root = $outputRoot
+            logs_dir = $logsDir
+            apex_run_id = $env:APEX_RUN_ID
+            workflow_run_id = $env:GITHUB_RUN_ID
+            workflow_run_attempt = $env:GITHUB_RUN_ATTEMPT
+            items = @($items)
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+
+          if (Test-Path $reportPath) {
+            $foundCount = (@($items) | Where-Object { $_.found }).Count
+            $missingCount = (@($items) | Where-Object { -not $_.found -and $_.expected }).Count
+            Add-Content -Path $reportPath -Value @(
+              '[STEP] aggregate_canonical_logs',
+              ('[INFO] output_root={0}' -f $outputRoot),
+              ('[INFO] logs_dir={0}' -f $logsDir),
+              ('[INFO] logs_manifest={0}' -f $manifestPath),
+              ('[INFO] found_count={0}' -f $foundCount),
+              ('[INFO] expected_missing_count={0}' -f $missingCount),
+              ''
+            )
+          }
+
+          "logs_dir=$logsDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "logs_manifest_path=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Canonical logs aggregated to: $logsDir"
+
       - name: Tail latest run log on failure
         if: failure()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -2757,6 +2942,18 @@ jobs:
               '[WARN] ONE_TAP_ERROR_REPORT.txt was missing at stage time.',
               ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
             ) | Set-Content -Path $reportDest -Encoding UTF8
+          }
+
+          $canonicalLogsDir = '${{ steps.aggregate_canonical_logs.outputs.logs_dir }}'
+          if ((-not $canonicalLogsDir) -and $env:EFFECTIVE_WIN_OUTPUT) {
+            $canonicalLogsDir = Join-Path $env:EFFECTIVE_WIN_OUTPUT 'logs'
+          }
+          if ($canonicalLogsDir -and (Test-Path $canonicalLogsDir)) {
+            Copy-Item -Path $canonicalLogsDir -Destination (Join-Path $artifactRoot 'canonical_logs') -Recurse -Force
+            $canonicalManifest = Join-Path $canonicalLogsDir 'logs_manifest.json'
+            if (Test-Path $canonicalManifest) {
+              Copy-Item -Path $canonicalManifest -Destination (Join-Path $artifactRoot 'logs_manifest.json') -Force
+            }
           }
 
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'
@@ -6439,6 +6636,191 @@ jobs:
 
           Write-Host "latestDiagZip=$($latestZip.FullName)"
 
+      - name: Aggregate canonical logs into output root
+        if: always()
+        id: aggregate_canonical_logs
+        continue-on-error: true
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
+          if (-not $outputRoot) {
+            $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
+            $testStartForPath = "${{ inputs.test_start_date }}"
+            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
+            $outputRoot = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $outputRoot = Join-Path $outputRoot $testStartForPath
+          }
+
+          if (-not $outputRoot) {
+            Write-Warning 'canonical output_root was not resolved; skipping log aggregation.'
+            exit 0
+          }
+
+          $logsDir = Join-Path $outputRoot 'logs'
+          New-Item -Path $logsDir -ItemType Directory -Force | Out-Null
+          $manifestPath = Join-Path $logsDir 'logs_manifest.json'
+          $items = New-Object System.Collections.Generic.List[object]
+
+          function New-ManifestItem {
+            param(
+              [string]$Kind,
+              [string]$Label,
+              [bool]$Expected,
+              [string]$SourcePath,
+              [string]$DestinationPath,
+              [bool]$CopyPerformed,
+              [string[]]$Notes
+            )
+            $sizeBytes = $null
+            $mtimeUtc = $null
+            $statPath = $null
+            if ($DestinationPath -and (Test-Path $DestinationPath)) {
+              $statPath = $DestinationPath
+            } elseif ($SourcePath -and (Test-Path $SourcePath)) {
+              $statPath = $SourcePath
+            }
+            if ($statPath) {
+              $it = Get-Item -LiteralPath $statPath
+              $sizeBytes = [int64]$it.Length
+              $mtimeUtc = $it.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            return [ordered]@{
+              kind = $Kind
+              label = $Label
+              expected = $Expected
+              found = [bool]($SourcePath -and (Test-Path $SourcePath))
+              source_path = $(if ($SourcePath) { $SourcePath } else { $null })
+              destination_path = $(if ($DestinationPath) { $DestinationPath } else { $null })
+              copy_performed = $CopyPerformed
+              size_bytes = $sizeBytes
+              mtime_utc = $mtimeUtc
+              notes = @($Notes | Where-Object { $_ })
+            }
+          }
+
+          function Add-ResolvedItem {
+            param(
+              [string]$Kind,
+              [string]$Label,
+              [bool]$Expected,
+              [string[]]$Candidates,
+              [string]$DestinationName
+            )
+            $sourcePath = $null
+            foreach ($candidate in @($Candidates | Where-Object { $_ })) {
+              if (Test-Path -LiteralPath $candidate) {
+                $sourcePath = (Resolve-Path -LiteralPath $candidate).Path
+                break
+              }
+            }
+
+            $destinationPath = $null
+            $copyPerformed = $false
+            $notes = @()
+            if ($sourcePath) {
+              $leafName = if ($DestinationName) { $DestinationName } else { Split-Path -Path $sourcePath -Leaf }
+              $destinationPath = Join-Path $logsDir $leafName
+              if ($sourcePath -ne $destinationPath) {
+                Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+                $copyPerformed = $true
+              } else {
+                $notes += 'source_already_in_logs_dir'
+              }
+            } else {
+              $notes += 'source_not_found'
+            }
+
+            $items.Add((New-ManifestItem -Kind $Kind -Label $Label -Expected $Expected -SourcePath $sourcePath -DestinationPath $destinationPath -CopyPerformed $copyPerformed -Notes $notes)) | Out-Null
+          }
+
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
+          if ((-not $runDir) -and $env:APEX_RUN_ID) {
+            $candidateRunDir = Join-Path 'C:\work\apex_work\runs' $env:APEX_RUN_ID
+            if (Test-Path $candidateRunDir) { $runDir = $candidateRunDir }
+          }
+
+          $runLogCandidates = @()
+          $resolvedRunLog = '${{ steps.resolve_artifacts.outputs.run_log_path }}'
+          if ($resolvedRunLog) { $runLogCandidates += $resolvedRunLog }
+          if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
+          if ($runDir) {
+            $runLogCandidates += (Join-Path (Join-Path $runDir 'logs') ('run_{0}.log' -f $env:APEX_RUN_ID))
+            $runLogCandidates += Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
+          }
+          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          if (Test-Path $sessionLogRoot) {
+            $runLogCandidates += Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
+          }
+          Add-ResolvedItem -Kind 'run_log' -Label ('run_{0}.log' -f $env:APEX_RUN_ID) -Expected $true -Candidates $runLogCandidates -DestinationName $null
+
+          $consoleCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'),
+            (Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log')
+          )
+          if ($env:RUN_CONSOLE_LOG) { $consoleCandidates = @($env:RUN_CONSOLE_LOG) + $consoleCandidates }
+          Add-ResolvedItem -Kind 'console_log' -Label 'run_all_local_then_copy_console.log' -Expected $true -Candidates $consoleCandidates -DestinationName 'run_all_local_then_copy_console.log'
+
+          $oneTapCandidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt')
+          )
+          if ($runDir) { $oneTapCandidates += (Join-Path $runDir 'logs\ONE_TAP_ERROR_REPORT.txt') }
+          Add-ResolvedItem -Kind 'one_tap_error_report' -Label 'ONE_TAP_ERROR_REPORT.txt' -Expected $true -Candidates $oneTapCandidates -DestinationName 'ONE_TAP_ERROR_REPORT.txt'
+
+          $stepExecLogs = @()
+          $stepExecBases = @((Join-Path $env:GITHUB_WORKSPACE 'temp'))
+          if ($runDir) { $stepExecBases += (Join-Path $runDir 'logs') }
+          foreach ($stepExecBase in $stepExecBases) {
+            if (Test-Path $stepExecBase) {
+              $stepExecLogs += Get-ChildItem -Path $stepExecBase -Filter 'step*_exec.log' -File -ErrorAction SilentlyContinue
+            }
+          }
+          $stepExecLogs = @($stepExecLogs | Sort-Object FullName -Unique)
+          foreach ($stepExec in $stepExecLogs) {
+            Add-ResolvedItem -Kind 'step_exec_log' -Label $stepExec.Name -Expected $false -Candidates @($stepExec.FullName) -DestinationName $stepExec.Name
+          }
+
+          $diagDir = '${{ steps.package_diag.outputs.diag_dir }}'
+          $diagZip = $null
+          if ($diagDir -and (Test-Path $diagDir)) {
+            $diagZip = Get-ChildItem -Path $diagDir -File -Filter 'diag_*.zip' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          }
+          if ($diagZip) {
+            Add-ResolvedItem -Kind 'diagnostics_zip' -Label $diagZip.Name -Expected $false -Candidates @($diagZip.FullName) -DestinationName $diagZip.Name
+          } else {
+            $items.Add((New-ManifestItem -Kind 'diagnostics_zip' -Label 'diag_latest.zip' -Expected $false -SourcePath $null -DestinationPath $null -CopyPerformed $false -Notes @('source_not_found'))) | Out-Null
+          }
+
+          $manifest = [ordered]@{
+            generated_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            output_root = $outputRoot
+            logs_dir = $logsDir
+            apex_run_id = $env:APEX_RUN_ID
+            workflow_run_id = $env:GITHUB_RUN_ID
+            workflow_run_attempt = $env:GITHUB_RUN_ATTEMPT
+            items = @($items)
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+
+          if (Test-Path $reportPath) {
+            $foundCount = (@($items) | Where-Object { $_.found }).Count
+            $missingCount = (@($items) | Where-Object { -not $_.found -and $_.expected }).Count
+            Add-Content -Path $reportPath -Value @(
+              '[STEP] aggregate_canonical_logs',
+              ('[INFO] output_root={0}' -f $outputRoot),
+              ('[INFO] logs_dir={0}' -f $logsDir),
+              ('[INFO] logs_manifest={0}' -f $manifestPath),
+              ('[INFO] found_count={0}' -f $foundCount),
+              ('[INFO] expected_missing_count={0}' -f $missingCount),
+              ''
+            )
+          }
+
+          "logs_dir=$logsDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "logs_manifest_path=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Canonical logs aggregated to: $logsDir"
+
       - name: Tail latest run log on failure
         if: failure()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -6595,6 +6977,18 @@ jobs:
               '[WARN] ONE_TAP_ERROR_REPORT.txt was missing at stage time.',
               ('timestamp={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
             ) | Set-Content -Path $reportDest -Encoding UTF8
+          }
+
+          $canonicalLogsDir = '${{ steps.aggregate_canonical_logs.outputs.logs_dir }}'
+          if ((-not $canonicalLogsDir) -and $env:EFFECTIVE_WIN_OUTPUT) {
+            $canonicalLogsDir = Join-Path $env:EFFECTIVE_WIN_OUTPUT 'logs'
+          }
+          if ($canonicalLogsDir -and (Test-Path $canonicalLogsDir)) {
+            Copy-Item -Path $canonicalLogsDir -Destination (Join-Path $artifactRoot 'canonical_logs') -Recurse -Force
+            $canonicalManifest = Join-Path $canonicalLogsDir 'logs_manifest.json'
+            if (Test-Path $canonicalManifest) {
+              Copy-Item -Path $canonicalManifest -Destination (Join-Path $artifactRoot 'logs_manifest.json') -Force
+            }
           }
 
           $consoleLog = Join-Path $env:GITHUB_WORKSPACE 'temp\run_all_local_then_copy_console.log'

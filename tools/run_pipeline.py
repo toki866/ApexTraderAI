@@ -34,6 +34,7 @@ import dataclasses
 import inspect
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -324,6 +325,248 @@ def _append_run_log(run_log_path: Optional[Path], text: str) -> None:
                 fh.write("\n")
     except Exception as exc:
         print(f"[PIPELINE] WARN run log append failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
+def _coerce_existing_path(raw: Any) -> Optional[Path]:
+    try:
+        s = str(raw or "").strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+
+    direct = Path(s).expanduser()
+    if direct.exists():
+        return direct.resolve()
+
+    if os.name != "nt":
+        m = re.match(r"^(?P<drive>[A-Za-z]):[\\/](?P<rest>.*)$", s)
+        if m:
+            rest = m.group("rest").replace("\\", "/")
+            translated = Path("/mnt") / m.group("drive").lower() / rest
+            if translated.exists():
+                return translated.resolve()
+    return None
+
+
+def _iter_existing_paths(candidates: Sequence[Any]) -> List[Path]:
+    seen: set[str] = set()
+    out: List[Path] = []
+    for raw in candidates:
+        p = _coerce_existing_path(raw)
+        if p is None:
+            continue
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _build_logs_manifest_item(
+    *,
+    kind: str,
+    label: str,
+    expected: bool,
+    source_path: Optional[Path],
+    destination_path: Optional[Path],
+    copy_performed: bool,
+    notes: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    item: Dict[str, Any] = {
+        "kind": kind,
+        "label": label,
+        "expected": bool(expected),
+        "found": source_path is not None and source_path.exists(),
+        "source_path": str(source_path) if source_path is not None else None,
+        "destination_path": str(destination_path) if destination_path is not None else None,
+        "copy_performed": bool(copy_performed),
+        "size_bytes": None,
+        "mtime_utc": None,
+        "notes": list(notes or []),
+    }
+    stat_target = destination_path if destination_path is not None and destination_path.exists() else source_path
+    if stat_target is not None and stat_target.exists():
+        st = stat_target.stat()
+        item["size_bytes"] = int(st.st_size)
+        item["mtime_utc"] = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return item
+
+
+def _aggregate_logs_to_output_root(
+    *,
+    output_root: Path,
+    run_id: str,
+    pipeline_status: str,
+    error_text: Optional[str] = None,
+) -> Optional[Path]:
+    try:
+        logs_dir = Path(output_root) / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = logs_dir / "logs_manifest.json"
+
+        github_workspace = os.environ.get("GITHUB_WORKSPACE", "")
+        runner_temp = os.environ.get("RUNNER_TEMP", "")
+        apex_run_id = os.environ.get("APEX_RUN_ID", "") or run_id
+        env_run_log = os.environ.get("RUN_LOG_PATH", "")
+        env_console_log = os.environ.get("RUN_CONSOLE_LOG", "")
+        env_one_tap = os.environ.get("ONE_TAP_ERROR_REPORT_PATH", "")
+        env_diag_zip = os.environ.get("APEX_DIAGNOSTICS_ZIP", "")
+        env_diag_dir = os.environ.get("APEX_DIAGNOSTICS_DIR", "")
+
+        session_logs_root = r"C:\work\apex_work\session_logs"
+        run_logs_root = r"C:\work\apex_work\runs"
+        run_dir_candidates: List[Any] = []
+        if apex_run_id:
+            run_dir_candidates.append(Path(run_logs_root) / apex_run_id)
+        run_dir_candidates.append(Path(output_root).parent)
+        existing_run_dirs = [p for p in _iter_existing_paths(run_dir_candidates) if p.is_dir()]
+
+        items: List[Dict[str, Any]] = []
+
+        def _copy_first(kind: str, label: str, expected: bool, candidates: Sequence[Any], destination_name: Optional[str] = None) -> None:
+            existing = _iter_existing_paths(candidates)
+            source_path = existing[0] if existing else None
+            destination_path = logs_dir / (destination_name or (source_path.name if source_path is not None else label))
+            copy_performed = False
+            notes: List[str] = []
+            if source_path is None:
+                notes.append("source_not_found")
+                destination_path = destination_path if destination_name else None
+            else:
+                if source_path.resolve() != destination_path.resolve():
+                    shutil.copy2(source_path, destination_path)
+                    copy_performed = True
+                else:
+                    notes.append("source_already_in_logs_dir")
+            items.append(
+                _build_logs_manifest_item(
+                    kind=kind,
+                    label=label,
+                    expected=expected,
+                    source_path=source_path,
+                    destination_path=destination_path if source_path is not None or destination_name else None,
+                    copy_performed=copy_performed,
+                    notes=notes,
+                )
+            )
+
+        run_log_candidates: List[Any] = [env_run_log]
+        for run_dir in existing_run_dirs:
+            run_log_candidates.append(run_dir / "logs" / f"run_{apex_run_id}.log")
+            run_log_candidates.extend(sorted((run_dir / "logs").glob("run_*.log")))
+        session_log_dir = _coerce_existing_path(session_logs_root)
+        if session_log_dir is not None and session_log_dir.is_dir():
+            run_log_candidates.extend(sorted(session_log_dir.glob(f"run_{apex_run_id}.log")))
+            run_log_candidates.extend(sorted(session_log_dir.glob("run_*.log"), key=lambda p: p.stat().st_mtime, reverse=True))
+        _copy_first("run_log", f"run_{apex_run_id}.log", True, run_log_candidates)
+
+        console_candidates: List[Any] = [
+            env_console_log,
+            Path(github_workspace) / "temp" / "run_all_local_then_copy_console.log" if github_workspace else None,
+            Path(runner_temp) / "run_all_local_then_copy_console.log" if runner_temp else None,
+        ]
+        _copy_first("console_log", "run_all_local_then_copy_console.log", True, console_candidates)
+
+        one_tap_candidates: List[Any] = [
+            env_one_tap,
+            Path(github_workspace) / "temp" / "ONE_TAP_ERROR_REPORT.txt" if github_workspace else None,
+        ]
+        for run_dir in existing_run_dirs:
+            one_tap_candidates.append(run_dir / "logs" / "ONE_TAP_ERROR_REPORT.txt")
+        _copy_first("one_tap_error_report", "ONE_TAP_ERROR_REPORT.txt", True, one_tap_candidates)
+
+        exec_candidates: List[Path] = []
+        for base in _iter_existing_paths([
+            Path(github_workspace) / "temp" if github_workspace else None,
+            Path(runner_temp) if runner_temp else None,
+            *(run_dir / "logs" for run_dir in existing_run_dirs),
+        ]):
+            if not base.is_dir():
+                continue
+            exec_candidates.extend(sorted(base.glob("step*_exec.log")))
+        seen_exec: set[str] = set()
+        for source_path in exec_candidates:
+            key = str(source_path.resolve())
+            if key in seen_exec:
+                continue
+            seen_exec.add(key)
+            destination_path = logs_dir / source_path.name
+            copy_performed = False
+            notes: List[str] = []
+            if source_path.resolve() != destination_path.resolve():
+                shutil.copy2(source_path, destination_path)
+                copy_performed = True
+            else:
+                notes.append("source_already_in_logs_dir")
+            items.append(
+                _build_logs_manifest_item(
+                    kind="step_exec_log",
+                    label=source_path.name,
+                    expected=False,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    copy_performed=copy_performed,
+                    notes=notes,
+                )
+            )
+
+        diag_candidates: List[Path] = []
+        for diag_base in _iter_existing_paths([
+            env_diag_zip,
+            env_diag_dir,
+            Path(runner_temp) / "ApexTraderAI" / "diagnostics" if runner_temp else None,
+        ]):
+            if diag_base.is_file() and diag_base.suffix.lower() == ".zip":
+                diag_candidates.append(diag_base)
+            elif diag_base.is_dir():
+                diag_candidates.extend(sorted(diag_base.glob("diag_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True))
+        if diag_candidates:
+            source_path = diag_candidates[0]
+            destination_path = logs_dir / source_path.name
+            copy_performed = False
+            if source_path.resolve() != destination_path.resolve():
+                shutil.copy2(source_path, destination_path)
+                copy_performed = True
+            items.append(
+                _build_logs_manifest_item(
+                    kind="diagnostics_zip",
+                    label=source_path.name,
+                    expected=False,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    copy_performed=copy_performed,
+                    notes=[],
+                )
+            )
+        else:
+            items.append(
+                _build_logs_manifest_item(
+                    kind="diagnostics_zip",
+                    label="diag_latest.zip",
+                    expected=False,
+                    source_path=None,
+                    destination_path=None,
+                    copy_performed=False,
+                    notes=["source_not_found"],
+                )
+            )
+
+        manifest = {
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pipeline_status": pipeline_status,
+            "error": error_text,
+            "run_id": apex_run_id,
+            "output_root": str(output_root),
+            "logs_dir": str(logs_dir),
+            "items": items,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return manifest_path
+    except Exception as exc:
+        print(f"[PIPELINE] WARN log aggregation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
 
 
 
@@ -1959,6 +2202,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     resolved_stepE_mode = (args.mode or args.stepE_mode or "sim").strip().lower()
 
     resolved_output_root.mkdir(parents=True, exist_ok=True)
+    (resolved_output_root / "logs").mkdir(parents=True, exist_ok=True)
     app_config = _apply_config_output_root(app_config, resolved_output_root)
     print(f"[PIPELINE] args_output_root={args.output_root}")
     print(f"[PIPELINE] resolved_output_root={resolved_output_root}")
@@ -2347,6 +2591,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     run_log_path = _ensure_run_log_file(run_id=run_id, output_root=resolved_output_root)
     if run_log_path is not None:
         print(f"[PIPELINE] run_log_path={run_log_path}")
+
+    pipeline_status = "running"
+    pipeline_error: Optional[str] = None
 
     resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
     app_config = _apply_config_data_dir(app_config, resolved_data_root)
@@ -3388,8 +3635,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[ONE_TAP][DIAG] timing_summary_agent_exists={'yes' if timing_summary_agent.exists() else 'no'}")
         print("[headless] ALL DONE")
         print(f"[PIPELINE] status=success steps={','.join(steps)} output_root={resolved_output_root}")
+        pipeline_status = "success"
         return 0
     except Exception as exc:
+        pipeline_status = "failed"
+        pipeline_error = f"{type(exc).__name__}: {exc}"
         try:
             timing.write_summaries()
         except Exception:
@@ -3398,6 +3648,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[PIPELINE] exception={type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc()
         raise
+    finally:
+        _aggregate_logs_to_output_root(
+            output_root=Path(resolved_output_root),
+            run_id=run_id,
+            pipeline_status=pipeline_status,
+            error_text=pipeline_error,
+        )
 
 
 if __name__ == "__main__":
