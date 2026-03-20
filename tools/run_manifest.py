@@ -595,6 +595,93 @@ def read_stepe_quality_status(agent: str, output_root: Path, symbol: str, mode: 
     return None
 
 
+def reconcile_stepe_manifest_from_artifacts(
+    requested_agents: List[str],
+    *,
+    output_root: Path,
+    mode: str,
+    symbol: str,
+    manifest: Optional["RunManifest"] = None,
+) -> Dict[str, Any]:
+    """Reconcile stale StepE manifest state against on-disk artifacts.
+
+    A StepE agent is considered complete only when:
+    - daily log / summary / audit / model artifacts exist, and
+    - quality status resolves to ``PASS``.
+
+    When *manifest* is provided, stale per-agent FAIL/pending entries are self-healed
+    to ``complete``+``PASS`` whenever artifacts and quality agree. The step-level
+    ``E`` status is also updated to ``complete``/``PASS`` once all requested agents
+    converge, otherwise downgraded to ``pending``/``FAIL``.
+    """
+    normalized_agents = list(dict.fromkeys(str(a).strip() for a in requested_agents if str(a).strip()))
+    complete_agents: List[str] = []
+    missing_agents: List[str] = []
+    missing_detail: Dict[str, List[str]] = {}
+
+    for agent in normalized_agents:
+        artifact_ok = check_stepe_agent_artifact(agent, output_root, symbol, mode)
+        quality_status = read_stepe_quality_status(agent, output_root, symbol, mode)
+        quality_ok = str(quality_status or "").upper() == "PASS"
+        manifest_ok = False
+        if manifest is not None:
+            manifest_ok = manifest.can_reuse_stepe_agent(agent)
+            if artifact_ok and quality_ok and not manifest_ok:
+                manifest.mark_stepe_agent_verified(
+                    agent,
+                    "complete",
+                    artifacts_ok=True,
+                    audit_status="PASS",
+                    invalid_status="pending",
+                )
+                manifest_ok = manifest.can_reuse_stepe_agent(agent)
+
+        if artifact_ok and quality_ok and (manifest is None or manifest_ok):
+            complete_agents.append(agent)
+            continue
+
+        missing_agents.append(agent)
+        detail: List[str] = []
+        base = Path(output_root) / "stepE" / mode
+        model_dir = base / "models"
+        if not (base / f"stepE_daily_log_{agent}_{symbol}.csv").exists():
+            detail.append("daily_log")
+        if not (base / f"stepE_summary_{agent}_{symbol}.json").exists():
+            detail.append("summary")
+        if not (Path(output_root) / "audit" / mode / f"stepE_audit_{agent}_{symbol}.json").exists():
+            detail.append("audit")
+        if not (
+            (model_dir / f"stepE_{agent}_{symbol}.pt").exists()
+            or (model_dir / f"stepE_{agent}_{symbol}_ppo.zip").exists()
+        ):
+            detail.append("model")
+        if not quality_ok:
+            detail.append(f"quality:{quality_status or 'missing'}")
+        if manifest is not None and not manifest_ok:
+            detail.append("manifest")
+        missing_detail[agent] = detail
+
+    all_complete = len(complete_agents) == len(normalized_agents)
+    if manifest is not None and normalized_agents:
+        manifest.mark_step_verified(
+            "E",
+            "complete",
+            artifacts_ok=all_complete,
+            audit_status="PASS" if all_complete else "FAIL",
+            invalid_status="pending",
+        )
+
+    return {
+        "requested_agents": normalized_agents,
+        "complete_agents": complete_agents,
+        "missing_agents": missing_agents,
+        "missing_detail": missing_detail,
+        "all_complete": all_complete,
+        "final_status": "complete" if all_complete else "partial",
+        "return_code": 0 if all_complete else 1,
+    }
+
+
 # ---------------------------------------------------------------------------
 # RunManifest
 # ---------------------------------------------------------------------------
