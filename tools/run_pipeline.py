@@ -2380,12 +2380,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _run_manifest is None:
             return
         try:
-            def _read_json_status(path: Path) -> str:
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    return ""
-                return str(payload.get("status", "") or "").upper() if isinstance(payload, dict) else ""
+            from tools.run_manifest import read_stepe_quality_status as _read_stepe_quality_status
 
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
@@ -2409,8 +2404,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _run_manifest.mark_stepe_agent_verified(_agent, "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
                     continue
                 if _agent_artifact_ok and _run_manifest.stepe_agent_status(_agent) not in ("complete", "reuse"):
-                    _agent_audit_path = Path(resolved_output_root) / "audit" / resolved_mode / f"stepE_audit_{_agent}_{symbol}.json"
-                    _agent_audit_status = _read_json_status(_agent_audit_path) or "PASS"
+                    _agent_audit_status = _read_stepe_quality_status(_agent, resolved_output_root, symbol, resolved_mode) or "PASS"
                     _run_manifest.mark_stepe_agent_verified(
                         _agent,
                         "complete" if _agent_audit_status == "PASS" else "failed",
@@ -2442,74 +2436,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     def _evaluate_stepe_final_state(requested_agents: List[str]) -> Dict[str, Any]:
-        """Recompute final StepE completion state from artifacts + manifest."""
-        from tools.run_manifest import check_stepe_agent_artifact as _check_agent_art_final  # lazy import
+        """Recompute final StepE completion state from artifacts + persisted quality payloads."""
+        from tools.run_manifest import reconcile_stepe_manifest_from_artifacts  # lazy import
 
-        _daily_base = Path(resolved_output_root) / "stepE" / resolved_mode
-        _model_base = _daily_base / "models"
-        _requested = list(dict.fromkeys(str(a).strip() for a in requested_agents if str(a).strip()))
+        _result = reconcile_stepe_manifest_from_artifacts(
+            requested_agents,
+            output_root=Path(resolved_output_root),
+            mode=resolved_mode,
+            symbol=symbol,
+            manifest=_run_manifest,
+        )
 
-        _complete_agents: List[str] = []
-        _missing_agents: List[str] = []
-        _missing_detail: Dict[str, List[str]] = {}
-
-        for _agent in _requested:
-            _daily = (_daily_base / f"stepE_daily_log_{_agent}_{symbol}.csv").exists()
-            _summary = (_daily_base / f"stepE_summary_{_agent}_{symbol}.json").exists()
-            _model = (
-                (_model_base / f"stepE_{_agent}_{symbol}.pt").exists()
-                or (_model_base / f"stepE_{_agent}_{symbol}_ppo.zip").exists()
-            )
-            _artifact_ok = bool(_daily and _summary and _model)
-            _manifest_ok = False
-            if _run_manifest is not None:
-                _manifest_ok = _run_manifest.can_reuse_stepe_agent(_agent)
-
-            # keep parity with manifest artifact checker and ensure minimum contract.
-            _artifact_ok = _artifact_ok and _check_agent_art_final(_agent, resolved_output_root, symbol, resolved_mode)
-
-            if _artifact_ok and _manifest_ok:
-                _complete_agents.append(_agent)
-                continue
-
-            _missing_agents.append(_agent)
-            _parts: List[str] = []
-            if not _daily:
-                _parts.append("daily_log")
-            if not _summary:
-                _parts.append("summary")
-            if not _model:
-                _parts.append("model")
-            if not _manifest_ok:
-                _parts.append("manifest")
-            _missing_detail[_agent] = _parts
-
-        _all_complete = len(_complete_agents) == len(_requested)
-        _final_status = "complete" if _all_complete else "partial"
-        _return_code = 0 if _all_complete else 1
-
-        print(f"[STEPE_FINAL] requested_agents={','.join(_requested)}")
-        print(f"[STEPE_FINAL] complete_agents={','.join(_complete_agents)}")
-        print(f"[STEPE_FINAL] missing_agents={','.join(_missing_agents)}")
-        print(f"[STEPE_FINAL] final_status={_final_status}")
-        print(f"[STEPE_FINAL] return_code={_return_code}")
-        if _all_complete:
+        print(f"[STEPE_FINAL] requested_agents={','.join(_result['requested_agents'])}")
+        print(f"[STEPE_FINAL] complete_agents={','.join(_result['complete_agents'])}")
+        print(f"[STEPE_FINAL] missing_agents={','.join(_result['missing_agents'])}")
+        print(f"[STEPE_FINAL] final_status={_result['final_status']}")
+        print(f"[STEPE_FINAL] return_code={_result['return_code']}")
+        if _result["all_complete"]:
             print("[STEPE_FINAL] all_requested_agents_complete=true")
             print("[STEPE_FINAL] stepE_status=complete")
             print("[STEPE_FINAL] return_code=0")
         else:
-            for _agent in _missing_agents:
-                print(f"[STEPE_FINAL] missing_agent={_agent} missing={'|'.join(_missing_detail.get(_agent, []))}")
+            for _agent in _result["missing_agents"]:
+                print(f"[STEPE_FINAL] missing_agent={_agent} missing={'|'.join(_result['missing_detail'].get(_agent, []))}")
 
-        return {
-            "requested_agents": _requested,
-            "complete_agents": _complete_agents,
-            "missing_agents": _missing_agents,
-            "missing_detail": _missing_detail,
-            "all_complete": _all_complete,
-            "final_status": _final_status,
-            "return_code": _return_code,
-        }
+        return _result
 
     def _run_stepe_agents_incrementally(
         *,

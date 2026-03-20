@@ -258,10 +258,12 @@ class StepEService:
             "symbol": symbol,
             "rows_train": int(rows_train),
             "rows_test": int(rows_test),
+            "status": "FAIL",
+            "audit_status": "FAIL",
             **quality,
         }
         (out_dir / f"stepE_summary_{cfg.agent}_{symbol}.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps({"status": "FAIL", **summary_payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps({**summary_payload, "status": "FAIL", "audit_status": "FAIL"}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
     def _compute_stepdprime_contract(
@@ -779,6 +781,8 @@ class StepEService:
             "test_end": str(test_end.date()),
             "rows_train": int(rows_train),
             "rows_test": int(rows_test),
+            "status": "PASS",
+            "audit_status": "PASS",
             **_training_config_summary(cfg, device=device_name),
             **self._device_payload(requested=cfg.device, actual=device_name, model_loaded=True),
             **metrics,
@@ -834,6 +838,7 @@ class StepEService:
             "merge_inputs_cache_hit": bool(merge_cache_info.get("merge_cache_hit", False)),
             "merge_cache_key": str(merge_cache_info.get("merge_cache_key", "") or ""),
             "status": "PASS",
+            "audit_status": "PASS",
         }
         (audit_dir / f"stepE_audit_{cfg.agent}_{symbol}.json").write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
