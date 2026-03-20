@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 from sklearn.utils.extmath import randomized_svd
 
+from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
 from ai_core.utils.timing_logger import TimingLogger
 from ai_core.services.stepdprime_path_utils import resolve_stepdprime_dir
 from ai_core.services.dprime_cluster_components import (
@@ -163,6 +164,55 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (np.bool_,)):
         return bool(value)
     return value
+
+
+def _normalize_output_path(raw_path: str | Path | None, *, output_root: Path) -> str:
+    return normalize_output_artifact_path(raw_path, output_root=output_root)
+
+
+def _parse_profile(profile: str) -> Tuple[str, str]:
+    return _infer_family(profile), _infer_pred_type(profile)
+
+
+def _parse_available_horizons(raw: Any) -> List[int]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        out: List[int] = []
+        for item in raw:
+            try:
+                out.append(int(item))
+            except Exception:
+                continue
+        return sorted(set(out))
+
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    out = []
+    for part in s.replace("|", ",").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            out.append(int(token))
+        except Exception:
+            continue
+    return sorted(set(out))
+
+
+def _cleanup_running_marker(marker_dir: Path, marker_name: str) -> None:
+    running = marker_dir / f"{marker_name}.RUNNING.json"
+    if running.exists():
+        running.unlink()
+
+
+def _cleanup_running_markers(marker_dir: Path, *, prefixes: Optional[Sequence[str]] = None) -> None:
+    wanted = tuple(str(p) for p in (prefixes or ()))
+    for path in marker_dir.glob("*.RUNNING.json"):
+        if wanted and not any(path.name.startswith(prefix) for prefix in wanted):
+            continue
+        path.unlink()
 
 
 def _safe(df: pd.DataFrame, c: str, default: float = 0.0) -> pd.Series:
@@ -839,6 +889,7 @@ class StepDPrimeService:
         timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
         paths = self._resolve_paths(cfg)
         stepd_dir = paths["stepd_dir"]
+        output_root = Path(cfg.output_root)
         stepa_dir = paths["stepa_dir"]
         stepd_dir.mkdir(parents=True, exist_ok=True)
         marker_dir = stepd_dir / "pipeline_markers"
@@ -874,19 +925,19 @@ class StepDPrimeService:
                 _write_json(base_meta_path, {
                     "symbol": cfg.symbol,
                     "mode": str(cfg.mode),
-                    "base_features_path": str(base_path),
-                    "cluster_daily_path": str(cluster_daily_path),
-                    "cluster_summary_path": str(cluster_summary_path),
-                    "cluster_raw_stats_path": str(cluster_raw_stats_path),
+                    "base_features_path": _normalize_output_path(base_path, output_root=output_root),
+                    "cluster_daily_path": _normalize_output_path(cluster_daily_path, output_root=output_root),
+                    "cluster_summary_path": _normalize_output_path(cluster_summary_path, output_root=output_root),
+                    "cluster_raw_stats_path": _normalize_output_path(cluster_raw_stats_path, output_root=output_root),
                     "status": "READY",
                     "created_at": _utcnow_iso(),
                 })
                 ready = write_status_marker(marker_dir, "DPrimeBaseCluster", "READY", {
                     "symbol": cfg.symbol,
-                    "base_features_path": str(base_path),
-                    "cluster_daily_path": str(cluster_daily_path),
-                    "cluster_summary_path": str(cluster_summary_path),
-                    "base_meta_path": str(base_meta_path),
+                    "base_features_path": _normalize_output_path(base_path, output_root=output_root),
+                    "cluster_daily_path": _normalize_output_path(cluster_daily_path, output_root=output_root),
+                    "cluster_summary_path": _normalize_output_path(cluster_summary_path, output_root=output_root),
+                    "base_meta_path": _normalize_output_path(base_meta_path, output_root=output_root),
                 })
                 return StepDPrimeBaseClusterResult(
                     status="READY",
@@ -921,20 +972,29 @@ class StepDPrimeService:
             _write_json(base_meta_path, {
                 "symbol": cfg.symbol,
                 "mode": str(cfg.mode),
-                "base_features_path": str(stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"),
-                "cluster_daily_path": str(stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv"),
-                "cluster_summary_path": str(stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json"),
+                "base_features_path": _normalize_output_path(stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv", output_root=output_root),
+                "cluster_daily_path": _normalize_output_path(stepd_dir / f"stepDprime_cluster_daily_assign_{cfg.symbol}.csv", output_root=output_root),
+                "cluster_summary_path": _normalize_output_path(stepd_dir / f"stepDprime_cluster_summary_{cfg.symbol}.json", output_root=output_root),
                 "status": "FAILED",
                 "created_at": _utcnow_iso(),
-                "diagnostics_path": str(diag_path),
+                "diagnostics_path": _normalize_output_path(diag_path, output_root=output_root),
+                "error": repr(e),
+                "error_type": type(e).__name__,
             })
             write_status_marker(
                 marker_dir,
                 "DPrimeBaseCluster",
                 "FAILED",
-                {"symbol": cfg.symbol, "error": repr(e), "diagnostics_path": str(diag_path), "base_meta_path": str(base_meta_path)},
+                {
+                    "symbol": cfg.symbol,
+                    "error": repr(e),
+                    "diagnostics_path": _normalize_output_path(diag_path, output_root=output_root),
+                    "base_meta_path": _normalize_output_path(base_meta_path, output_root=output_root),
+                },
             )
             raise
+        finally:
+            _cleanup_running_marker(marker_dir, "DPrimeBaseCluster")
 
     def run_final_profile(self, cfg: StepDPrimeConfig, profile: str, *, force_cpu: bool = False) -> StepDPrimeProfileResult:
         from ai_core.utils.file_ready_utils import write_status_marker
@@ -942,9 +1002,11 @@ class StepDPrimeService:
         timing = cfg.timing_logger if isinstance(cfg.timing_logger, TimingLogger) else TimingLogger.disabled()
         paths = self._resolve_paths(cfg)
         stepd_dir = paths["stepd_dir"]
+        output_root = Path(cfg.output_root)
         marker_dir = stepd_dir / "pipeline_markers"
         marker_name = f"DPrimeFinal_{profile}"
-        write_status_marker(marker_dir, marker_name, "RUNNING", {"symbol": cfg.symbol, "profile": profile})
+        family, pred_type = _parse_profile(profile)
+        write_status_marker(marker_dir, marker_name, "RUNNING", {"symbol": cfg.symbol, "profile": profile, "force_cpu": bool(force_cpu)})
         try:
             with _DPrimeForceCPUContext(force_cpu):
                 base_path = stepd_dir / f"stepDprime_base_features_{cfg.symbol}.csv"
@@ -987,23 +1049,31 @@ class StepDPrimeService:
             if not train_path.exists() or not test_path.exists() or not emb_path.exists():
                 raise FileNotFoundError(f"StepDPrime final profile artifacts missing: {profile}")
             split_meta = _read_split_summary_csv(summary_path)
-            family, pred_type = _parse_profile(profile)
             profile_summary_path = stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json"
             _write_json(profile_summary_path, {
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
                 "profile": profile,
                 "family": family,
                 "pred_type": pred_type,
-                "state_train_path": str(train_path),
-                "state_test_path": str(test_path),
-                "embeddings_all_path": str(emb_path),
-                "pred_source_selected": str(split_meta.get("pred_source_file", "")),
+                "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
                 "pred_source_mode": str(split_meta.get("pred_source_mode", "")),
-                "pred_available_horizons": str(split_meta.get("pred_available_horizons", "")),
+                "pred_available_horizons": _parse_available_horizons(split_meta.get("pred_available_horizons", "")),
+                "state_train_path": _normalize_output_path(train_path, output_root=output_root),
+                "state_test_path": _normalize_output_path(test_path, output_root=output_root),
+                "embeddings_all_path": _normalize_output_path(emb_path, output_root=output_root),
                 "force_cpu": bool(force_cpu),
+                "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
                 "status": "READY",
                 "created_at": _utcnow_iso(),
             })
-            ready = write_status_marker(marker_dir, marker_name, "READY", {"profile": profile, "symbol": cfg.symbol, "force_cpu": bool(force_cpu), "profile_summary_path": str(profile_summary_path)})
+            ready = write_status_marker(marker_dir, marker_name, "READY", {
+                "profile": profile,
+                "symbol": cfg.symbol,
+                "force_cpu": bool(force_cpu),
+                "profile_summary_path": _normalize_output_path(profile_summary_path, output_root=output_root),
+                "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
+            })
             return StepDPrimeProfileResult(
                 status="READY",
                 profile=profile,
@@ -1014,48 +1084,91 @@ class StepDPrimeService:
                 ready_path=str(ready),
             )
         except Exception as e:
-            family, pred_type = _parse_profile(profile)
             profile_summary_path = stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json"
+            split_meta = _read_split_summary_csv(stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv")
             _write_json(profile_summary_path, {
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
                 "profile": profile,
                 "family": family,
                 "pred_type": pred_type,
-                "state_train_path": str(stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"),
-                "state_test_path": str(stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"),
-                "embeddings_all_path": str(stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv"),
-                "pred_source_selected": "",
-                "pred_source_mode": "",
-                "pred_available_horizons": "",
+                "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
+                "pred_source_mode": str(split_meta.get("pred_source_mode", "")),
+                "pred_available_horizons": _parse_available_horizons(split_meta.get("pred_available_horizons", "")),
+                "state_train_path": _normalize_output_path(stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv", output_root=output_root),
+                "state_test_path": _normalize_output_path(stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv", output_root=output_root),
+                "embeddings_all_path": _normalize_output_path(stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv", output_root=output_root),
                 "force_cpu": bool(force_cpu),
+                "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
                 "status": "FAILED",
                 "created_at": _utcnow_iso(),
                 "error": repr(e),
+                "error_type": type(e).__name__,
             })
-            write_status_marker(marker_dir, marker_name, "FAILED", {"symbol": cfg.symbol, "profile": profile, "error": repr(e), "force_cpu": bool(force_cpu), "profile_summary_path": str(profile_summary_path)})
+            write_status_marker(marker_dir, marker_name, "FAILED", {
+                "symbol": cfg.symbol,
+                "profile": profile,
+                "error": repr(e),
+                "force_cpu": bool(force_cpu),
+                "profile_summary_path": _normalize_output_path(profile_summary_path, output_root=output_root),
+                "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
+            })
             raise
+        finally:
+            _cleanup_running_marker(marker_dir, marker_name)
 
     def run(self, cfg: StepDPrimeConfig) -> Dict[str, object]:
-        base = self.run_base_cluster(cfg)
-        profile_results: Dict[str, Dict[str, str]] = {}
-        for profile in cfg.profiles:
-            p = self.run_final_profile(cfg, profile)
-            profile_results[profile] = {
-                "train": p.state_train_path,
-                "test": p.state_test_path,
-                "summary": p.summary_path,
-                "embedding_all": p.embedding_all_path,
+        stepd_dir = resolve_stepdprime_dir(Path(cfg.output_root), _normalize_mode(cfg.mode), explicit_root=cfg.stepDprime_root, for_write=True)
+        marker_dir = stepd_dir / "pipeline_markers"
+        try:
+            base = self.run_base_cluster(cfg)
+            profile_results: Dict[str, Dict[str, str]] = {}
+            for profile in cfg.profiles:
+                p = self.run_final_profile(cfg, profile)
+                profile_results[profile] = {
+                    "train": _normalize_output_path(p.state_train_path, output_root=Path(cfg.output_root)),
+                    "test": _normalize_output_path(p.state_test_path, output_root=Path(cfg.output_root)),
+                    "summary": _normalize_output_path(p.summary_path, output_root=Path(cfg.output_root)),
+                    "embedding_all": _normalize_output_path(p.embedding_all_path, output_root=Path(cfg.output_root)),
+                }
+            out = {
+                "mode": cfg.mode,
+                "symbol": cfg.symbol,
+                "profiles": profile_results,
+                "output_dir": _normalize_output_path(stepd_dir, output_root=Path(cfg.output_root)),
+                "dprime_cluster": {
+                    "status": base.status,
+                    "cluster_daily_path": _normalize_output_path(base.cluster_daily_path, output_root=Path(cfg.output_root)),
+                    "cluster_summary_path": _normalize_output_path(base.cluster_summary_path, output_root=Path(cfg.output_root)),
+                },
             }
-        out = {
-            "mode": cfg.mode,
-            "symbol": cfg.symbol,
-            "profiles": profile_results,
-            "output_dir": str(resolve_stepdprime_dir(Path(cfg.output_root), _normalize_mode(cfg.mode), explicit_root=cfg.stepDprime_root, for_write=True)),
-            "dprime_cluster": {
-                "status": base.status,
-                "cluster_daily_path": base.cluster_daily_path,
-                "cluster_summary_path": base.cluster_summary_path,
-            },
-        }
-        stepd_dir = Path(out["output_dir"])
-        (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(_json_safe(out), indent=2, ensure_ascii=False), encoding="utf-8")
-        return out
+            (stepd_dir / f"stepDprime_summary_{cfg.symbol}.json").write_text(json.dumps(_json_safe(out), indent=2, ensure_ascii=False), encoding="utf-8")
+            return out
+        except Exception as exc:
+            tb_text = traceback.format_exc()
+            traceback_path = stepd_dir / f"stepDprime_traceback_{cfg.symbol}.log"
+            failure_summary_path = stepd_dir / f"stepDprime_failure_summary_{cfg.symbol}.json"
+            stepd_dir.mkdir(parents=True, exist_ok=True)
+            traceback_path.write_text(tb_text, encoding="utf-8")
+            failure_payload = {
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
+                "status": "FAILED",
+                "error": repr(exc),
+                "error_type": type(exc).__name__,
+                "traceback_path": _normalize_output_path(traceback_path, output_root=Path(cfg.output_root)),
+                "created_at": _utcnow_iso(),
+                "base_meta_path": _normalize_output_path(stepd_dir / f"stepDprime_base_meta_{cfg.symbol}.json", output_root=Path(cfg.output_root)),
+                "profile_summaries": [
+                    _normalize_output_path(stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json", output_root=Path(cfg.output_root))
+                    for profile in cfg.profiles
+                ],
+            }
+            _write_json(failure_summary_path, failure_payload)
+            print("[STEPDPRIME_FAIL_TRACEBACK_BEGIN]")
+            print(tb_text.rstrip())
+            print("[STEPDPRIME_FAIL_TRACEBACK_END]")
+            raise
+        finally:
+            marker_dir.mkdir(parents=True, exist_ok=True)
+            _cleanup_running_markers(marker_dir, prefixes=("DPrimeBaseCluster", "DPrimeFinal_", "StepB", "StepC", "StepE_"))

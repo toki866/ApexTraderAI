@@ -200,6 +200,11 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 - Pipeline outputs: `...\output`
 - Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>\logs\`
   - includes copied run/console/error/step-exec/diagnostics logs plus `logs_manifest.json`
+- DPrime audit outputs now include:
+  - `stepDprime_base_meta_<SYMBOL>.json`
+  - `stepDprime_profile_summary_<PROFILE>_<SYMBOL>.json`
+  - READY/FAILED markers under `stepDprime\<mode>\pipeline_markers\`
+- StepE summaries now retain training/runtime config such as policy kind, PPO parameters, device, seed, and DPrime embedding usage.
 - Logs: `...\logs\run_<run_id>.log`
 - Completion marker: `...\output\DONE.txt`
 - Run zip: `...\run_<run_id>.zip` (contains `output/` and `logs/`)

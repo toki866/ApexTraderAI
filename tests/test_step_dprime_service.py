@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ai_core.services import step_dprime_service as sds
+from ai_core.utils.step_contract_utils import validate_step_dprime
 
 
 def test_build_pred_from_stepb_accepts_path_mamba_without_pathseq(tmp_path: Path):
@@ -212,6 +213,128 @@ def test_stepdprime_service_failure_prints_traceback_markers(tmp_path: Path, mon
     assert "[STEPDPRIME_FAIL_TRACEBACK_BEGIN]" in captured.out
     assert "RuntimeError: boom-marker" in captured.out
     assert "[STEPDPRIME_FAIL_TRACEBACK_END]" in captured.out
+
+
+def test_stepdprime_service_writes_ready_markers_and_audit_summaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    mode = "sim"
+    symbol = "SOXL"
+    out_root = tmp_path / "output"
+    stepa = out_root / "stepA" / mode
+    stepb = out_root / "stepB" / mode
+    stepa.mkdir(parents=True)
+    stepb.mkdir(parents=True)
+
+    pd.DataFrame({"key": ["train_start", "train_end", "test_start", "test_end"], "value": ["2024-01-01", "2024-01-10", "2024-01-11", "2024-01-15"]}).to_csv(
+        stepa / f"stepA_split_summary_{symbol}.csv", index=False
+    )
+    for stem in ("stepA_prices", "stepA_tech", "stepA_periodic"):
+        pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=15, freq="D"), "Open": 1, "High": 2, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_train_{symbol}.csv", index=False
+        )
+        pd.DataFrame({"Date": pd.date_range("2024-01-16", periods=5, freq="D"), "Open": 1, "High": 2, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_test_{symbol}.csv", index=False
+        )
+
+    pred_source = stepb / f"stepB_pred_time_all_{symbol}.csv"
+    pd.DataFrame({"Date": ["2024-01-11"], "Pred_Close_MAMBA_h01": [1.0], "Pred_Close_MAMBA_h05": [1.0]}).to_csv(pred_source, index=False)
+
+    def _cluster_ok(self, cfg, data, periodic, stepd_dir):
+        pd.DataFrame({"Date": ["2024-01-11"], "cluster_id_raw20": [1], "cluster_id_stable": [1], "rare_flag_raw20": [0]}).to_csv(
+            stepd_dir / f"stepDprime_cluster_daily_assign_{symbol}.csv", index=False
+        )
+        (stepd_dir / f"stepDprime_cluster_summary_{symbol}.json").write_text('{"status":"READY"}', encoding="utf-8")
+        return {"daily": pd.DataFrame({"Date": [pd.Timestamp("2024-01-11")], "cluster_id_raw20": [1], "cluster_id_stable": [1], "rare_flag_raw20": [0]}), "summary": {"status": "READY"}}
+
+    def _rl_ok(self, cfg, **kwargs):
+        stepd_dir = kwargs["stepd_dir"]
+        profile = cfg.profiles[0]
+        pd.DataFrame({"Date": ["2024-01-11"], "x": [1]}).to_csv(stepd_dir / f"stepDprime_state_train_{profile}_{symbol}.csv", index=False)
+        pd.DataFrame({"Date": ["2024-01-12"], "x": [1]}).to_csv(stepd_dir / f"stepDprime_state_test_{profile}_{symbol}.csv", index=False)
+        emb_dir = stepd_dir / "embeddings"
+        emb_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"Date": ["2024-01-11"], "emb_000": [1.0]}).to_csv(emb_dir / f"stepDprime_{profile}_{symbol}_embeddings_test.csv", index=False)
+        pd.DataFrame({"Date": ["2024-01-11"], "emb_000": [1.0]}).to_csv(emb_dir / f"stepDprime_{profile}_{symbol}_embeddings_all.csv", index=False)
+        pd.DataFrame(
+            [
+                {"key": "pred_source_file", "value": pred_source.as_posix()},
+                {"key": "pred_source_mode", "value": "time_all"},
+                {"key": "pred_available_horizons", "value": "1|5"},
+            ]
+        ).to_csv(stepd_dir / f"stepDprime_split_summary_{profile}_{symbol}.csv", index=False)
+        return {"profiles": {profile: {"train": "ok", "test": "ok"}}}
+
+    monkeypatch.setattr(sds.DPrimeClusterService, "run", _cluster_ok)
+    monkeypatch.setattr(sds.DPrimeRLService, "run", _rl_ok)
+
+    cfg = sds.StepDPrimeConfig(symbol=symbol, output_root=str(out_root), mode=mode, profiles=("dprime_all_features_h01",))
+    result = sds.StepDPrimeService().run(cfg)
+
+    stepd_dir = out_root / "stepDprime" / mode
+    marker_dir = stepd_dir / "pipeline_markers"
+    base_meta = json.loads((stepd_dir / f"stepDprime_base_meta_{symbol}.json").read_text(encoding="utf-8"))
+    profile_summary = json.loads((stepd_dir / f"stepDprime_profile_summary_dprime_all_features_h01_{symbol}.json").read_text(encoding="utf-8"))
+
+    assert result["dprime_cluster"]["status"] == "READY"
+    assert base_meta["status"] == "READY"
+    assert (marker_dir / "DPrimeBaseCluster.READY.json").exists()
+    assert not (marker_dir / "DPrimeBaseCluster.RUNNING.json").exists()
+    assert profile_summary["status"] == "READY"
+    assert profile_summary["pred_source_selected"] == f"stepB/{mode}/stepB_pred_time_all_{symbol}.csv"
+    assert profile_summary["pred_available_horizons"] == [1, 5]
+    assert profile_summary["force_cpu"] is False
+    assert profile_summary["gpu_execution_guard"] == "dprime_final_completes_before_stepe_agent_start"
+    assert (marker_dir / f"DPrimeFinal_dprime_all_features_h01.READY.json").exists()
+    assert not (marker_dir / f"DPrimeFinal_dprime_all_features_h01.RUNNING.json").exists()
+    assert validate_step_dprime(out_root, mode, symbol, ("dprime_all_features_h01",)) == []
+
+
+def test_stepdprime_service_failure_marks_failed_profile_and_cleans_running_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    mode = "sim"
+    symbol = "SOXL"
+    out_root = tmp_path / "output"
+    stepa = out_root / "stepA" / mode
+    stepa.mkdir(parents=True)
+
+    pd.DataFrame({"key": ["train_start", "train_end", "test_start", "test_end"], "value": ["2024-01-01", "2024-01-10", "2024-01-11", "2024-01-15"]}).to_csv(
+        stepa / f"stepA_split_summary_{symbol}.csv", index=False
+    )
+    for stem in ("stepA_prices", "stepA_tech", "stepA_periodic"):
+        pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=15, freq="D"), "Open": 1, "High": 2, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_train_{symbol}.csv", index=False
+        )
+        pd.DataFrame({"Date": pd.date_range("2024-01-16", periods=5, freq="D"), "Open": 1, "High": 2, "Low": 1, "Close": 1, "Volume": 1}).to_csv(
+            stepa / f"{stem}_test_{symbol}.csv", index=False
+        )
+
+    def _cluster_ok(self, cfg, data, periodic, stepd_dir):
+        pd.DataFrame({"Date": ["2024-01-11"], "cluster_id_raw20": [1], "cluster_id_stable": [1], "rare_flag_raw20": [0]}).to_csv(
+            stepd_dir / f"stepDprime_cluster_daily_assign_{symbol}.csv", index=False
+        )
+        (stepd_dir / f"stepDprime_cluster_summary_{symbol}.json").write_text('{"status":"READY"}', encoding="utf-8")
+        return {"daily": pd.DataFrame({"Date": [pd.Timestamp("2024-01-11")], "cluster_id_raw20": [1], "cluster_id_stable": [1], "rare_flag_raw20": [0]}), "summary": {"status": "READY"}}
+
+    def _rl_boom(self, cfg, **kwargs):
+        raise RuntimeError("profile-boom")
+
+    monkeypatch.setattr(sds.DPrimeClusterService, "run", _cluster_ok)
+    monkeypatch.setattr(sds.DPrimeRLService, "run", _rl_boom)
+
+    cfg = sds.StepDPrimeConfig(symbol=symbol, output_root=str(out_root), mode=mode, profiles=("dprime_all_features_h01",))
+    with pytest.raises(RuntimeError):
+        sds.StepDPrimeService().run(cfg)
+
+    stepd_dir = out_root / "stepDprime" / mode
+    marker_dir = stepd_dir / "pipeline_markers"
+    profile_summary = json.loads((stepd_dir / f"stepDprime_profile_summary_dprime_all_features_h01_{symbol}.json").read_text(encoding="utf-8"))
+    failure_summary = json.loads((stepd_dir / f"stepDprime_failure_summary_{symbol}.json").read_text(encoding="utf-8"))
+
+    assert profile_summary["status"] == "FAILED"
+    assert profile_summary["error_type"] == "RuntimeError"
+    assert (marker_dir / "DPrimeBaseCluster.READY.json").exists()
+    assert (marker_dir / "DPrimeFinal_dprime_all_features_h01.FAILED.json").exists()
+    assert not (marker_dir / "DPrimeFinal_dprime_all_features_h01.RUNNING.json").exists()
+    assert failure_summary["status"] == "FAILED"
+    assert failure_summary["traceback_path"] == f"stepDprime/{mode}/stepDprime_traceback_{symbol}.log"
 
 
 def test_dprime_rl_duplicate_dates_are_handled(tmp_path: Path):

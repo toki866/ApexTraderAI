@@ -103,6 +103,11 @@ class DPrimePipelineOrchestrator:
         for profile in cfg.stepd_cfg.profiles:
             profile_started = self._utcnow_iso()
             print(
+                f"[DPRIME_STREAM][GPU_GUARD] profile={profile} "
+                f"guard=stepdprime_final_then_stepe_serialized "
+                f"force_cpu={str(bool(cfg.force_cpu_dprime_final)).lower()}"
+            )
+            print(
                 f"[DPRIME_STREAM] profile={profile} status=start force_cpu={str(bool(cfg.force_cpu_dprime_final)).lower()} "
                 f"started_at={profile_started}"
             )

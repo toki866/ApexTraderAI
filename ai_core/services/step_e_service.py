@@ -111,7 +111,7 @@ class StepEConfig:
 def _training_config_summary(cfg: StepEConfig, *, device: str) -> Dict[str, object]:
     ppo_lr = float(getattr(cfg, "ppo_lr", None) or getattr(cfg, "lr", 3e-4) or 3e-4)
     return {
-        "policy_kind": "ppo",
+        "policy_kind": str(getattr(cfg, "policy_kind", "ppo") or "ppo").strip().lower(),
         "policy_role": "only_supported_policy",
         "ppo_lr": ppo_lr,
         "ppo_total_timesteps": int(getattr(cfg, "ppo_total_timesteps", 0) or 0),
@@ -120,6 +120,13 @@ def _training_config_summary(cfg: StepEConfig, *, device: str) -> Dict[str, obje
         "ppo_batch_size": int(getattr(cfg, "ppo_batch_size", 0) or 0),
         "max_parallel_agents": int(getattr(cfg, "max_parallel_agents", 1) or 1),
         "device": str(device),
+        "seed": int(getattr(cfg, "seed", 0) or 0),
+        "obs_profile": str(getattr(cfg, "obs_profile", "") or ""),
+        "use_stepd_prime": bool(getattr(cfg, "use_stepd_prime", False)),
+        "use_dprime_state": bool(getattr(cfg, "use_dprime_state", False)),
+        "dprime_profile": str(getattr(cfg, "dprime_profile", "") or ""),
+        "dprime_sources": str(getattr(cfg, "dprime_sources", "") or ""),
+        "dprime_horizons": str(getattr(cfg, "dprime_horizons", "") or ""),
     }
 
 
