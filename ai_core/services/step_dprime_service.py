@@ -170,6 +170,20 @@ def _normalize_output_path(raw_path: str | Path | None, *, output_root: Path) ->
     return normalize_output_artifact_path(raw_path, output_root=output_root)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _parse_profile(profile: str) -> Tuple[str, str]:
     return _infer_family(profile), _infer_pred_type(profile)
 
@@ -748,6 +762,20 @@ class DPrimeRLService:
                     t_save = time.perf_counter()
                     df_tr.to_csv(p_tr, index=False)
                     df_te.to_csv(p_te, index=False)
+                    base_range_dates = (
+                        data.loc[(data["Date"] >= tr_s) & (data["Date"] <= te_e), ["Date"]]
+                        .dropna()
+                        .drop_duplicates(subset=["Date"])
+                        .sort_values("Date")
+                        .reset_index(drop=True)
+                    )
+                    first_valid_ts = pd.to_datetime(pd.Series([*Dtr, *Dte]), errors="coerce").dropna().min()
+                    warmup_rows = int((pd.to_datetime(base_range_dates["Date"], errors="coerce") < first_valid_ts).sum()) if pd.notna(first_valid_ts) else 0
+                    expected_base_rows = int(len(base_range_dates))
+                    effective_embedding_rows = int(len(df_tr) + len(df_te))
+                    eligible_rows = max(0, expected_base_rows - warmup_rows)
+                    expected_join_ratio_after_warmup = float(effective_embedding_rows / eligible_rows) if eligible_rows > 0 else 1.0
+                    unexpected_missing_rows = max(0, eligible_rows - effective_embedding_rows)
                     pd.DataFrame([
                         {"key": "mode", "value": cfg.mode}, {"key": "symbol", "value": cfg.symbol}, {"key": "profile", "value": profile},
                         {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
@@ -755,6 +783,12 @@ class DPrimeRLService:
                         {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
                         {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
                         {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
+                        {"key": "warmup_rows", "value": int(warmup_rows)},
+                        {"key": "first_valid_date", "value": "" if pd.isna(first_valid_ts) else str(first_valid_ts.date())},
+                        {"key": "expected_base_rows", "value": int(expected_base_rows)},
+                        {"key": "effective_embedding_rows", "value": int(effective_embedding_rows)},
+                        {"key": "expected_join_ratio_after_warmup", "value": float(expected_join_ratio_after_warmup)},
+                        {"key": "unexpected_missing_rows", "value": int(unexpected_missing_rows)},
                         {"key": "past_feature_channels", "value": "|".join(past_cols)},
                         {"key": "pred_source_file", "value": pred_meta.get("pred_source_selected", "")},
                         {"key": "pred_source_mode", "value": pred_meta.get("pred_source_mode", "")},
@@ -785,7 +819,6 @@ class DPrimeRLService:
                         .reset_index(drop=True)
                     )
                     df_emb_all["Date"] = df_emb_all["Date"].dt.strftime("%Y-%m-%d")
-
                     emb_dir = stepd_dir / "embeddings"
                     emb_dir.mkdir(parents=True, exist_ok=True)
                     ep_tr = emb_dir / f"stepDprime_{profile}_{cfg.symbol}_embeddings_train.csv"
@@ -801,7 +834,17 @@ class DPrimeRLService:
 
                     _log_timing(f"profile_{profile}.total", t_profile_total)
 
-                    results["profiles"][profile] = {"train": str(p_tr), "test": str(p_te), "summary": str(s_path)}
+                    results["profiles"][profile] = {
+                        "train": str(p_tr),
+                        "test": str(p_te),
+                        "summary": str(s_path),
+                        "warmup_rows": int(warmup_rows),
+                        "first_valid_date": "" if pd.isna(first_valid_ts) else str(first_valid_ts.date()),
+                        "expected_base_rows": int(expected_base_rows),
+                        "effective_embedding_rows": int(effective_embedding_rows),
+                        "expected_join_ratio_after_warmup": float(expected_join_ratio_after_warmup),
+                        "unexpected_missing_rows": int(unexpected_missing_rows),
+                    }
 
         pca_all_path = stepd_dir / f"stepDprime_pca_diagnostics_{cfg.symbol}.json"
         pca_all_path.write_text(json.dumps(_json_safe({"profiles": results.get("pca_diagnostics_files", [])}), indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1049,6 +1092,58 @@ class StepDPrimeService:
             if not train_path.exists() or not test_path.exists() or not emb_path.exists():
                 raise FileNotFoundError(f"StepDPrime final profile artifacts missing: {profile}")
             split_meta = _read_split_summary_csv(summary_path)
+            warmup_rows = _safe_int(split_meta.get("warmup_rows", 0), 0)
+            first_valid_date = str(split_meta.get("first_valid_date", "") or "")
+            expected_base_rows = _safe_int(split_meta.get("expected_base_rows", 0), 0)
+            effective_embedding_rows = _safe_int(split_meta.get("effective_embedding_rows", 0), 0)
+            expected_join_ratio_after_warmup = _safe_float(split_meta.get("expected_join_ratio_after_warmup", 0.0), 0.0)
+            unexpected_missing_rows = _safe_int(split_meta.get("unexpected_missing_rows", 0), 0)
+            if not first_valid_date or expected_base_rows <= 0 or effective_embedding_rows <= 0:
+                train_df = pd.read_csv(train_path)
+                test_df = pd.read_csv(test_path)
+                emb_df = pd.read_csv(emb_path)
+                first_valid_ts = pd.to_datetime(
+                    pd.concat(
+                        [
+                            pd.to_datetime(train_df.get("Date"), errors="coerce"),
+                            pd.to_datetime(test_df.get("Date"), errors="coerce"),
+                            pd.to_datetime(emb_df.get("Date"), errors="coerce"),
+                        ],
+                        axis=0,
+                        ignore_index=True,
+                    ),
+                    errors="coerce",
+                ).dropna().min()
+                base_dates = (
+                    all_df.loc[
+                        (all_df["Date"] >= pd.to_datetime(split["train_start"])) & (all_df["Date"] <= pd.to_datetime(split["test_end"])),
+                        "Date",
+                    ]
+                    .dropna()
+                    .drop_duplicates()
+                    .sort_values()
+                    .reset_index(drop=True)
+                )
+                if not first_valid_date and pd.notna(first_valid_ts):
+                    first_valid_date = str(first_valid_ts.date())
+                if expected_base_rows <= 0:
+                    expected_base_rows = int(len(base_dates))
+                if effective_embedding_rows <= 0:
+                    effective_embedding_rows = int(pd.to_datetime(emb_df.get("Date"), errors="coerce").dropna().nunique())
+                if warmup_rows <= 0 and pd.notna(first_valid_ts):
+                    warmup_rows = int((pd.to_datetime(base_dates, errors="coerce") < first_valid_ts).sum())
+                eligible_rows = max(0, expected_base_rows - warmup_rows)
+                if expected_join_ratio_after_warmup <= 0.0:
+                    expected_join_ratio_after_warmup = float(effective_embedding_rows / eligible_rows) if eligible_rows > 0 else 1.0
+                if unexpected_missing_rows <= 0 and eligible_rows >= effective_embedding_rows:
+                    unexpected_missing_rows = int(max(0, eligible_rows - effective_embedding_rows))
+            contract_ready = bool(first_valid_date) and expected_base_rows > 0 and effective_embedding_rows > 0
+            if not contract_ready:
+                raise RuntimeError(
+                    f"StepDPrime profile contract incomplete: profile={profile} "
+                    f"warmup_rows={warmup_rows} first_valid_date={first_valid_date!r} "
+                    f"expected_base_rows={expected_base_rows} effective_embedding_rows={effective_embedding_rows}"
+                )
             profile_summary_path = stepd_dir / f"stepDprime_profile_summary_{profile}_{cfg.symbol}.json"
             _write_json(profile_summary_path, {
                 "symbol": cfg.symbol,
@@ -1062,6 +1157,12 @@ class StepDPrimeService:
                 "state_train_path": _normalize_output_path(train_path, output_root=output_root),
                 "state_test_path": _normalize_output_path(test_path, output_root=output_root),
                 "embeddings_all_path": _normalize_output_path(emb_path, output_root=output_root),
+                "warmup_rows": warmup_rows,
+                "first_valid_date": first_valid_date,
+                "expected_base_rows": expected_base_rows,
+                "effective_embedding_rows": effective_embedding_rows,
+                "expected_join_ratio_after_warmup": expected_join_ratio_after_warmup,
+                "unexpected_missing_rows": unexpected_missing_rows,
                 "force_cpu": bool(force_cpu),
                 "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
                 "status": "READY",
@@ -1072,6 +1173,11 @@ class StepDPrimeService:
                 "symbol": cfg.symbol,
                 "force_cpu": bool(force_cpu),
                 "profile_summary_path": _normalize_output_path(profile_summary_path, output_root=output_root),
+                "warmup_rows": warmup_rows,
+                "first_valid_date": first_valid_date,
+                "expected_base_rows": expected_base_rows,
+                "effective_embedding_rows": effective_embedding_rows,
+                "expected_join_ratio_after_warmup": expected_join_ratio_after_warmup,
                 "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
             })
             return StepDPrimeProfileResult(
@@ -1098,6 +1204,12 @@ class StepDPrimeService:
                 "state_train_path": _normalize_output_path(stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv", output_root=output_root),
                 "state_test_path": _normalize_output_path(stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv", output_root=output_root),
                 "embeddings_all_path": _normalize_output_path(stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv", output_root=output_root),
+                "warmup_rows": _safe_int(split_meta.get("warmup_rows", 0), 0),
+                "first_valid_date": str(split_meta.get("first_valid_date", "") or ""),
+                "expected_base_rows": _safe_int(split_meta.get("expected_base_rows", 0), 0),
+                "effective_embedding_rows": _safe_int(split_meta.get("effective_embedding_rows", 0), 0),
+                "expected_join_ratio_after_warmup": _safe_float(split_meta.get("expected_join_ratio_after_warmup", 0.0), 0.0),
+                "unexpected_missing_rows": _safe_int(split_meta.get("unexpected_missing_rows", 0), 0),
                 "force_cpu": bool(force_cpu),
                 "gpu_execution_guard": "dprime_final_completes_before_stepe_agent_start",
                 "status": "FAILED",

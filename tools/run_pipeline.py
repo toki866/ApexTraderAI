@@ -2290,6 +2290,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return False
         try:
             required_reward_modes = _stepf_required_reward_modes() if str(step_key).upper() == "F" else tuple()
+            required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if str(step_key).upper() == "DPRIME" else tuple()
             return (
                 _run_manifest.can_reuse_step(step_key)
                 and check_step_artifacts(
@@ -2298,6 +2299,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     symbol,
                     resolved_mode,
                     required_stepf_reward_modes=required_reward_modes,
+                    required_dprime_profiles=required_dprime_profiles,
                 )
             )
         except Exception:
@@ -2340,12 +2342,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return True
         try:
             required_reward_modes = _stepf_required_reward_modes() if str(step_key).upper() == "F" else tuple()
+            required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if str(step_key).upper() == "DPRIME" else tuple()
             artifacts_ok = check_step_artifacts(
                 step_key,
                 resolved_output_root,
                 symbol,
                 resolved_mode,
                 required_stepf_reward_modes=required_reward_modes,
+                required_dprime_profiles=required_dprime_profiles,
             )
             return _run_manifest.mark_step_verified(
                 step_key,
@@ -2376,18 +2380,51 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _run_manifest is None:
             return
         try:
+            def _read_json_status(path: Path) -> str:
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    return ""
+                return str(payload.get("status", "") or "").upper() if isinstance(payload, dict) else ""
+
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
-                _artifact_ok = check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes)
+                _required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if _step == "DPRIME" else tuple()
+                _artifact_ok = check_step_artifacts(
+                    _step,
+                    resolved_output_root,
+                    symbol,
+                    resolved_mode,
+                    required_stepf_reward_modes=_required_reward_modes,
+                    required_dprime_profiles=_required_dprime_profiles,
+                )
                 if not _artifact_ok and _run_manifest.step_status(_step) in ("complete", "reuse"):
                     _run_manifest.mark_step_verified(_step, "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
+                elif _artifact_ok and _run_manifest.step_status(_step) not in ("complete", "reuse"):
+                    _existing_audit = _run_manifest._data.setdefault("steps", {}).setdefault(_step, {}).get("audit_status")
+                    _run_manifest.mark_step_verified(_step, "complete", artifacts_ok=True, audit_status=str(_existing_audit or "PASS"), invalid_status="pending")
             for _agent in _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS):
-                if not check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) and _run_manifest.stepe_agent_status(_agent) in ("complete", "reuse"):
+                _agent_artifact_ok = check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode)
+                if not _agent_artifact_ok and _run_manifest.stepe_agent_status(_agent) in ("complete", "reuse"):
                     _run_manifest.mark_stepe_agent_verified(_agent, "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
+                    continue
+                if _agent_artifact_ok and _run_manifest.stepe_agent_status(_agent) not in ("complete", "reuse"):
+                    _agent_audit_path = Path(resolved_output_root) / "audit" / resolved_mode / f"stepE_audit_{_agent}_{symbol}.json"
+                    _agent_audit_status = _read_json_status(_agent_audit_path) or "PASS"
+                    _run_manifest.mark_stepe_agent_verified(
+                        _agent,
+                        "complete" if _agent_audit_status == "PASS" else "failed",
+                        artifacts_ok=True,
+                        audit_status=_agent_audit_status,
+                        invalid_status="pending",
+                    )
             _stepe_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
-            if _stepe_agents and not all(check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents):
+            _stepe_complete = bool(_stepe_agents) and all(_run_manifest.can_reuse_stepe_agent(_agent) and check_stepe_agent_artifact(_agent, resolved_output_root, symbol, resolved_mode) for _agent in _stepe_agents)
+            if _stepe_agents and not _stepe_complete:
                 if _run_manifest.step_status("E") in ("complete", "reuse"):
                     _run_manifest.mark_step_verified("E", "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
+            elif _stepe_complete and _run_manifest.step_status("E") not in ("complete", "reuse"):
+                _run_manifest.mark_step_verified("E", "complete", artifacts_ok=True, audit_status="PASS", invalid_status="pending")
         except Exception as _manifest_norm_e:
             print(f"[reuse] WARNING manifest normalization failed: {type(_manifest_norm_e).__name__}: {_manifest_norm_e}", file=sys.stderr)
 
@@ -3091,7 +3128,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _emit_step_status("E", status="fail", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=False, detail="stream_exception")
                     raise
                 results["stepDPRIME_stream_result"] = _orch_result
-                _stream_dprime_ok = check_step_artifacts("DPRIME", resolved_output_root, symbol, resolved_mode)
+                _stream_dprime_ok = check_step_artifacts(
+                    "DPRIME",
+                    resolved_output_root,
+                    symbol,
+                    resolved_mode,
+                    required_dprime_profiles=tuple(_stream_agents),
+                )
                 _stream_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
                 if _run_manifest is not None:
                     _run_manifest.mark_step_verified(

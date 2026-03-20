@@ -430,6 +430,7 @@ def check_step_artifacts(
     mode: str,
     *,
     required_stepf_reward_modes: Optional[Tuple[str, ...]] = None,
+    required_dprime_profiles: Optional[Tuple[str, ...]] = None,
 ) -> bool:
     """Return True if the key artifacts for *step* exist in output_root."""
     base = Path(output_root)
@@ -481,13 +482,27 @@ def check_step_artifacts(
     if step_upper == "DPRIME":
         d = base / "stepDprime" / mode
         emb = d / "embeddings"
-        for profile in _OFFICIAL_STEPE_AGENTS:
+        marker_dir = d / "pipeline_markers"
+        profiles = tuple(str(p).strip() for p in (required_dprime_profiles or _OFFICIAL_STEPE_AGENTS) if str(p).strip())
+        if not (d / f"stepDprime_base_meta_{symbol}.json").exists():
+            return False
+        if not (marker_dir / "DPrimeBaseCluster.READY.json").exists():
+            return False
+        for profile in profiles:
             # StepDPrime success is defined by state+embedding artifacts.
             # split_summary may be absent on some historical runs and should not
             # force a false-negative reuse/failure when core artifacts are complete.
+            if not (d / f"stepDprime_state_train_{profile}_{symbol}.csv").exists():
+                return False
             if not (d / f"stepDprime_state_test_{profile}_{symbol}.csv").exists():
                 return False
             if not (emb / f"stepDprime_{profile}_{symbol}_embeddings_test.csv").exists():
+                return False
+            if not (emb / f"stepDprime_{profile}_{symbol}_embeddings_all.csv").exists():
+                return False
+            if not (d / f"stepDprime_profile_summary_{profile}_{symbol}.json").exists():
+                return False
+            if not (marker_dir / f"DPrimeFinal_{profile}.READY.json").exists():
                 return False
         return True
 
