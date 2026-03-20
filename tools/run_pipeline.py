@@ -2290,6 +2290,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return False
         try:
             required_reward_modes = _stepf_required_reward_modes() if str(step_key).upper() == "F" else tuple()
+            required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if str(step_key).upper() == "DPRIME" else tuple()
             return (
                 _run_manifest.can_reuse_step(step_key)
                 and check_step_artifacts(
@@ -2298,6 +2299,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     symbol,
                     resolved_mode,
                     required_stepf_reward_modes=required_reward_modes,
+                    required_dprime_profiles=required_dprime_profiles,
                 )
             )
         except Exception:
@@ -2340,12 +2342,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return True
         try:
             required_reward_modes = _stepf_required_reward_modes() if str(step_key).upper() == "F" else tuple()
+            required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if str(step_key).upper() == "DPRIME" else tuple()
             artifacts_ok = check_step_artifacts(
                 step_key,
                 resolved_output_root,
                 symbol,
                 resolved_mode,
                 required_stepf_reward_modes=required_reward_modes,
+                required_dprime_profiles=required_dprime_profiles,
             )
             return _run_manifest.mark_step_verified(
                 step_key,
@@ -2385,7 +2389,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             for _step in ("A", "B", "C", "DPRIME", "F"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
-                _artifact_ok = check_step_artifacts(_step, resolved_output_root, symbol, resolved_mode, required_stepf_reward_modes=_required_reward_modes)
+                _required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if _step == "DPRIME" else tuple()
+                _artifact_ok = check_step_artifacts(
+                    _step,
+                    resolved_output_root,
+                    symbol,
+                    resolved_mode,
+                    required_stepf_reward_modes=_required_reward_modes,
+                    required_dprime_profiles=_required_dprime_profiles,
+                )
                 if not _artifact_ok and _run_manifest.step_status(_step) in ("complete", "reuse"):
                     _run_manifest.mark_step_verified(_step, "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
                 elif _artifact_ok and _run_manifest.step_status(_step) not in ("complete", "reuse"):
@@ -3116,7 +3128,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _emit_step_status("E", status="fail", started_at=_t0_dp_stream_wall, ended_at=time.time(), validated=False, detail="stream_exception")
                     raise
                 results["stepDPRIME_stream_result"] = _orch_result
-                _stream_dprime_ok = check_step_artifacts("DPRIME", resolved_output_root, symbol, resolved_mode)
+                _stream_dprime_ok = check_step_artifacts(
+                    "DPRIME",
+                    resolved_output_root,
+                    symbol,
+                    resolved_mode,
+                    required_dprime_profiles=tuple(_stream_agents),
+                )
                 _stream_agents = _extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)
                 if _run_manifest is not None:
                     _run_manifest.mark_step_verified(
