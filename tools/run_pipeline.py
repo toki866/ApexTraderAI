@@ -2284,6 +2284,74 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mode_name = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
         return (mode_name,) if mode_name else ("legacy",)
 
+    def _stepf_collect_manifest_fields() -> Dict[str, Any]:
+        mode_root = Path(resolved_output_root) / "stepF" / resolved_mode
+        summary_path = mode_root / f"stepF_multi_mode_summary_{symbol}.json"
+        payload: Dict[str, Any] = {
+            "reward_modes_requested": list(_stepf_required_reward_modes()),
+            "reward_modes_completed": [],
+            "reward_modes_failed": [],
+            "reward_modes_reused": [],
+            "publish_completed": False,
+        }
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                summary = {}
+            if isinstance(summary, dict):
+                payload["reward_modes_requested"] = list(summary.get("reward_modes", payload["reward_modes_requested"]))
+                payload["reward_modes_completed"] = list(summary.get("success_modes", []))
+                payload["reward_modes_failed"] = list(summary.get("failed_modes", []))
+                payload["reward_modes_reused"] = list(summary.get("reused_modes", []))
+                payload["publish_completed"] = bool(summary.get("publish_completed", False))
+                payload["multi_mode_summary_path"] = str(summary_path)
+                return payload
+
+        completed: List[str] = []
+        failed: List[str] = []
+        reused: List[str] = []
+        requested = payload["reward_modes_requested"]
+        for rm in requested:
+            status_path = mode_root / f"reward_{rm}" / "status.json"
+            if not status_path.exists():
+                continue
+            try:
+                status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            status_value = str(status_payload.get("status", "")).lower()
+            if status_value == "complete":
+                completed.append(rm)
+                if bool(status_payload.get("publish_ready", False)):
+                    reused.append(rm)
+            elif status_value in {"failed", "interrupted"}:
+                failed.append(rm)
+        payload["reward_modes_completed"] = completed
+        payload["reward_modes_failed"] = failed
+        payload["reward_modes_reused"] = reused
+        payload["publish_completed"] = False
+        return payload
+
+    def _update_stepf_manifest_fields(status: str, *, error: BaseException | None = None) -> None:
+        if _run_manifest is None:
+            return
+        try:
+            step_data = _run_manifest._data.setdefault("steps", {}).setdefault("F", {})
+            step_data.update(_stepf_collect_manifest_fields())
+            step_data["status"] = str(status)
+            if status == "completed":
+                step_data["status"] = "complete"
+            if status in {"failed", "interrupted"}:
+                step_data["failed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if error is not None:
+                step_data["error_type"] = type(error).__name__
+                step_data["error_message"] = str(error)[:500]
+            _run_manifest._data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _run_manifest.save()
+        except Exception as _manifest_f_exc:
+            print(f"[StepF] WARN manifest compare metadata update failed: {_manifest_f_exc}", file=sys.stderr)
+
     def _can_reuse_step(step_key: str) -> bool:
         """Return True iff step can be skipped due to reuse."""
         if not reuse_output or force_rebuild or _run_manifest is None:
@@ -3471,31 +3539,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _mark_step(step if step != "D" else "D", "running")
                 _t0_generic = time.perf_counter()
                 _t0_generic_wall = time.time()
-                if step == "E":
-                    _ge_raw_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
-                    _ge_cfg_list = list(_ge_raw_cfgs) if isinstance(_ge_raw_cfgs, (list, tuple)) else ([_ge_raw_cfgs] if _ge_raw_cfgs is not None else [])
-                    _ge_cfg_by_agent = {getattr(c, "agent", ""): c for c in _ge_cfg_list if getattr(c, "agent", "")}
-                    _ge_agents = [a for a in _extract_stepe_agents_from_config(app_config) if a in _ge_cfg_by_agent]
-                    step_result, _elapsed_generic, _generic_agent_failures = _run_stepe_agents_incrementally(
-                        requested_agents=_ge_agents or list(_ge_cfg_by_agent.keys()),
-                        cfg_by_agent=_ge_cfg_by_agent,
-                    )
-                else:
-                    try:
-                        with timing.stage(stage_name):
-                            step_result = _run_step_generic(step, app_config, symbol, date_range, results)
-                    finally:
-                        _elapsed_generic = time.perf_counter() - _t0_generic
-                results[f"step{step}_result"] = step_result
-                if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
-                    reason = step_result.get("reason", "unknown")
-                    raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
-                if _run_manifest is not None:
-                    _run_manifest.mark_step_elapsed(step if step != "D" else "D", _elapsed_generic)
+                try:
                     if step == "E":
-                        # StepE without per-agent reuse: audit all completed agents
-                        _audit_root_ge = Path(resolved_output_root) / "audit" / resolved_mode
-                        _ge_all_agents: List[str]
+                        _ge_raw_cfgs = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                        _ge_cfg_list = list(_ge_raw_cfgs) if isinstance(_ge_raw_cfgs, (list, tuple)) else ([_ge_raw_cfgs] if _ge_raw_cfgs is not None else [])
+                        _ge_cfg_by_agent = {getattr(c, "agent", ""): c for c in _ge_cfg_list if getattr(c, "agent", "")}
+                        _ge_agents = [a for a in _extract_stepe_agents_from_config(app_config) if a in _ge_cfg_by_agent]
+                        step_result, _elapsed_generic, _generic_agent_failures = _run_stepe_agents_incrementally(
+                            requested_agents=_ge_agents or list(_ge_cfg_by_agent.keys()),
+                            cfg_by_agent=_ge_cfg_by_agent,
+                        )
+                    else:
+                        try:
+                            with timing.stage(stage_name):
+                                step_result = _run_step_generic(step, app_config, symbol, date_range, results)
+                        finally:
+                            _elapsed_generic = time.perf_counter() - _t0_generic
+                    results[f"step{step}_result"] = step_result
+                    if step == "E" and isinstance(step_result, dict) and step_result.get("skipped"):
+                        reason = step_result.get("reason", "unknown")
+                        raise RuntimeError(f"StepE reported skipped=True without explicit skip flag. reason={reason}")
+                    if _run_manifest is not None:
+                        _run_manifest.mark_step_elapsed(step if step != "D" else "D", _elapsed_generic)
+                        if step == "E":
+                            # StepE without per-agent reuse: audit all completed agents
+                            _audit_root_ge = Path(resolved_output_root) / "audit" / resolved_mode
+                            _ge_all_agents: List[str]
                         _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
                         if _ge_raw is not None:
                             _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else [_ge_raw]
@@ -3529,73 +3598,87 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if _ge_step_status != "PASS":
                             _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_or_audit")
                             raise RuntimeError("StepE contract/audit failed")
-                    elif step == "F":
-                        from ai_core.services.step_f_service import StepFService
+                        elif step == "F":
+                            from ai_core.services.step_f_service import StepFService
 
-                        _audit_root_f = Path(resolved_output_root) / "audit" / resolved_mode
-                        _sf_status = "PASS"
-                        try:
-                            _sf_audits = audit_stepf_now(Path(resolved_output_root), resolved_mode, symbol, _audit_root_f)
-                            if _sf_audits and not all(v.get("status") == "PASS" for v in _sf_audits.values()):
+                            _audit_root_f = Path(resolved_output_root) / "audit" / resolved_mode
+                            _sf_status = "PASS"
+                            try:
+                                _sf_audits = audit_stepf_now(Path(resolved_output_root), resolved_mode, symbol, _audit_root_f)
+                                if _sf_audits and not all(v.get("status") == "PASS" for v in _sf_audits.values()):
+                                    _sf_status = "WARN"
+                                    print("[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)", file=sys.stderr)
+                            except Exception as _sfe:
                                 _sf_status = "WARN"
-                                print("[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)", file=sys.stderr)
-                        except Exception as _sfe:
-                            _sf_status = "WARN"
-                            print(f"[StepF] WARN audit: {_sfe}", file=sys.stderr)
+                                print(f"[StepF] WARN audit: {_sfe}", file=sys.stderr)
 
-                        _final_eval_f = StepFService.evaluate_final_outputs(
-                            output_root=Path(resolved_output_root),
-                            mode=resolved_mode,
-                            symbol=symbol,
-                        )
-                        _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
-                        if _miss_f:
-                            print(f"[StepF] contract missing: {_miss_f}", file=sys.stderr)
+                            _final_eval_f = StepFService.evaluate_final_outputs(
+                                output_root=Path(resolved_output_root),
+                                mode=resolved_mode,
+                                symbol=symbol,
+                            )
+                            _miss_f = validate_step_f(Path(resolved_output_root), symbol, resolved_mode)
+                            if _miss_f:
+                                print(f"[StepF] contract missing: {_miss_f}", file=sys.stderr)
 
-                        if int(_final_eval_f.get("return_code", 1)) != 0:
-                            _sf_status = "FAIL"
+                            if int(_final_eval_f.get("return_code", 1)) != 0:
+                                _sf_status = "FAIL"
 
-                        _run_manifest.mark_step_audit("F", _sf_status)
-                        print(f"[StepF] audit={_sf_status}")
-                        if _sf_status == "FAIL":
-                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
-                            raise RuntimeError("StepF final artifacts invalid")
+                            _run_manifest.mark_step_audit("F", _sf_status)
+                            _update_stepf_manifest_fields("complete")
+                            print(f"[StepF] audit={_sf_status}")
+                            if _sf_status == "FAIL":
+                                _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
+                                raise RuntimeError("StepF final artifacts invalid")
+                        else:
+                            _run_manifest.mark_step_audit(step if step != "D" else "D", "SKIP")
                     else:
-                        _run_manifest.mark_step_audit(step if step != "D" else "D", "SKIP")
-                else:
-                    if step == "E":
-                        _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
-                        _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else ([_ge_raw] if _ge_raw is not None else [])
-                        _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
-                        if not _ge_all_agents:
-                            _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
-                        _miss_e = []
-                        for _ga in _ge_all_agents:
-                            _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
-                        if _miss_e:
-                            _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
-                            raise RuntimeError("StepE contract missing required files: " + ", ".join(_miss_e))
-                    if step == "F":
-                        from ai_core.services.step_f_service import StepFService
+                        if step == "E":
+                            _ge_raw = app_config.get("stepE") if isinstance(app_config, dict) else getattr(app_config, "stepE", None)
+                            _ge_cfg_list = list(_ge_raw) if isinstance(_ge_raw, (list, tuple)) else ([_ge_raw] if _ge_raw is not None else [])
+                            _ge_all_agents = [getattr(c, "agent", "") for c in _ge_cfg_list if getattr(c, "agent", "")]
+                            if not _ge_all_agents:
+                                _ge_all_agents = list(_OFFICIAL_STEPE_AGENTS)
+                            _miss_e = []
+                            for _ga in _ge_all_agents:
+                                _miss_e.extend(validate_step_e_agent(Path(resolved_output_root), symbol, resolved_mode, _ga))
+                            if _miss_e:
+                                _emit_step_status("E", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="contract_missing")
+                                raise RuntimeError("StepE contract missing required files: " + ", ".join(_miss_e))
+                        if step == "F":
+                            from ai_core.services.step_f_service import StepFService
 
-                        _final_eval_f = StepFService.evaluate_final_outputs(
-                            output_root=Path(resolved_output_root),
-                            mode=resolved_mode,
-                            symbol=symbol,
-                        )
-                        if int(_final_eval_f.get("return_code", 1)) != 0:
-                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
-                            raise RuntimeError("StepF final artifacts invalid: " + ", ".join(_final_eval_f.get("errors", [])))
-                if step == "DPRIME":
-                    _mark_step_verified("DPRIME", "complete", invalid_status="pending")
-                elif step == "E":
-                    _mark_step_verified("E", "complete", invalid_status="pending")
-                elif step == "F":
-                    _mark_step_verified("F", "complete", invalid_status="pending")
-                else:
-                    _mark_step(step if step != "D" else "D", "complete")
-                _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)
-                print(f"[Step{step}] done")
+                            _final_eval_f = StepFService.evaluate_final_outputs(
+                                output_root=Path(resolved_output_root),
+                                mode=resolved_mode,
+                                symbol=symbol,
+                            )
+                            if int(_final_eval_f.get("return_code", 1)) != 0:
+                                _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
+                                raise RuntimeError("StepF final artifacts invalid: " + ", ".join(_final_eval_f.get("errors", [])))
+                    if step == "DPRIME":
+                        _mark_step_verified("DPRIME", "complete", invalid_status="pending")
+                    elif step == "E":
+                        _mark_step_verified("E", "complete", invalid_status="pending")
+                    elif step == "F":
+                        _mark_step_verified("F", "complete", invalid_status="pending")
+                        _update_stepf_manifest_fields("complete")
+                    else:
+                        _mark_step(step if step != "D" else "D", "complete")
+                    _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)
+                    print(f"[Step{step}] done")
+                except (KeyboardInterrupt, SystemExit) as _interrupt:
+                    _elapsed_generic = time.perf_counter() - _t0_generic
+                    _finalize_manifest_step(step if step != "D" else "D", status="interrupted", elapsed_sec=_elapsed_generic, audit_status="FAIL")
+                    if step == "F":
+                        _update_stepf_manifest_fields("interrupted", error=_interrupt)
+                    raise
+                except Exception as _step_exc:
+                    _elapsed_generic = time.perf_counter() - _t0_generic
+                    _finalize_manifest_step(step if step != "D" else "D", status="failed", elapsed_sec=_elapsed_generic, audit_status="FAIL")
+                    if step == "F":
+                        _update_stepf_manifest_fields("failed", error=_step_exc)
+                    raise
 
             with timing.stage("audit.leak"):
                 _run_leak_audits(

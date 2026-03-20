@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
+import time
 import traceback
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -117,6 +120,10 @@ class StepFModeRunRecord:
     traceback_path: str = ""
     error: str = ""
     files_present: List[str] | None = None
+    status_path: str = ""
+    artifacts_manifest_path: str = ""
+    reused: bool = False
+    publish_ready: bool = False
 
 
 class StepFService:
@@ -191,8 +198,6 @@ class StepFService:
             warnings.append("missing_daily_log_marl")
         if not summary_path.exists():
             warnings.append("missing_summary_router")
-        if not audit_path.exists():
-            warnings.append("missing_audit_router")
         else:
             try:
                 summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -201,6 +206,8 @@ class StepFService:
                     warnings.append(f"split_warning:{note}")
             except Exception as exc:
                 warnings.append(f"summary_unreadable:{type(exc).__name__}")
+        if not audit_path.exists():
+            warnings.append("missing_audit_router")
 
         final_status = "fail" if errors else ("warn" if warnings else "complete")
         return_code = 1 if errors else 0
@@ -279,18 +286,69 @@ class StepFService:
             self._log_stepf_entry("[STEPF_ENTRY] before_mode_loop")
             primary_result: Optional[StepFResult] = None
             mode_records: List[StepFModeRunRecord] = []
+            publish_result: Dict[str, Any] = {"published": False, "primary_reward_mode": "", "best_reward_mode": "", "published_files": []}
+            run_id = str(getattr(self.app_config, "run_id", "") or os.environ.get("APEX_RUN_ID", "") or "")
+            terminal_exc: BaseException | None = None
             for reward_mode in reward_modes:
                 with timing.stage("stepF.reward_mode.total", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "stage_group": "reward_mode", "agent_kind": "reward_mode"}):
                     mode_cfg = deepcopy(cfg)
                     mode_cfg.reward_mode = reward_mode
-                    persist_primary_outputs = primary_result is None
                     self._log_stepf_entry(f"[STEPF_ENTRY] before_mode={reward_mode}")
-                    self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
                     retrain = "on" if str(getattr(mode_cfg, "retrain", "off")).lower() == "on" else "off"
                     mode_dir = self._reward_dir(out_root=out_root, mode=resolved_mode, retrain=retrain, reward_mode=reward_mode)
+                    mode_dir.mkdir(parents=True, exist_ok=True)
+                    status_started_at = self._utcnow_iso()
+                    status_started_perf = time.perf_counter()
                     self._log_stepf_multi(f"[STEPF_MULTI] mode_output_dir={mode_dir}")
                     self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_root={step_e_root}")
                     self._log_stepf_multi(f"[STEPF_MULTI] mode_input_stepE_daily_log_count={len(step_e_daily_logs)}")
+                    reusable, _, artifacts_manifest = self._load_reward_mode_reuse_status(mode_dir, symbol)
+                    if reusable:
+                        files_present = [p.name for p in sorted(mode_dir.glob("*"))]
+                        status_path = self._write_reward_mode_status(
+                            mode_dir,
+                            reward_mode=reward_mode,
+                            status="complete",
+                            started_at=status_started_at,
+                            started_perf=status_started_perf,
+                            run_id=run_id,
+                            required_artifacts_present=True,
+                            publish_ready=False,
+                        )
+                        self._log_stepf_multi(f"[STEPF_MULTI] mode_reuse={reward_mode}")
+                        mode_records.append(
+                            StepFModeRunRecord(
+                                mode=reward_mode,
+                                status="REUSED",
+                                output_dir=str(mode_dir),
+                                step_e_root=str(step_e_root),
+                                step_e_daily_log_count=len(step_e_daily_logs),
+                                files_present=files_present,
+                                status_path=str(status_path),
+                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                                reused=True,
+                                publish_ready=True,
+                            )
+                        )
+                        if primary_result is None:
+                            primary_result = StepFResult(
+                                daily_log_path=str(mode_dir / f"stepF_daily_log_router_{symbol}.csv"),
+                                summary_path=str(mode_dir / f"stepF_summary_router_{symbol}.json"),
+                                ratio_path="",
+                            )
+                        continue
+
+                    self._write_reward_mode_status(
+                        mode_dir,
+                        reward_mode=reward_mode,
+                        status="running",
+                        started_at=status_started_at,
+                        started_perf=status_started_perf,
+                        run_id=run_id,
+                        required_artifacts_present=False,
+                        publish_ready=False,
+                    )
+                    self._log_stepf_multi(f"[STEPF_MULTI] mode_start={reward_mode}")
 
                     try:
                         self._log_stepf_entry("[STEPF_ENTRY] before_service_run")
@@ -299,34 +357,63 @@ class StepFService:
                             date_range,
                             symbol=symbol,
                             mode=resolved_mode,
-                            persist_primary_outputs=persist_primary_outputs,
+                            persist_primary_outputs=(not compare_enabled),
                         )
                         self._log_stepf_entry("[STEPF_ENTRY] after_service_run")
-                        written_files = [
-                            f"stepF_equity_marl_{symbol}.csv",
-                            f"stepF_daily_log_router_{symbol}.csv",
-                            f"stepF_daily_log_marl_{symbol}.csv",
-                            f"stepF_summary_router_{symbol}.json",
-                        ]
+                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+                        if not bool(artifacts_manifest.get("validation_passed", False)):
+                            missing = ",".join(artifacts_manifest.get("missing_artifacts", []))
+                            invalid = ",".join(artifacts_manifest.get("invalid_artifacts", []))
+                            raise RuntimeError(f"StepF reward_mode artifacts invalid: missing=[{missing}] invalid=[{invalid}]")
+                        status_path = self._write_reward_mode_status(
+                            mode_dir,
+                            reward_mode=reward_mode,
+                            status="complete",
+                            started_at=status_started_at,
+                            started_perf=status_started_perf,
+                            run_id=run_id,
+                            required_artifacts_present=True,
+                            publish_ready=False,
+                        )
+                        written_files = list(artifacts_manifest.get("present_artifacts", []))
                         self._log_stepf_multi(f"[STEPF_MULTI] mode_written_files={','.join(written_files)}")
                         self._log_stepf_multi(f"[STEPF_MULTI] mode_success={reward_mode}")
                         mode_records.append(
                             StepFModeRunRecord(
                                 mode=reward_mode,
-                                status="SUCCESS",
+                                status="COMPLETE",
                                 output_dir=str(mode_dir),
                                 step_e_root=str(step_e_root),
                                 step_e_daily_log_count=len(step_e_daily_logs),
                                 files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                                status_path=str(status_path),
+                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                                reused=False,
+                                publish_ready=True,
                             )
                         )
                         if primary_result is None:
                             primary_result = mode_result
+                            primary_result.daily_log_path = str(mode_dir / f"stepF_daily_log_router_{symbol}.csv")
+                            primary_result.summary_path = str(mode_dir / f"stepF_summary_router_{symbol}.json")
                     except Exception as exc:
-                        mode_dir.mkdir(parents=True, exist_ok=True)
                         tb_text = traceback.format_exc()
-                        traceback_path = mode_dir / f"stepF_traceback_{symbol}.log"
+                        traceback_path = mode_dir / "traceback.txt"
                         traceback_path.write_text(tb_text, encoding="utf-8")
+                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+                        status_path = self._write_reward_mode_status(
+                            mode_dir,
+                            reward_mode=reward_mode,
+                            status="failed",
+                            started_at=status_started_at,
+                            started_perf=status_started_perf,
+                            run_id=run_id,
+                            required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
+                            publish_ready=False,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                            traceback_path=str(traceback_path),
+                        )
                         files_present = [p.name for p in sorted(mode_dir.glob("*"))]
                         self._log_stepf_multi(f"[STEPF_MULTI] mode_fail={reward_mode} exc={type(exc).__name__}: {exc}")
                         self._log_stepf_multi(f"[STEPF_MULTI] mode_traceback_path={traceback_path}")
@@ -345,35 +432,108 @@ class StepFService:
                                 traceback_path=str(traceback_path),
                                 error=f"{type(exc).__name__}: {exc}",
                                 files_present=files_present,
+                                status_path=str(status_path),
+                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
                             )
                         )
+                        terminal_exc = exc
+                        break
+                    except (KeyboardInterrupt, SystemExit) as exc:
+                        tb_text = traceback.format_exc()
+                        traceback_path = mode_dir / "traceback.txt"
+                        traceback_path.write_text(tb_text, encoding="utf-8")
+                        artifacts_manifest = self._validate_reward_mode_artifacts(mode_dir, symbol)
+                        status_path = self._write_reward_mode_status(
+                            mode_dir,
+                            reward_mode=reward_mode,
+                            status="interrupted",
+                            started_at=status_started_at,
+                            started_perf=status_started_perf,
+                            run_id=run_id,
+                            required_artifacts_present=bool(artifacts_manifest.get("validation_passed", False)),
+                            publish_ready=False,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                            traceback_path=str(traceback_path),
+                        )
+                        mode_records.append(
+                            StepFModeRunRecord(
+                                mode=reward_mode,
+                                status="INTERRUPTED",
+                                output_dir=str(mode_dir),
+                                step_e_root=str(step_e_root),
+                                step_e_daily_log_count=len(step_e_daily_logs),
+                                traceback_path=str(traceback_path),
+                                error=f"{type(exc).__name__}: {exc}",
+                                files_present=[p.name for p in sorted(mode_dir.glob("*"))],
+                                status_path=str(status_path),
+                                artifacts_manifest_path=str(mode_dir / "artifacts_manifest.json"),
+                            )
+                        )
+                        terminal_exc = exc
+                        break
+
+            if terminal_exc is None and compare_enabled and mode_records and all(r.status in {"COMPLETE", "REUSED"} for r in mode_records):
+                primary_mode = mode_records[0].mode
+                publish_result = self._publish_stepf_canonical_outputs(
+                    out_root=out_root,
+                    mode=resolved_mode,
+                    symbol=symbol,
+                    primary_reward_mode=primary_mode,
+                    reward_modes=reward_modes,
+                )
+                for record in mode_records:
+                    record.publish_ready = True
+                    self._write_reward_mode_status(
+                        Path(record.output_dir),
+                        reward_mode=record.mode,
+                        status="complete",
+                        started_at=self._utcnow_iso(),
+                        started_perf=time.perf_counter(),
+                        run_id=run_id,
+                        required_artifacts_present=True,
+                        publish_ready=True,
+                    )
 
             multi_summary_path = out_root / "stepF" / resolved_mode / f"stepF_multi_mode_summary_{symbol}.json"
             multi_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            success_modes = [r.mode for r in mode_records if r.status == "SUCCESS"]
-            failed_modes = [r.mode for r in mode_records if r.status == "FAIL"]
+            success_modes = [r.mode for r in mode_records if r.status in {"COMPLETE", "REUSED"}]
+            failed_modes = [r.mode for r in mode_records if r.status in {"FAIL", "INTERRUPTED"}]
+            reused_modes = [r.mode for r in mode_records if r.reused]
+            interrupted_modes = [r.mode for r in mode_records if r.status == "INTERRUPTED"]
             missing_outputs = [
                 f"reward_{r.mode}/stepF_equity_marl_{symbol}.csv"
                 for r in mode_records
-                if r.status != "SUCCESS"
+                if r.status not in {"COMPLETE", "REUSED"}
             ]
             multi_summary = {
                 "compare_enabled": compare_enabled,
                 "reward_modes": reward_modes,
                 "success_modes": success_modes,
                 "failed_modes": failed_modes,
+                "reused_modes": reused_modes,
+                "interrupted_modes": interrupted_modes,
                 "missing_outputs": missing_outputs,
+                "publish_completed": bool(publish_result.get("published", False) or not compare_enabled),
+                "publish_result": publish_result,
                 "records": [r.__dict__ for r in mode_records],
             }
             multi_summary_path.write_text(json.dumps(multi_summary, ensure_ascii=False, indent=2), encoding="utf-8")
             self._log_stepf_multi(f"[STEPF_MULTI] success_modes={','.join(success_modes) if success_modes else '(none)'}")
+            self._log_stepf_multi(f"[STEPF_MULTI] reused_modes={','.join(reused_modes) if reused_modes else '(none)'}")
             self._log_stepf_multi(f"[STEPF_MULTI] failed_modes={','.join(failed_modes) if failed_modes else '(none)'}")
             self._log_stepf_multi(f"[STEPF_MULTI] missing_outputs={','.join(missing_outputs) if missing_outputs else '(none)'}")
+            self._log_stepf_multi(f"[STEPF_MULTI] publish_completed={str(multi_summary['publish_completed']).lower()}")
             self._log_stepf_multi(f"[STEPF_MULTI] summary_path={multi_summary_path}")
 
             if primary_result is None:
-                failed = [f"{r.mode}:{r.error}" for r in mode_records if r.status == "FAIL"]
+                failed = [f"{r.mode}:{r.error}" for r in mode_records if r.status in {"FAIL", "INTERRUPTED"}]
                 raise RuntimeError("StepF reward mode execution failed for all modes: " + " | ".join(failed))
+            primary_result.run_summary_path = str(multi_summary_path)
+            if terminal_exc is not None:
+                raise terminal_exc
+            if compare_enabled and not bool(multi_summary["publish_completed"]):
+                raise RuntimeError("StepF compare reward mode execution incomplete; canonical publish not completed")
             return primary_result
         except Exception as exc:
             tb_text = traceback.format_exc()
@@ -427,6 +587,222 @@ class StepFService:
     def _reward_dir(out_root: Path, mode: str, retrain: str, reward_mode: str) -> Path:
         out_dir = (out_root / "stepF" / mode / f"retrain_{retrain}") if mode == "live" else (out_root / "stepF" / mode)
         return out_dir / f"reward_{reward_mode}"
+
+    @staticmethod
+    def _utcnow_iso() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @classmethod
+    def _reward_mode_required_artifacts(cls, symbol: str) -> Dict[str, Dict[str, Any]]:
+        return {
+            f"stepF_equity_marl_{symbol}.csv": {"kind": "csv", "required_cols": ("Date", "Split", "ratio", "ret", "equity")},
+            f"stepF_daily_log_marl_{symbol}.csv": {"kind": "csv", "required_cols": ("Date", "Split", "ratio", "ret", "equity")},
+            f"stepF_daily_log_router_{symbol}.csv": {"kind": "csv", "required_cols": ("Date", "Split", "ratio", "ret", "equity")},
+            f"stepF_summary_router_{symbol}.json": {
+                "kind": "json",
+                "required_keys": ("mode", "symbol", "reward_mode", "equity_end"),
+            },
+            f"stepF_audit_router_{symbol}.json": {
+                "kind": "json",
+                "required_keys": ("mode", "symbol", "reward_mode", "policy_compare"),
+            },
+            f"stepF_policy_compare_{symbol}.json": {"kind": "json", "required_keys": ("summary",)},
+        }
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(path.parent)) as tmp:
+            json.dump(payload, tmp, ensure_ascii=False, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            temp_name = tmp.name
+        os.replace(temp_name, path)
+
+    @staticmethod
+    def _csv_artifact_valid(path: Path, required_cols: Tuple[str, ...]) -> bool:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            return False
+        return not df.empty and all(col in df.columns for col in required_cols)
+
+    @staticmethod
+    def _json_artifact_valid(path: Path, required_keys: Tuple[str, ...]) -> bool:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        return all(key in payload for key in required_keys)
+
+    @classmethod
+    def _validate_reward_mode_artifacts(cls, reward_dir: Path, symbol: str) -> Dict[str, Any]:
+        expected = cls._reward_mode_required_artifacts(symbol)
+        present: List[str] = []
+        missing: List[str] = []
+        invalid: List[str] = []
+        for rel_name, spec in expected.items():
+            path = reward_dir / rel_name
+            if not path.exists():
+                missing.append(rel_name)
+                continue
+            present.append(rel_name)
+            kind = str(spec.get("kind", "")).lower()
+            if kind == "csv":
+                if not cls._csv_artifact_valid(path, tuple(spec.get("required_cols", ()))):
+                    invalid.append(rel_name)
+            elif kind == "json":
+                if not cls._json_artifact_valid(path, tuple(spec.get("required_keys", ()))):
+                    invalid.append(rel_name)
+            elif path.stat().st_size <= 0:
+                invalid.append(rel_name)
+        payload = {
+            "expected_artifacts": list(expected.keys()),
+            "present_artifacts": present,
+            "missing_artifacts": missing,
+            "invalid_artifacts": invalid,
+            "validation_passed": not missing and not invalid,
+            "generated_at": cls._utcnow_iso(),
+        }
+        cls._write_json_atomic(reward_dir / "artifacts_manifest.json", payload)
+        return payload
+
+    @classmethod
+    def _write_reward_mode_status(
+        cls,
+        reward_dir: Path,
+        *,
+        reward_mode: str,
+        status: str,
+        started_at: str,
+        started_perf: float,
+        run_id: str,
+        required_artifacts_present: bool,
+        publish_ready: bool,
+        finished_at: Optional[str] = None,
+        error_type: str = "",
+        error_message: str = "",
+        traceback_path: str = "",
+    ) -> Path:
+        finished_iso = finished_at or cls._utcnow_iso()
+        payload: Dict[str, Any] = {
+            "step": "F",
+            "reward_mode": reward_mode,
+            "status": status,
+            "started_at": started_at,
+            "finished_at": finished_iso if status != "running" else None,
+            "duration_sec": None if status == "running" else round(max(0.0, time.perf_counter() - started_perf), 6),
+            "run_id": run_id,
+            "required_artifacts_present": bool(required_artifacts_present),
+            "publish_ready": bool(publish_ready),
+        }
+        if error_type:
+            payload["error_type"] = error_type
+        if error_message:
+            payload["error_message"] = error_message[:500]
+        if traceback_path:
+            payload["traceback_path"] = traceback_path
+        status_path = reward_dir / "status.json"
+        cls._write_json_atomic(status_path, payload)
+        return status_path
+
+    @classmethod
+    def _load_reward_mode_reuse_status(cls, reward_dir: Path, symbol: str) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
+        status_path = reward_dir / "status.json"
+        manifest_path = reward_dir / "artifacts_manifest.json"
+        try:
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False, {}, {}
+        try:
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False, status_payload if isinstance(status_payload, dict) else {}, {}
+        if not isinstance(status_payload, dict) or not isinstance(manifest_payload, dict):
+            return False, {}, {}
+        if str(status_payload.get("status", "")).lower() != "complete":
+            return False, status_payload, manifest_payload
+        if not bool(manifest_payload.get("validation_passed", False)):
+            return False, status_payload, manifest_payload
+        refreshed = cls._validate_reward_mode_artifacts(reward_dir, symbol)
+        reusable = bool(refreshed.get("validation_passed", False))
+        return reusable, status_payload, refreshed
+
+    @classmethod
+    def _publish_stepf_canonical_outputs(
+        cls,
+        *,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+        primary_reward_mode: str,
+        reward_modes: List[str],
+    ) -> Dict[str, Any]:
+        canonical_dir = out_root / "stepF" / mode
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        reward_dir = canonical_dir / f"reward_{primary_reward_mode}"
+        audit_dir = out_root / "audit" / mode
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        copy_map = {
+            reward_dir / f"stepF_daily_log_router_{symbol}.csv": canonical_dir / f"stepF_daily_log_router_{symbol}.csv",
+            reward_dir / f"stepF_daily_log_marl_{symbol}.csv": canonical_dir / f"stepF_daily_log_marl_{symbol}.csv",
+            reward_dir / f"stepF_equity_marl_{symbol}.csv": canonical_dir / f"stepF_equity_marl_{symbol}.csv",
+            reward_dir / f"stepF_summary_router_{symbol}.json": canonical_dir / f"stepF_summary_router_{symbol}.json",
+            reward_dir / f"stepF_audit_router_{symbol}.json": canonical_dir / f"stepF_audit_router_{symbol}.json",
+            reward_dir / f"stepF_policy_compare_{symbol}.json": audit_dir / f"stepF_policy_compare_{symbol}.json",
+        }
+        published_files: List[str] = []
+        for src, dst in copy_map.items():
+            if not src.exists() or src.stat().st_size <= 0:
+                raise RuntimeError(f"StepF canonical publish source missing: {src}")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            published_files.append(str(dst))
+
+        compare_rows: List[Dict[str, Any]] = []
+        best_mode = primary_reward_mode
+        best_equity = float("-inf")
+        for reward_mode in reward_modes:
+            summary_path = canonical_dir / f"reward_{reward_mode}" / f"stepF_summary_router_{symbol}.json"
+            if not summary_path.exists():
+                continue
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            row = {
+                "reward_mode": reward_mode,
+                "equity_end": float(payload.get("equity_end", float("nan"))),
+                "test_return_pct": float(payload.get("test_return_pct", float("nan"))),
+                "test_sharpe": float(payload.get("test_sharpe", float("nan"))),
+            }
+            compare_rows.append(row)
+            if np.isfinite(row["equity_end"]) and row["equity_end"] > best_equity:
+                best_equity = row["equity_end"]
+                best_mode = reward_mode
+        compare_payload = {
+            "published_at": cls._utcnow_iso(),
+            "primary_reward_mode": primary_reward_mode,
+            "best_reward_mode": best_mode,
+            "reward_modes": reward_modes,
+            "rows": compare_rows,
+        }
+        compare_path = canonical_dir / f"stepF_compare_reward_modes_{symbol}.json"
+        best_mode_path = canonical_dir / f"stepF_best_reward_mode_{symbol}.json"
+        cls._write_json_atomic(compare_path, compare_payload)
+        cls._write_json_atomic(best_mode_path, {"reward_mode": best_mode, "published_at": cls._utcnow_iso()})
+        published_files.extend([str(compare_path), str(best_mode_path)])
+        return {
+            "published": True,
+            "primary_reward_mode": primary_reward_mode,
+            "best_reward_mode": best_mode,
+            "published_files": published_files,
+            "compare_path": str(compare_path),
+            "best_mode_path": str(best_mode_path),
+        }
 
     @staticmethod
     def _normalize_agent_names(raw: object) -> List[str]:
@@ -914,6 +1290,8 @@ class StepFService:
                 reward_marl_path = reward_dir / f"stepF_daily_log_marl_{symbol}.csv"
                 reward_eq_path = reward_dir / f"stepF_equity_marl_{symbol}.csv"
                 reward_summary_path = reward_dir / f"stepF_summary_router_{symbol}.json"
+                reward_audit_path = reward_dir / f"stepF_audit_router_{symbol}.json"
+                reward_compare_audit_path = reward_dir / f"stepF_policy_compare_{symbol}.json"
                 daily.to_csv(reward_router_path, index=False)
                 daily.to_csv(reward_marl_path, index=False)
                 eq_df.to_csv(reward_eq_path, index=False)
@@ -1052,7 +1430,10 @@ class StepFService:
                 }
                 if persist_primary_outputs:
                     stepf_audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                compare_audit_path.write_text(json.dumps(policy_compare, ensure_ascii=False, indent=2), encoding="utf-8")
+                reward_audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                reward_compare_audit_path.write_text(json.dumps(policy_compare, ensure_ascii=False, indent=2), encoding="utf-8")
+                if persist_primary_outputs:
+                    compare_audit_path.write_text(json.dumps(policy_compare, ensure_ascii=False, indent=2), encoding="utf-8")
 
             if cfg.verbose:
                 print(f"[StepF-router] wrote phase2={phase2_path}")

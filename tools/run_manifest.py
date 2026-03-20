@@ -523,6 +523,7 @@ def check_step_artifacts(
 
     if step_upper == "F":
         d = base / "stepF" / mode
+        reward_modes = tuple(str(x).strip().lower() for x in (required_stepf_reward_modes or tuple()) if str(x).strip())
         primary_ok = (
             (d / f"stepF_equity_marl_{symbol}.csv").exists()
             and (d / f"stepF_daily_log_marl_{symbol}.csv").exists()
@@ -531,18 +532,13 @@ def check_step_artifacts(
             and (d / f"stepF_audit_router_{symbol}.json").exists()
             and (base / "audit" / mode / f"stepF_policy_compare_{symbol}.json").exists()
         )
+        if len(reward_modes) > 1:
+            primary_ok = primary_ok and (d / f"stepF_compare_reward_modes_{symbol}.json").exists() and (d / f"stepF_best_reward_mode_{symbol}.json").exists()
         if not primary_ok:
             return False
-        reward_modes = tuple(str(x).strip().lower() for x in (required_stepf_reward_modes or tuple()) if str(x).strip())
         for rm in reward_modes:
             rdir = d / f"reward_{rm}"
-            required_reward = (
-                rdir / f"stepF_equity_marl_{symbol}.csv",
-                rdir / f"stepF_daily_log_marl_{symbol}.csv",
-                rdir / f"stepF_daily_log_router_{symbol}.csv",
-                rdir / f"stepF_summary_router_{symbol}.json",
-            )
-            if not all(x.exists() for x in required_reward):
+            if not _stepf_reward_mode_complete(rdir, symbol):
                 return False
         return True
 
@@ -572,6 +568,26 @@ def _read_json_payload(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _stepf_reward_mode_complete(reward_dir: Path, symbol: str) -> bool:
+    status_payload = _read_json_payload(reward_dir / "status.json")
+    manifest_payload = _read_json_payload(reward_dir / "artifacts_manifest.json")
+    if str(status_payload.get("status", "")).lower() != "complete":
+        return False
+    if not bool(status_payload.get("required_artifacts_present", False)):
+        return False
+    if not bool(manifest_payload.get("validation_passed", False)):
+        return False
+    required = (
+        reward_dir / f"stepF_equity_marl_{symbol}.csv",
+        reward_dir / f"stepF_daily_log_marl_{symbol}.csv",
+        reward_dir / f"stepF_daily_log_router_{symbol}.csv",
+        reward_dir / f"stepF_summary_router_{symbol}.json",
+        reward_dir / f"stepF_audit_router_{symbol}.json",
+        reward_dir / f"stepF_policy_compare_{symbol}.json",
+    )
+    return all(path.exists() and path.stat().st_size > 0 for path in required)
 
 
 def read_stepe_quality_status(agent: str, output_root: Path, symbol: str, mode: str) -> Optional[str]:
