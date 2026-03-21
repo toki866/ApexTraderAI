@@ -93,13 +93,13 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) 
   $primarySymbol = (($symbolsRaw -split ',')[0]).Trim().ToUpperInvariant()
   if ([string]::IsNullOrWhiteSpace($primarySymbol)) { $primarySymbol = 'SOXL' }
   $testStart = if ($env:TEST_START_DATE) { $env:TEST_START_DATE } elseif ($env:INPUT_TEST_START_DATE) { $env:INPUT_TEST_START_DATE } else { '' }
-  if (-not [string]::IsNullOrWhiteSpace($testStart)) {
-    $canonicalOutputBase = if ($env:CANONICAL_OUTPUT_ROOT) { $env:CANONICAL_OUTPUT_ROOT } else { 'C:\work\apex_work\output' }
-    $canonicalOutput = Join-Path (Join-Path $canonicalOutputBase $modeName) $primarySymbol
-    $canonicalOutput = Join-Path $canonicalOutput $testStart
-    if (Test-Path $canonicalOutput) {
-      $OutputRoot = $canonicalOutput
-      $outputRootSource = 'canonical_output_root'
+  $canonicalOutputBase = if ($env:CANONICAL_OUTPUT_ROOT) { $env:CANONICAL_OUTPUT_ROOT } else { 'C:\work\apex_work\output' }
+  $resolveScript = Join-Path $env:GITHUB_WORKSPACE 'scripts\resolve_output_dir.ps1'
+  if ((-not [string]::IsNullOrWhiteSpace($testStart)) -and (Test-Path $resolveScript)) {
+    $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $modeName -Symbol $primarySymbol -TestStartDate $testStart -CanonicalOutputRoot $canonicalOutputBase -PreferredOutputRoot $OutputRoot -RunDir $RunDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+    if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+      $OutputRoot = "$($resolvedOutput.path)"
+      $outputRootSource = "$($resolvedOutput.source)"
     }
   }
 }

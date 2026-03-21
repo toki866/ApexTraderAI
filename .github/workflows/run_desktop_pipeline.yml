@@ -35,7 +35,7 @@ on:
         default: "3"
         type: string
       copy_to_onedrive:
-        description: "Copy run outputs to OneDrive (1=true, 0=false)"
+        description: "Export output zip to OneDrive (1=true, 0=false)"
         required: true
         default: true
         type: boolean
@@ -677,22 +677,46 @@ jobs:
             if ($wslReuse) { $reuseFound = $true }
           }
 
+          $outputRootName = ''
+          $namingDate = ''
+          $namingSeq = ''
           if ($reuseFound) {
             $winOutput = Convert-WslPathToWindows -WslPath $wslReuse
             $wslOutput = $wslReuse
             $created = $false
             $source = 'reused_existing'
+            $outputRootName = Split-Path -Leaf $winOutput
+            if ($outputRootName -match '_(?<date>\d{8})_(?<seq>\d{3})$') {
+              $namingDate = $Matches['date']
+              $namingSeq = $Matches['seq']
+            }
           } else {
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $winOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-            $winOutput = Join-Path $winOutput $testStartForPath
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (-not (Test-Path $resolveScript)) {
+              throw "resolve_output_dir script missing: $resolveScript"
+            }
+            $resolveArgs = @(
+              '-Mode', $env:MODE,
+              '-Symbol', $primarySymbol,
+              '-TestStartDate', "${{ inputs.test_start_date }}",
+              '-CanonicalOutputRoot', $env:CANONICAL_OUTPUT_ROOT,
+              '-DateStamp', (Get-Date).ToString('yyyyMMdd'),
+              '-AllocateNew',
+              '-EmitJson'
+            )
+            if ($computedSteps -ne 'A') {
+              $resolveArgs += '-CreateDirectory'
+            }
+            $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
+            $winOutput = "$($resolvedOutput.path)"
+            $outputRootName = "$($resolvedOutput.output_root_name)"
+            $namingDate = "$($resolvedOutput.naming_date)"
+            $namingSeq = "$($resolvedOutput.naming_seq)"
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
               $created = $false
               $source = 'fresh_pending_stepa_simple_canonical'
             } else {
-              New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
               $created = $true
               $source = 'fresh_created_canonical'
             }
@@ -718,6 +742,21 @@ jobs:
           "EFFECTIVE_WIN_OUTPUT=$winOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$wslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAME=$outputRootName" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAMING_DATE=$namingDate" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAMING_SEQ=$namingSeq" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_SOURCE=$source" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[OUTPUT_ROOT] local_output_root=$winOutput"
+          Write-Host "[OUTPUT_ROOT] output_root_name=$outputRootName"
+          Write-Host "[OUTPUT_ROOT] output_root_source=$source"
+          if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate" }
+          if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq" }
+          Add-Content $rp "[OUTPUT_ROOT] local_output_root=$winOutput"
+          Add-Content $rp "[OUTPUT_ROOT] output_root_name=$outputRootName"
+          Add-Content $rp "[OUTPUT_ROOT] output_root_source=$source"
+          if ($namingDate) { Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
+          if ($namingSeq) { Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
 
           Add-Content $rp "[REUSE] reuse_scope=$outputReuseScope"
           Add-Content $rp "[REUSE] reuse_key_hash=$reuseHash"
@@ -729,7 +768,7 @@ jobs:
           Add-Content $rp "[REUSE] reuse_key_parameter_signature=$parameterSignature"
           Add-Content $rp "[REUSE] reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] matched_output_root=$winOutput"
-          Add-Content $rp "[REUSE] matched_run_id="
+          Add-Content $rp "[REUSE] matched_run_id=$reuseRunId"
           Add-Content $rp "[REUSE] output_root_source=$source"
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
@@ -2215,9 +2254,9 @@ jobs:
           Add-Content $rp '[STEP] finalize'
 
           $finalizeEffectiveRc = 0
-          $robocopyRawRc = $null
-          $robocopyNormalizedStatus = 'success'
-          $robocopyEffectiveRc = 0
+          $zipExportResult = $null
+          $zipExportStatus = 'not_started'
+          $zipExportWarning = ''
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
 
           try {
@@ -2225,7 +2264,6 @@ jobs:
             if (-not $outRoot) { throw 'finalize output root is empty' }
             if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
 
-            # DONE.txt → correct artifact dir
             @("run_id=$env:APEX_RUN_ID",
               "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
               "commit=$env:GITHUB_SHA",
@@ -2234,7 +2272,6 @@ jobs:
             Write-Host "[OK] run_id=$env:APEX_RUN_ID"
             Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
             Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-            Write-Host "[OK] output_root=$outRoot"
 
             $strictRequired = @(
               (Join-Path $outRoot 'run_manifest.json'),
@@ -2247,55 +2284,88 @@ jobs:
               throw "Missing strict required artifacts: $($missingStrict -join ',')"
             }
 
-            # robocopy to OneDrive
-            if ($env:COPY_TO_ONEDRIVE -eq '1') {
-              $oneDest = $null
-              if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
-              elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+            $outputRootName = if ($env:OUTPUT_ROOT_NAME) { $env:OUTPUT_ROOT_NAME } else { Split-Path -Leaf $outRoot }
+            $outputRootSource = if ($env:OUTPUT_ROOT_SOURCE) { $env:OUTPUT_ROOT_SOURCE } else { 'env_effective_win_output' }
+            $namingDate = $env:OUTPUT_ROOT_NAMING_DATE
+            $namingSeq = $env:OUTPUT_ROOT_NAMING_SEQ
+            $copyEffective = if ($env:COPY_TO_ONEDRIVE -eq '1') { '1' } else { '0' }
 
-              if ($oneDest) {
-                New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force -ErrorAction Stop | Out-Null
-                robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
-                $robocopyRawRc = $LASTEXITCODE
+            foreach ($line in @(
+              "[OUTPUT_ROOT] local_output_root=$outRoot",
+              "[OUTPUT_ROOT] output_root_name=$outputRootName",
+              "[OUTPUT_ROOT] output_root_source=$outputRootSource",
+              "[OUTPUT_ROOT] reuse_match_found=$env:REUSE_MATCH_FOUND",
+              "[OUTPUT_ROOT] copy_to_onedrive_effective=$copyEffective"
+            )) {
+              Write-Host $line
+              Add-Content $rp $line
+            }
+            if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate"; Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
+            if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq"; Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
 
-                if ($robocopyRawRc -ge 8) {
-                  $robocopyNormalizedStatus = 'fail'
-                  $robocopyEffectiveRc = 1
-                  $finalizeEffectiveRc = 1
-                  Write-Warning "robocopy failed rc=$robocopyRawRc"
-                } elseif ($robocopyRawRc -eq 0) {
-                  $robocopyNormalizedStatus = 'success'
-                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
-                } else {
-                  $robocopyNormalizedStatus = 'warn'
-                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
-                }
-              } else {
-                $robocopyNormalizedStatus = 'warn'
-                Write-Warning "OneDrive path not found; skip copy"
-              }
+            $zipExportScript = Join-Path $env:REPO_ROOT 'scripts\export_output_zip_to_onedrive.ps1'
+            if (-not (Test-Path $zipExportScript)) {
+              throw "export_output_zip_to_onedrive script missing: $zipExportScript"
+            }
+            $zipExportArgs = @(
+              '-OutputRoot', $outRoot,
+              '-CopyToOneDrive', $copyEffective,
+              '-OutputRootSource', $outputRootSource,
+              '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
+              '-Mode', $env:MODE,
+              '-Symbols', '${{ inputs.symbols }}',
+              '-TestStartDate', '${{ inputs.test_start_date }}',
+              '-TrainYears', '${{ inputs.train_years }}',
+              '-TestMonths', '${{ inputs.test_months }}',
+              '-EmitJson'
+            )
+            $zipExportResult = (& powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs | Select-Object -Last 1 | ConvertFrom-Json)
+            $zipExportStatus = "$($zipExportResult.export_result)"
+            $zipExportWarning = "$($zipExportResult.export_warning)"
+
+            "OUTPUT_ZIP_LOCAL_PATH=$($zipExportResult.zip_local_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            foreach ($line in @(
+              "[ZIP_EXPORT] zip_source_output_root=$outRoot",
+              "[ZIP_EXPORT] zip_local_path=$($zipExportResult.zip_local_path)",
+              "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
+              "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
+              "[ZIP_EXPORT] result=$zipExportStatus"
+            )) {
+              Write-Host $line
+              Add-Content $rp $line
+            }
+            if ($zipExportWarning) {
+              Write-Warning "[ZIP_EXPORT] warning=$zipExportWarning"
+              Add-Content $rp "[ZIP_EXPORT] warning=$zipExportWarning"
             }
 
-            if ($finalizeEffectiveRc -eq 0) {
-              Add-Content $rp "[OK] finalize output_root=$outRoot"
-            }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+              "- output_root ($env:MODE): `$outRoot`",
+              "- output_root_name ($env:MODE): `$outputRootName`",
+              "- output_root_source ($env:MODE): `$outputRootSource`",
+              "- output_zip_local_path ($env:MODE): `$($zipExportResult.zip_local_path)`",
+              "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
+              "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
+            )
+
+            Add-Content $rp "[OK] finalize output_root=$outRoot"
           }
           catch {
             $finalizeEffectiveRc = 1
-            if ($robocopyNormalizedStatus -ne 'fail') { $robocopyNormalizedStatus = 'fail' }
+            if ($zipExportStatus -eq 'not_started') { $zipExportStatus = 'fail' }
             Write-Error "finalize failed: $_"
             Add-Content $rp ("[NG] finalize exception={0}" -f $_)
           }
 
-          $rawRcText = if ($null -eq $robocopyRawRc) { 'n/a' } else { [string]$robocopyRawRc }
           $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
-          Write-Host "[FINALIZE] robocopy_raw_rc=$rawRcText"
-          Write-Host "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
-          Write-Host "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Write-Host "[FINALIZE] zip_export_result=$zipExportStatus"
+          if ($zipExportWarning) { Write-Host "[FINALIZE] zip_export_warning=$zipExportWarning" }
           Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
-          Add-Content $rp "[FINALIZE] robocopy_raw_rc=$rawRcText"
-          Add-Content $rp "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
-          Add-Content $rp "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Add-Content $rp "[FINALIZE] zip_export_result=$zipExportStatus"
+          if ($zipExportWarning) { Add-Content $rp "[FINALIZE] zip_export_warning=$zipExportWarning" }
           Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
 
           exit $finalizeEffectiveRc
@@ -2459,12 +2529,12 @@ jobs:
             $outputRootForPackage = $env:EFFECTIVE_WIN_OUTPUT
           } else {
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) {
-              $outputRootForPackage = $canonicalOutput
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootForPackage -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRootForPackage = "$($resolvedOutput.path)"
+              }
             }
           }
 
@@ -2564,10 +2634,13 @@ jobs:
           $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
           if (-not $outputRoot) {
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $outputRoot = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-            $outputRoot = Join-Path $outputRoot $testStartForPath
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
 
           if (-not $outputRoot) {
@@ -2836,17 +2909,18 @@ jobs:
               Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
             } else {
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
-              $testStartForPath = "${{ inputs.test_start_date }}"
-              if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-              $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-              $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-              if (Test-Path $canonicalOutput) {
-                $outputRoot = $canonicalOutput
-                Write-Host "Resolved output_root from canonical path: $outputRoot"
-              } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+              $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+              if (Test-Path $resolveScript) {
+                $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootFromLog -RunDir $runDir.FullName -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+                if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                  $outputRoot = "$($resolvedOutput.path)"
+                  Write-Host "Resolved output_root from helper ($($resolvedOutput.source)): $outputRoot"
+                }
+              }
+              if ((-not $outputRoot) -and $outputRootFromLog -and (Test-Path $outputRootFromLog)) {
                 $outputRoot = $outputRootFromLog
                 Write-Host "Resolved output_root from console log fallback: $outputRoot"
-              } else {
+              } elseif (-not $outputRoot) {
                 $outputRoot = Join-Path $runDir.FullName 'output'
                 Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
               }
@@ -3044,17 +3118,14 @@ jobs:
 
           $workRoot=$env:WORK_ROOT
           $outputRoot=''
-          if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-            $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-          }
-          if ([string]::IsNullOrWhiteSpace($outputRoot)) {
-            $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
-            if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+          $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
+          if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
+          $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+          if (Test-Path $resolveScript) {
+            $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $env:EFFECTIVE_WIN_OUTPUT -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+            if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+              $outputRoot = "$($resolvedOutput.path)"
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot)) {
             $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
@@ -3092,22 +3163,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
@@ -3144,22 +3212,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
@@ -3190,22 +3255,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
@@ -4817,22 +4879,46 @@ jobs:
             if ($wslReuse) { $reuseFound = $true }
           }
 
+          $outputRootName = ''
+          $namingDate = ''
+          $namingSeq = ''
           if ($reuseFound) {
             $winOutput = Convert-WslPathToWindows -WslPath $wslReuse
             $wslOutput = $wslReuse
             $created = $false
             $source = 'reused_existing'
+            $outputRootName = Split-Path -Leaf $winOutput
+            if ($outputRootName -match '_(?<date>\d{8})_(?<seq>\d{3})$') {
+              $namingDate = $Matches['date']
+              $namingSeq = $Matches['seq']
+            }
           } else {
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $winOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-            $winOutput = Join-Path $winOutput $testStartForPath
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (-not (Test-Path $resolveScript)) {
+              throw "resolve_output_dir script missing: $resolveScript"
+            }
+            $resolveArgs = @(
+              '-Mode', $env:MODE,
+              '-Symbol', $primarySymbol,
+              '-TestStartDate', "${{ inputs.test_start_date }}",
+              '-CanonicalOutputRoot', $env:CANONICAL_OUTPUT_ROOT,
+              '-DateStamp', (Get-Date).ToString('yyyyMMdd'),
+              '-AllocateNew',
+              '-EmitJson'
+            )
+            if ($computedSteps -ne 'A') {
+              $resolveArgs += '-CreateDirectory'
+            }
+            $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
+            $winOutput = "$($resolvedOutput.path)"
+            $outputRootName = "$($resolvedOutput.output_root_name)"
+            $namingDate = "$($resolvedOutput.naming_date)"
+            $namingSeq = "$($resolvedOutput.naming_seq)"
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
               $created = $false
               $source = 'fresh_pending_stepa_simple_canonical'
             } else {
-              New-Item -Path $winOutput -ItemType Directory -Force | Out-Null
               $created = $true
               $source = 'fresh_created_canonical'
             }
@@ -4858,6 +4944,21 @@ jobs:
           "EFFECTIVE_WIN_OUTPUT=$winOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "EFFECTIVE_WSL_OUTPUT=$wslOutput" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "REUSE_MATCH_FOUND=$($reuseFound.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAME=$outputRootName" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAMING_DATE=$namingDate" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_NAMING_SEQ=$namingSeq" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ROOT_SOURCE=$source" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "[OUTPUT_ROOT] local_output_root=$winOutput"
+          Write-Host "[OUTPUT_ROOT] output_root_name=$outputRootName"
+          Write-Host "[OUTPUT_ROOT] output_root_source=$source"
+          if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate" }
+          if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq" }
+          Add-Content $rp "[OUTPUT_ROOT] local_output_root=$winOutput"
+          Add-Content $rp "[OUTPUT_ROOT] output_root_name=$outputRootName"
+          Add-Content $rp "[OUTPUT_ROOT] output_root_source=$source"
+          if ($namingDate) { Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
+          if ($namingSeq) { Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
 
           Add-Content $rp "[REUSE] reuse_scope=$outputReuseScope"
           Add-Content $rp "[REUSE] reuse_key_hash=$reuseHash"
@@ -4869,7 +4970,7 @@ jobs:
           Add-Content $rp "[REUSE] reuse_key_parameter_signature=$parameterSignature"
           Add-Content $rp "[REUSE] reuse_match_found=$($reuseFound.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] matched_output_root=$winOutput"
-          Add-Content $rp "[REUSE] matched_run_id="
+          Add-Content $rp "[REUSE] matched_run_id=$reuseRunId"
           Add-Content $rp "[REUSE] output_root_source=$source"
           Add-Content $rp "[REUSE] created_new_output_root=$($created.ToString().ToLowerInvariant())"
           Add-Content $rp "[REUSE] final_EFFECTIVE_WIN_OUTPUT=$winOutput"
@@ -6238,9 +6339,9 @@ jobs:
           Add-Content $rp '[STEP] finalize'
 
           $finalizeEffectiveRc = 0
-          $robocopyRawRc = $null
-          $robocopyNormalizedStatus = 'success'
-          $robocopyEffectiveRc = 0
+          $zipExportResult = $null
+          $zipExportStatus = 'not_started'
+          $zipExportWarning = ''
           $outRoot = $env:EFFECTIVE_WIN_OUTPUT
 
           try {
@@ -6248,7 +6349,6 @@ jobs:
             if (-not $outRoot) { throw 'finalize output root is empty' }
             if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
 
-            # DONE.txt → correct artifact dir
             @("run_id=$env:APEX_RUN_ID",
               "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
               "commit=$env:GITHUB_SHA",
@@ -6257,7 +6357,6 @@ jobs:
             Write-Host "[OK] run_id=$env:APEX_RUN_ID"
             Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
             Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-            Write-Host "[OK] output_root=$outRoot"
 
             $strictRequired = @(
               (Join-Path $outRoot 'run_manifest.json'),
@@ -6270,55 +6369,88 @@ jobs:
               throw "Missing strict required artifacts: $($missingStrict -join ',')"
             }
 
-            # robocopy to OneDrive
-            if ($env:COPY_TO_ONEDRIVE -eq '1') {
-              $oneDest = $null
-              if ($env:ONE_DRIVE_RUNS_ROOT) { $oneDest = Join-Path $env:ONE_DRIVE_RUNS_ROOT $env:APEX_RUN_ID }
-              elseif ($env:OneDrive) { $oneDest = Join-Path $env:OneDrive "ApexTraderAI\runs\$env:APEX_RUN_ID" }
+            $outputRootName = if ($env:OUTPUT_ROOT_NAME) { $env:OUTPUT_ROOT_NAME } else { Split-Path -Leaf $outRoot }
+            $outputRootSource = if ($env:OUTPUT_ROOT_SOURCE) { $env:OUTPUT_ROOT_SOURCE } else { 'env_effective_win_output' }
+            $namingDate = $env:OUTPUT_ROOT_NAMING_DATE
+            $namingSeq = $env:OUTPUT_ROOT_NAMING_SEQ
+            $copyEffective = if ($env:COPY_TO_ONEDRIVE -eq '1') { '1' } else { '0' }
 
-              if ($oneDest) {
-                New-Item -Path (Join-Path $oneDest 'output') -ItemType Directory -Force -ErrorAction Stop | Out-Null
-                robocopy $outRoot (Join-Path $oneDest 'output') /E /Z /R:2 /W:2
-                $robocopyRawRc = $LASTEXITCODE
+            foreach ($line in @(
+              "[OUTPUT_ROOT] local_output_root=$outRoot",
+              "[OUTPUT_ROOT] output_root_name=$outputRootName",
+              "[OUTPUT_ROOT] output_root_source=$outputRootSource",
+              "[OUTPUT_ROOT] reuse_match_found=$env:REUSE_MATCH_FOUND",
+              "[OUTPUT_ROOT] copy_to_onedrive_effective=$copyEffective"
+            )) {
+              Write-Host $line
+              Add-Content $rp $line
+            }
+            if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate"; Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
+            if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq"; Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
 
-                if ($robocopyRawRc -ge 8) {
-                  $robocopyNormalizedStatus = 'fail'
-                  $robocopyEffectiveRc = 1
-                  $finalizeEffectiveRc = 1
-                  Write-Warning "robocopy failed rc=$robocopyRawRc"
-                } elseif ($robocopyRawRc -eq 0) {
-                  $robocopyNormalizedStatus = 'success'
-                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
-                } else {
-                  $robocopyNormalizedStatus = 'warn'
-                  Write-Host "[OK] robocopy to OneDrive rc=$robocopyRawRc"
-                }
-              } else {
-                $robocopyNormalizedStatus = 'warn'
-                Write-Warning "OneDrive path not found; skip copy"
-              }
+            $zipExportScript = Join-Path $env:REPO_ROOT 'scripts\export_output_zip_to_onedrive.ps1'
+            if (-not (Test-Path $zipExportScript)) {
+              throw "export_output_zip_to_onedrive script missing: $zipExportScript"
+            }
+            $zipExportArgs = @(
+              '-OutputRoot', $outRoot,
+              '-CopyToOneDrive', $copyEffective,
+              '-OutputRootSource', $outputRootSource,
+              '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
+              '-Mode', $env:MODE,
+              '-Symbols', '${{ inputs.symbols }}',
+              '-TestStartDate', '${{ inputs.test_start_date }}',
+              '-TrainYears', '${{ inputs.train_years }}',
+              '-TestMonths', '${{ inputs.test_months }}',
+              '-EmitJson'
+            )
+            $zipExportResult = (& powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs | Select-Object -Last 1 | ConvertFrom-Json)
+            $zipExportStatus = "$($zipExportResult.export_result)"
+            $zipExportWarning = "$($zipExportResult.export_warning)"
+
+            "OUTPUT_ZIP_LOCAL_PATH=$($zipExportResult.zip_local_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+            foreach ($line in @(
+              "[ZIP_EXPORT] zip_source_output_root=$outRoot",
+              "[ZIP_EXPORT] zip_local_path=$($zipExportResult.zip_local_path)",
+              "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
+              "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
+              "[ZIP_EXPORT] result=$zipExportStatus"
+            )) {
+              Write-Host $line
+              Add-Content $rp $line
+            }
+            if ($zipExportWarning) {
+              Write-Warning "[ZIP_EXPORT] warning=$zipExportWarning"
+              Add-Content $rp "[ZIP_EXPORT] warning=$zipExportWarning"
             }
 
-            if ($finalizeEffectiveRc -eq 0) {
-              Add-Content $rp "[OK] finalize output_root=$outRoot"
-            }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+              "- output_root ($env:MODE): `$outRoot`",
+              "- output_root_name ($env:MODE): `$outputRootName`",
+              "- output_root_source ($env:MODE): `$outputRootSource`",
+              "- output_zip_local_path ($env:MODE): `$($zipExportResult.zip_local_path)`",
+              "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
+              "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
+            )
+
+            Add-Content $rp "[OK] finalize output_root=$outRoot"
           }
           catch {
             $finalizeEffectiveRc = 1
-            if ($robocopyNormalizedStatus -ne 'fail') { $robocopyNormalizedStatus = 'fail' }
+            if ($zipExportStatus -eq 'not_started') { $zipExportStatus = 'fail' }
             Write-Error "finalize failed: $_"
             Add-Content $rp ("[NG] finalize exception={0}" -f $_)
           }
 
-          $rawRcText = if ($null -eq $robocopyRawRc) { 'n/a' } else { [string]$robocopyRawRc }
           $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
-          Write-Host "[FINALIZE] robocopy_raw_rc=$rawRcText"
-          Write-Host "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
-          Write-Host "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Write-Host "[FINALIZE] zip_export_result=$zipExportStatus"
+          if ($zipExportWarning) { Write-Host "[FINALIZE] zip_export_warning=$zipExportWarning" }
           Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
-          Add-Content $rp "[FINALIZE] robocopy_raw_rc=$rawRcText"
-          Add-Content $rp "[FINALIZE] robocopy_normalized_status=$robocopyNormalizedStatus"
-          Add-Content $rp "[FINALIZE] robocopy_effective_rc=$robocopyEffectiveRc"
+          Add-Content $rp "[FINALIZE] zip_export_result=$zipExportStatus"
+          if ($zipExportWarning) { Add-Content $rp "[FINALIZE] zip_export_warning=$zipExportWarning" }
           Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
 
           exit $finalizeEffectiveRc
@@ -6573,10 +6705,13 @@ jobs:
           $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
           if (-not $outputRoot) {
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $outputRoot = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-            $outputRoot = Join-Path $outputRoot $testStartForPath
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
 
           if (-not $outputRoot) {
@@ -6831,17 +6966,18 @@ jobs:
               Write-Host "Resolved output_root from EFFECTIVE_WIN_OUTPUT (env): $outputRoot"
             } else {
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
-              $testStartForPath = "${{ inputs.test_start_date }}"
-              if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-              $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
-              $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-              if (Test-Path $canonicalOutput) {
-                $outputRoot = $canonicalOutput
-                Write-Host "Resolved output_root from canonical path: $outputRoot"
-              } elseif ($outputRootFromLog -and (Test-Path $outputRootFromLog)) {
+              $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+              if (Test-Path $resolveScript) {
+                $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootFromLog -RunDir $runDir.FullName -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+                if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                  $outputRoot = "$($resolvedOutput.path)"
+                  Write-Host "Resolved output_root from helper ($($resolvedOutput.source)): $outputRoot"
+                }
+              }
+              if ((-not $outputRoot) -and $outputRootFromLog -and (Test-Path $outputRootFromLog)) {
                 $outputRoot = $outputRootFromLog
                 Write-Host "Resolved output_root from console log fallback: $outputRoot"
-              } else {
+              } elseif (-not $outputRoot) {
                 $outputRoot = Join-Path $runDir.FullName 'output'
                 Write-Host "Resolved output_root from run_dir fallback: $outputRoot"
               }
@@ -7059,22 +7195,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
@@ -7111,22 +7244,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
@@ -7157,22 +7287,19 @@ jobs:
           Set-Location $env:REPO_ROOT
 
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
-          if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
-              $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
-            }
-          }
+          $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
             $symbol = ('${{ inputs.symbols }}' -split ',')[0].Trim().ToUpperInvariant()
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
-            $testStartForPath = "${{ inputs.test_start_date }}"
-            if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
-            $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
-            if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
+            $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
+            if (Test-Path $resolveScript) {
+              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
+                $outputRoot = "$($resolvedOutput.path)"
+              }
+            }
           }
           if ([string]::IsNullOrWhiteSpace($outputRoot) -or -not (Test-Path $outputRoot)) {
-            $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
             if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path $runDir)) {
               $outputRoot = Join-Path $runDir 'output'
             }
