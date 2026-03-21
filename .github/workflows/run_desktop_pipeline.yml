@@ -122,6 +122,12 @@ permissions:
   actions: read
   issues: write
 
+env:
+  REPO_ROOT: ${{ github.workspace }}
+  WORK_ROOT: C:\work\apex_work\runs
+  CANONICAL_OUTPUT_ROOT: C:\work\apex_work\output
+  SESSION_LOG_ROOT: C:\work\apex_work\session_logs
+
 jobs:
   run_sim:
     timeout-minutes: 1440
@@ -130,7 +136,12 @@ jobs:
       MODE: sim
     runs-on: [self-hosted, windows]
     steps:
-      - name: Prepare repo in C:\work (no OneDrive cleanup)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare workspace repo
         id: prep_repo
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -140,74 +151,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git config --global core.longpaths true
 
-          $repoUrl = "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-          $cacheRoot = "C:\work\apex_repo_cache"
-          $repoDir = Join-Path $cacheRoot "ApexTraderAI"
-
-          New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
-
-          function Invoke-GitStrict {
-            param([string]$Command)
-            Write-Host ">>> git $Command"
-            & cmd /c "git $Command"
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-              throw "git $Command failed (exit=$exitCode)"
-            }
+          $repoRoot = $env:GITHUB_WORKSPACE
+          if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+            throw 'GITHUB_WORKSPACE is not set.'
           }
 
-          function Sync-Repo {
-            param([string]$TargetRepoDir)
-            if (!(Test-Path (Join-Path $TargetRepoDir '.git'))) {
-              Write-Host "[repo] cloning to $TargetRepoDir"
-              if (Test-Path $TargetRepoDir) {
-                Remove-Item -Path $TargetRepoDir -Recurse -Force
-              }
-              Invoke-GitStrict "clone $repoUrl `"$TargetRepoDir`""
-            } else {
-              Write-Host "[repo] fetch/reset in $TargetRepoDir"
-              Invoke-GitStrict "-C `"$TargetRepoDir`" remote set-url origin $repoUrl"
-              Invoke-GitStrict "-C `"$TargetRepoDir`" fetch --force --prune origin"
-            }
-
-            Invoke-GitStrict "-C `"$TargetRepoDir`" checkout -f $env:GITHUB_SHA"
-            Invoke-GitStrict "-C `"$TargetRepoDir`" reset --hard $env:GITHUB_SHA"
-            Invoke-GitStrict "-C `"$TargetRepoDir`" clean -ffdx"
-          }
+          $repoRoot = (Resolve-Path $repoRoot).Path
+          git config --global --add safe.directory $repoRoot
 
           Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
+          Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
 
-          try {
-            Sync-Repo -TargetRepoDir $repoDir
-          } catch {
-            $prepError = $_.Exception.Message
-            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $prepError)
-            Write-Warning "[repo] initial prepare failed: $prepError"
-
-            try {
-              if (Test-Path $repoDir) {
-                Write-Host "[repo] removing $repoDir before retry"
-                Remove-Item -Path $repoDir -Recurse -Force -ErrorAction Stop
-              }
-            } catch {
-              Write-Warning "[repo] failed to remove repoDir due to lock: $($_.Exception.Message)"
-              $repoDir = Join-Path $cacheRoot ("ApexTraderAI_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
-              Write-Warning "[repo] switching to fallback repoDir=$repoDir"
-            }
-
-            try {
-              Sync-Repo -TargetRepoDir $repoDir
-            } catch {
-              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $_.Exception.Message)
-              throw
-            }
-          }
-
-          git config --global --add safe.directory $repoDir
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"
-          Write-Host "REPO_ROOT=$repoDir"
-          $headShort = (& cmd /c "git -C `"$repoDir`" rev-parse --short HEAD").Trim()
+          Write-Host "REPO_ROOT=$repoRoot"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
           Write-Host "HEAD=$headShort"
+
+      - name: Debug workspace context
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "PWD=$PWD"
+          git rev-parse --show-toplevel
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -651,7 +617,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
@@ -719,7 +685,7 @@ jobs:
           } else {
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $winOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $winOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
             $winOutput = Join-Path $winOutput $testStartForPath
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
@@ -781,7 +747,7 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Continue'
-          $runsRoot = 'C:\work\apex_work\runs'
+          $runsRoot = $env:WORK_ROOT
           $keepLatest = 30
           $minAgeHours = 6
           $cutoff = (Get-Date).AddHours(-$minAgeHours)
@@ -813,7 +779,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
         run: |
           $ErrorActionPreference = 'Continue'
@@ -835,7 +801,7 @@ jobs:
           # Windows パス計算（output root は reuse 判定済みの EFFECTIVE_WIN_OUTPUT を優先使用）
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           $winLogDir    = Join-Path $sessionLogRoot ("{0}_att{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
           $winOutputDir = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { Join-Path $winRunDir 'output' } else { $env:EFFECTIVE_WIN_OUTPUT }
           $pathMsg = "[PREPARE_ENV] winRunDir=$winRunDir winDataDir=$winDataDir winOutputDir=$winOutputDir winLogDir=$winLogDir"
@@ -1016,7 +982,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
@@ -2390,8 +2356,8 @@ jobs:
           }
 
           # run log tail (canonical: RUN_LOG_PATH / session_logs first; runs/*/logs last fallback)
-          $workRoot = 'C:\work\apex_work\runs'
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $workRoot = $env:WORK_ROOT
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           Add-Content $report ("[INFO] session_log_root={0}" -f $sessionLogRoot)
 
@@ -2487,7 +2453,7 @@ jobs:
 
           $runDirForPackage = ''
           $outputRootForPackage = ''
-          $runsRoot = 'C:\work\apex_work\runs'
+          $runsRoot = $env:WORK_ROOT
 
           if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
             $outputRootForPackage = $env:EFFECTIVE_WIN_OUTPUT
@@ -2495,7 +2461,7 @@ jobs:
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) {
               $outputRootForPackage = $canonicalOutput
@@ -2600,7 +2566,7 @@ jobs:
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $outputRoot = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $outputRoot = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
             $outputRoot = Join-Path $outputRoot $testStartForPath
           }
 
@@ -2688,7 +2654,7 @@ jobs:
 
           $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ((-not $runDir) -and $env:APEX_RUN_ID) {
-            $candidateRunDir = Join-Path 'C:\work\apex_work\runs' $env:APEX_RUN_ID
+            $candidateRunDir = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
             if (Test-Path $candidateRunDir) { $runDir = $candidateRunDir }
           }
 
@@ -2700,7 +2666,7 @@ jobs:
             $runLogCandidates += (Join-Path (Join-Path $runDir 'logs') ('run_{0}.log' -f $env:APEX_RUN_ID))
             $runLogCandidates += Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
           }
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           if (Test-Path $sessionLogRoot) {
             $runLogCandidates += Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
           }
@@ -2776,7 +2742,7 @@ jobs:
         if: failure()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $workRoot = 'C:\work\apex_work\runs'
+          $workRoot = $env:WORK_ROOT
           $latestRunLog = Get-ChildItem -Path (Join-Path $workRoot '*\logs\run_*.log') -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
@@ -2794,7 +2760,7 @@ jobs:
         id: resolve_artifacts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $workRoot = 'C:\work\apex_work\runs'
+          $workRoot = $env:WORK_ROOT
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
@@ -2851,7 +2817,7 @@ jobs:
             $logGlob = Join-Path $runDir.FullName 'logs\run_*.log'
             $zipPath = Join-Path $runDir.FullName ("run_{0}.zip" -f $runDir.Name)
             $runLogPath = ''
-            $sessionLogRoot = 'C:\work\apex_work\session_logs'
+            $sessionLogRoot = $env:SESSION_LOG_ROOT
             $runLogCandidates = @()
             if ($env:RUN_LOG_PATH) { $runLogCandidates += $env:RUN_LOG_PATH }
             if (Test-Path $sessionLogRoot) {
@@ -2872,7 +2838,7 @@ jobs:
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $testStartForPath = "${{ inputs.test_start_date }}"
               if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-              $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+              $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
               $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
               if (Test-Path $canonicalOutput) {
                 $outputRoot = $canonicalOutput
@@ -2973,7 +2939,7 @@ jobs:
             }
           }
           if ((-not $runLog) -or (-not (Test-Path $runLog))) {
-            $sessionLogRoot = 'C:\work\apex_work\session_logs'
+            $sessionLogRoot = $env:SESSION_LOG_ROOT
             if (Test-Path $sessionLogRoot) {
               $latestSessionLog = Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
               if ($latestSessionLog) { $runLog = $latestSessionLog.FullName }
@@ -3076,7 +3042,7 @@ jobs:
           $ErrorActionPreference='Continue'
           Set-Location $env:REPO_ROOT
 
-          $workRoot='C:\work\apex_work\runs'
+          $workRoot=$env:WORK_ROOT
           $outputRoot=''
           if ($env:EFFECTIVE_WIN_OUTPUT -and (Test-Path $env:EFFECTIVE_WIN_OUTPUT)) {
             $outputRoot = $env:EFFECTIVE_WIN_OUTPUT
@@ -3086,7 +3052,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -3136,7 +3102,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -3188,7 +3154,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -3234,7 +3200,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -3414,7 +3380,7 @@ jobs:
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           $outputRootSource = 'workflow_output'
           if ([string]::IsNullOrWhiteSpace($runDir) -or -not (Test-Path $runDir)) {
-            $runsRoot = 'C:\work\apex_work\runs'
+            $runsRoot = $env:WORK_ROOT
             if (Test-Path $runsRoot) {
               $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending |
@@ -4310,7 +4276,12 @@ jobs:
       MODE: live
     runs-on: [self-hosted, windows]
     steps:
-      - name: Prepare repo in C:\work (no OneDrive cleanup)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare workspace repo
         id: prep_repo
         continue-on-error: true
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
@@ -4320,74 +4291,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git config --global core.longpaths true
 
-          $repoUrl = "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-          $cacheRoot = "C:\work\apex_repo_cache"
-          $repoDir = Join-Path $cacheRoot "ApexTraderAI"
-
-          New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
-
-          function Invoke-GitStrict {
-            param([string]$Command)
-            Write-Host ">>> git $Command"
-            & cmd /c "git $Command"
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-              throw "git $Command failed (exit=$exitCode)"
-            }
+          $repoRoot = $env:GITHUB_WORKSPACE
+          if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+            throw 'GITHUB_WORKSPACE is not set.'
           }
 
-          function Sync-Repo {
-            param([string]$TargetRepoDir)
-            if (!(Test-Path (Join-Path $TargetRepoDir '.git'))) {
-              Write-Host "[repo] cloning to $TargetRepoDir"
-              if (Test-Path $TargetRepoDir) {
-                Remove-Item -Path $TargetRepoDir -Recurse -Force
-              }
-              Invoke-GitStrict "clone $repoUrl `"$TargetRepoDir`""
-            } else {
-              Write-Host "[repo] fetch/reset in $TargetRepoDir"
-              Invoke-GitStrict "-C `"$TargetRepoDir`" remote set-url origin $repoUrl"
-              Invoke-GitStrict "-C `"$TargetRepoDir`" fetch --force --prune origin"
-            }
-
-            Invoke-GitStrict "-C `"$TargetRepoDir`" checkout -f $env:GITHUB_SHA"
-            Invoke-GitStrict "-C `"$TargetRepoDir`" reset --hard $env:GITHUB_SHA"
-            Invoke-GitStrict "-C `"$TargetRepoDir`" clean -ffdx"
-          }
+          $repoRoot = (Resolve-Path $repoRoot).Path
+          git config --global --add safe.directory $repoRoot
 
           Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
+          Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
 
-          try {
-            Sync-Repo -TargetRepoDir $repoDir
-          } catch {
-            $prepError = $_.Exception.Message
-            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $prepError)
-            Write-Warning "[repo] initial prepare failed: $prepError"
-
-            try {
-              if (Test-Path $repoDir) {
-                Write-Host "[repo] removing $repoDir before retry"
-                Remove-Item -Path $repoDir -Recurse -Force -ErrorAction Stop
-              }
-            } catch {
-              Write-Warning "[repo] failed to remove repoDir due to lock: $($_.Exception.Message)"
-              $repoDir = Join-Path $cacheRoot ("ApexTraderAI_" + $env:GITHUB_RUN_ID + "_" + $env:GITHUB_RUN_ATTEMPT)
-              Write-Warning "[repo] switching to fallback repoDir=$repoDir"
-            }
-
-            try {
-              Sync-Repo -TargetRepoDir $repoDir
-            } catch {
-              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $_.Exception.Message)
-              throw
-            }
-          }
-
-          git config --global --add safe.directory $repoDir
-          Add-Content -Path $env:GITHUB_ENV -Value "REPO_ROOT=$repoDir"
-          Write-Host "REPO_ROOT=$repoDir"
-          $headShort = (& cmd /c "git -C `"$repoDir`" rev-parse --short HEAD").Trim()
+          Write-Host "REPO_ROOT=$repoRoot"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
           Write-Host "HEAD=$headShort"
+
+      - name: Debug workspace context
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "PWD=$PWD"
+          git rev-parse --show-toplevel
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -4831,7 +4757,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
@@ -4899,7 +4825,7 @@ jobs:
           } else {
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $winOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $winOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
             $winOutput = Join-Path $winOutput $testStartForPath
             $wslOutput = Convert-WindowsPathToWsl -WindowsPath $winOutput
             if ($computedSteps -eq 'A') {
@@ -4961,7 +4887,7 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
           $ErrorActionPreference = 'Continue'
-          $runsRoot = 'C:\work\apex_work\runs'
+          $runsRoot = $env:WORK_ROOT
           $keepLatest = 30
           $minAgeHours = 6
           $cutoff = (Get-Date).AddHours(-$minAgeHours)
@@ -4993,7 +4919,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
         run: |
           $ErrorActionPreference = 'Continue'
@@ -5015,7 +4941,7 @@ jobs:
           # Windows パス計算（output root は reuse 判定済みの EFFECTIVE_WIN_OUTPUT を優先使用）
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           $winLogDir    = Join-Path $sessionLogRoot ("{0}_att{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
           $winOutputDir = if ([string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) { Join-Path $winRunDir 'output' } else { $env:EFFECTIVE_WIN_OUTPUT }
           $pathMsg = "[PREPARE_ENV] winRunDir=$winRunDir winDataDir=$winDataDir winOutputDir=$winOutputDir winLogDir=$winLogDir"
@@ -5196,7 +5122,7 @@ jobs:
         env:
           WSL_DISTRO: Ubuntu
           WSL_PYTHON: /home/becky/miniforge3/envs/mamba_cuda/bin/python
-          WORK_ROOT: C:\work\apex_work\runs
+          WORK_ROOT: ${{ env.WORK_ROOT }}
           SYMBOLS: ${{ inputs.symbols }}
           REUSE_OUTPUT: ${{ inputs.reuse_output || '1' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || '0' }}
@@ -6453,8 +6379,8 @@ jobs:
           }
 
           # run log tail (canonical: RUN_LOG_PATH / session_logs first; runs/*/logs last fallback)
-          $workRoot = 'C:\work\apex_work\runs'
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $workRoot = $env:WORK_ROOT
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           Add-Content $report ("[INFO] work_root={0}" -f $workRoot)
           Add-Content $report ("[INFO] session_log_root={0}" -f $sessionLogRoot)
 
@@ -6550,7 +6476,7 @@ jobs:
 
           $runDirForPackage = ''
           $outputRootForPackage = ''
-          $runsRoot = 'C:\work\apex_work\runs'
+          $runsRoot = $env:WORK_ROOT
           if (Test-Path $runsRoot) {
             $latestRun = $null
             $candidate = $null
@@ -6649,7 +6575,7 @@ jobs:
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $outputRoot = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+            $outputRoot = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
             $outputRoot = Join-Path $outputRoot $testStartForPath
           }
 
@@ -6737,7 +6663,7 @@ jobs:
 
           $runDir = '${{ steps.resolve_artifacts.outputs.run_dir }}'
           if ((-not $runDir) -and $env:APEX_RUN_ID) {
-            $candidateRunDir = Join-Path 'C:\work\apex_work\runs' $env:APEX_RUN_ID
+            $candidateRunDir = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
             if (Test-Path $candidateRunDir) { $runDir = $candidateRunDir }
           }
 
@@ -6749,7 +6675,7 @@ jobs:
             $runLogCandidates += (Join-Path (Join-Path $runDir 'logs') ('run_{0}.log' -f $env:APEX_RUN_ID))
             $runLogCandidates += Get-ChildItem -Path (Join-Path $runDir 'logs') -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
           }
-          $sessionLogRoot = 'C:\work\apex_work\session_logs'
+          $sessionLogRoot = $env:SESSION_LOG_ROOT
           if (Test-Path $sessionLogRoot) {
             $runLogCandidates += Get-ChildItem -Path $sessionLogRoot -Filter 'run_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName }
           }
@@ -6825,7 +6751,7 @@ jobs:
         if: failure()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $workRoot = 'C:\work\apex_work\runs'
+          $workRoot = $env:WORK_ROOT
           $latestRunLog = Get-ChildItem -Path (Join-Path $workRoot '*\logs\run_*.log') -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
@@ -6843,7 +6769,7 @@ jobs:
         id: resolve_artifacts
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $workRoot = 'C:\work\apex_work\runs'
+          $workRoot = $env:WORK_ROOT
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
           $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
@@ -6907,7 +6833,7 @@ jobs:
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $testStartForPath = "${{ inputs.test_start_date }}"
               if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-              $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ($env:MODE.ToLowerInvariant())) $primarySymbol
+              $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ($env:MODE.ToLowerInvariant())) $primarySymbol
               $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
               if (Test-Path $canonicalOutput) {
                 $outputRoot = $canonicalOutput
@@ -7096,7 +7022,7 @@ jobs:
           $ErrorActionPreference='Continue'
           Set-Location $env:REPO_ROOT
 
-          $workRoot='C:\work\apex_work\runs'
+          $workRoot=$env:WORK_ROOT
           $latest=Get-ChildItem $workRoot -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
           if (-not $latest) { Write-Host "[WARN] no run_dir"; exit 0 }
 
@@ -7143,7 +7069,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -7195,7 +7121,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -7241,7 +7167,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $testStartForPath = "${{ inputs.test_start_date }}"
             if ([string]::IsNullOrWhiteSpace($testStartForPath)) { $testStartForPath = 'unknown_test_start' }
-            $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
+            $canonicalOutput = Join-Path (Join-Path $env:CANONICAL_OUTPUT_ROOT ('${{ env.MODE }}'.ToLowerInvariant())) $symbol
             $canonicalOutput = Join-Path $canonicalOutput $testStartForPath
             if (Test-Path $canonicalOutput) { $outputRoot = $canonicalOutput }
           }
@@ -7398,7 +7324,7 @@ jobs:
           $outputRoot = '${{ steps.resolve_artifacts.outputs.output_root }}'
           $outputRootSource = 'workflow_output'
           if ([string]::IsNullOrWhiteSpace($runDir) -or -not (Test-Path $runDir)) {
-            $runsRoot = 'C:\work\apex_work\runs'
+            $runsRoot = $env:WORK_ROOT
             if (Test-Path $runsRoot) {
               $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending |

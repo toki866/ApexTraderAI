@@ -69,7 +69,7 @@ $summaryPath = Join-Path $DiagDir 'diag_publish_summary.txt'
 $outputRootSource = 'input_parameter'
 
 if ([string]::IsNullOrWhiteSpace($RunDir) -or -not (Test-Path $RunDir)) {
-  $runsRoot = 'C:\work\apex_work\runs'
+  $runsRoot = if ($env:WORK_ROOT) { $env:WORK_ROOT } else { 'C:\work\apex_work\runs' }
   if (Test-Path $runsRoot) {
     $latestRun = Get-ChildItem -Path $runsRoot -Directory -ErrorAction SilentlyContinue |
       Sort-Object LastWriteTime -Descending |
@@ -94,7 +94,8 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot) -or -not (Test-Path $OutputRoot)) 
   if ([string]::IsNullOrWhiteSpace($primarySymbol)) { $primarySymbol = 'SOXL' }
   $testStart = if ($env:TEST_START_DATE) { $env:TEST_START_DATE } elseif ($env:INPUT_TEST_START_DATE) { $env:INPUT_TEST_START_DATE } else { '' }
   if (-not [string]::IsNullOrWhiteSpace($testStart)) {
-    $canonicalOutput = Join-Path (Join-Path 'C:\work\apex_work\output' $modeName) $primarySymbol
+    $canonicalOutputBase = if ($env:CANONICAL_OUTPUT_ROOT) { $env:CANONICAL_OUTPUT_ROOT } else { 'C:\work\apex_work\output' }
+    $canonicalOutput = Join-Path (Join-Path $canonicalOutputBase $modeName) $primarySymbol
     $canonicalOutput = Join-Path $canonicalOutput $testStart
     if (Test-Path $canonicalOutput) {
       $OutputRoot = $canonicalOutput
@@ -176,7 +177,7 @@ if (Test-Path $oneTapReport) {
   $sourceItems[$oneTapReport] = $true
 }
 
-$sessionLogRoot = 'C:\work\apex_work\session_logs'
+$sessionLogRoot = if ($env:SESSION_LOG_ROOT) { $env:SESSION_LOG_ROOT } else { 'C:\work\apex_work\session_logs' }
 if (Test-Path $sessionLogRoot) {
   $sessionRunLog = Get-ChildItem -Path $sessionLogRoot -File -Filter 'run_*.log' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
