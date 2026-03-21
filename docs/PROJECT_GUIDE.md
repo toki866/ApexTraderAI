@@ -111,17 +111,20 @@ The tree below was generated from the current repository state (depth-limited).
   - Git + Python environment with `requirements.txt`
   - Windows PowerShell (`powershell`) available
   - OneDrive path available via `%OneDrive%` **or** explicit env overrides used by BAT (`ONE_DRIVE_RUNS_ROOT`, `ONE_DRIVE_SNAPSHOTS_ROOT`)
+- GitHub Actions execution uses `%GITHUB_WORKSPACE%` as the repo root; the old `C:\work` / OneDrive-side repo clone is no longer required for workflow execution.
 
 ### Step-by-step pipeline behavior
-1. **Checkout** repo (`actions/checkout@v4`).
-2. **Debug shells** (cmd): confirms `powershell`, optionally `pwsh`.
+1. **Checkout** repo into `%GITHUB_WORKSPACE%` (`actions/checkout@v4`).
+2. **Prepare workspace repo** (PowerShell): sets `REPO_ROOT=%GITHUB_WORKSPACE%`, marks it as a git safe directory, and avoids cloning into a separate fixed path.
+3. **Debug workspace context** (PowerShell): logs `%GITHUB_WORKSPACE%`, `PWD`, and `git rev-parse --show-toplevel` so the effective execution root is visible in Actions logs.
+4. **Debug shells** (cmd): confirms `powershell`, optionally `pwsh`.
    - `pwsh` missing is treated as acceptable (`pwsh_not_found (OK)`).
-3. **Run desktop BAT** in PowerShell (`-NoProfile -ExecutionPolicy Bypass`):
+5. **Run desktop BAT** in PowerShell (`-NoProfile -ExecutionPolicy Bypass`):
    - invokes `cmd /c scripts\run_all_local_then_copy.bat`
    - captures full console output to `%RUNNER_TEMP%\run_all_local_then_copy_console.log`
    - BAT logs non-fatal python diagnostics before execution (`where python`, `python --version`)
    - BAT normalizes malformed escaped quotes in `PYTHON_EXE` (e.g., `\"python\"` -> `python`)
-4. **BAT internal execution** (`run_all_local_then_copy.bat`):
+   - **BAT internal execution** (`run_all_local_then_copy.bat`):
    - loads defaults from `scripts\bat_config.bat`
    - creates run folder structure under `%WORK_ROOT%\<run_id>`
    - logs commit and all executed commands
@@ -133,11 +136,11 @@ The tree below was generated from the current repository state (depth-limited).
    - copies output/logs/zip to OneDrive run destination (`robocopy`)
    - creates repo snapshot zip in OneDrive snapshot root (`repo_<shortsha>_<run_id>.zip`)
    - emits `[OK] run_id=<run_id>` to stdout for workflow parsing
-5. **Resolve latest run artifacts** (PowerShell):
+6. **Resolve latest run artifacts** (PowerShell):
    - extracts `run_id` from console log
-   - resolves run folder under `C:\work\apex_work\runs`
+   - resolves run folder under `%WORK_ROOT%` (workflow env default: `C:\work\apex_work\runs`)
    - sets outputs `log_glob` + `zip_path`
-6. **Stage + upload artifacts** (`actions/upload-artifact@v4`):
+7. **Stage + upload artifacts** (`actions/upload-artifact@v4`):
    - artifact name: `desktop-run-${{ run_id || github.run_id }}`
    - workflow first copies required files to `%GITHUB_WORKSPACE%\temp\desktop_artifacts`
    - upload step uses a single rooted path (`%GITHUB_WORKSPACE%\temp\desktop_artifacts\**`) to avoid mixed-root `rootDirectory` failures
@@ -159,6 +162,7 @@ The tree below was generated from the current repository state (depth-limited).
 
 ## Prerequisites
 - Windows command prompt or PowerShell
+- Local manual clone is assumed at `C:\work\apex-trader-ai` (the BAT/PS1 scripts themselves resolve the repo root relative to their own location, so another non-OneDrive path also works).
 - Python with dependencies installed:
 
 ```bat
@@ -188,7 +192,7 @@ python tools\prepare_data.py --symbols SOXL,SOXS --start 2014-01-01 --end 2022-0
 python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start 2022-01-03 --train-years 8 --test-months 3 --mode sim --output-root output --data-dir data --auto-prepare-data 0 --enable-mamba
 ```
 
-> Note: BAT run writes outputs to per-run `C:\work\apex_work\runs\<run_id>\...`; direct Python defaults to repo `output/` and `data/` unless overridden.
+> Note: GitHub Actions resolves the source repo from `%GITHUB_WORKSPACE%`, while local BAT/PS1 execution assumes a non-OneDrive clone such as `C:\work\apex-trader-ai`. BAT outputs still default to `C:\work\apex_work\runs\<run_id>\...`; direct Python defaults to repo `output/` and `data/` unless overridden.
 
 ---
 
@@ -315,8 +319,8 @@ Treat these as generated/runtime artifacts:
      - Should `workflow_dispatch` inputs override `SYMBOLS`, dates, mode, etc. in BAT?
 2. **`copy_to_onedrive` workflow input is marked reserved and appears unused.**
    - Confirm whether OneDrive copy should become optional via this input.
-3. **Runner path assumptions are Windows-fixed (`C:\work\apex_work\runs`).**
-   - Confirm whether path should be parameterized at workflow/job level for multi-runner environments.
+3. **Workflow output roots are centralized via env vars (`WORK_ROOT`, `CANONICAL_OUTPUT_ROOT`, `SESSION_LOG_ROOT`).**
+   - Confirm whether multi-runner environments need different values from the current Windows defaults.
 
 ---
 

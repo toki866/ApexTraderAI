@@ -13,9 +13,10 @@
 
 ## 事前準備
 
-1. リポジトリを pull
-2. `pip install -r requirements.txt`
-3. 必要なら `scripts\bat_config.bat` の既定値を編集
+1. OneDrive 外のローカル clone（推奨: `C:\work\apex-trader-ai`）で作業する
+2. リポジトリを pull
+3. `pip install -r requirements.txt`
+4. 必要なら `scripts\bat_config.bat` の既定値を編集
 
 ## 実行方法
 
