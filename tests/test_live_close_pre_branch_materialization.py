@@ -10,7 +10,6 @@ import pytest
 
 @pytest.mark.skipif(not Path("output").exists(), reason="no output artifacts")
 def test_live_close_pre_branch_materialization_smoke():
-    pytest.importorskip("hdbscan")
     pytest.importorskip("torch")
     from ai_core.live.stepf_two_stage_router import run_close_pre
 

@@ -100,6 +100,12 @@ DPrimeRL state に以下を渡せる境界を維持。
 - `rare_flag_raw20`（補助）
 - 将来: transition/confidence/distance 系
 
+StepF 側の正式責務もここで固定する。
+- StepF は `DPrimeCluster` が出した `cluster_id_stable` / `cluster_id_raw20` / `rare_flag_raw20` を **consume** する。
+- StepF は cluster/regime を新規学習しない。
+- StepF は StepE expert 本体ではなく `stepE_daily_log_*` の日次 `ratio` / `ret` を使って expert 群を束ねる。
+- sim / live ともに cluster 正本は `DPrimeCluster` の月1再学習 + 月中日次 assign を使い、StepF はその文脈を apply するだけに留める。
+
 ## 15. artifact / 保存仕様
 cluster 成果物の正規配置は以下。
 

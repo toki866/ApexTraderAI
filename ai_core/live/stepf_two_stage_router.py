@@ -4,38 +4,22 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.live.branch_materializer import BranchMaterializer
 from ai_core.live.branch_specs import BRANCHES, DEFAULT_SAFE_BRANCHES
 from ai_core.live.feature_store import FeatureStore
 from ai_core.live.step_e_policy import StepEPolicy
-from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.services.step_f_service import StepFRouterConfig, StepFService
-
-try:
-    from hdbscan import HDBSCAN
-    from hdbscan import prediction as hdbscan_prediction
-except Exception:  # pragma: no cover
-    HDBSCAN = None
-    hdbscan_prediction = None
 
 
 @dataclass
 class TwoStageConfig:
     stage0_topk: int = 3
-    fit_window_days: int = 504
-    robust_scaler: bool = True
-    pca_n_components: int = 30
-    hdbscan_min_cluster_size: int = 30
-    hdbscan_min_samples: int = 10
-    past_window_days: int = 63
-    past_resample_len: int = 20
     safe_branches: str = ",".join(DEFAULT_SAFE_BRANCHES)
     topk_branches_per_regime: int = 3
     min_samples_regime: int = 20
@@ -55,8 +39,6 @@ class StepFTwoStageRouter:
         self.output_root = output_root
 
     def run_close_pre(self, symbol: str, mode: str, target_date: str, output_root: str, config: Optional[Dict[str, object]] = None) -> Dict[str, object]:
-        if HDBSCAN is None or hdbscan_prediction is None:
-            raise ImportError("hdbscan is required for StepF two-stage router")
         t0 = time.perf_counter()
         cfg = TwoStageConfig(**(config or {}))
         m = str(mode or "sim").strip().lower()
@@ -67,29 +49,61 @@ class StepFTwoStageRouter:
             raise ValueError(f"invalid target_date={target_date}")
         target_dt = target_dt.normalize()
         out_root = Path(output_root)
+        svc = StepFService(app_config=SimpleNamespace(output_root=str(out_root)))
 
         all_agents = sorted(BRANCHES.keys())
-        model_agents = self._discover_agents(out_root, m, symbol)
+        resolved_agents, _discovered_logs, _requested_agents, step_e_root = svc._resolve_agents(
+            out_root=out_root,
+            input_mode=m,
+            symbol=symbol,
+            requested_agents_raw="",
+        )
+        model_agents = [a for a in self._discover_agents(out_root, m, symbol) if a in resolved_agents]
+        if not model_agents and resolved_agents:
+            model_agents = list(resolved_agents)
         if not model_agents:
             raise RuntimeError(f"No StepE models found for {symbol} mode={m}")
         agents = [a for a in all_agents if a in model_agents]
 
         timings: Dict[str, float] = {}
         t = time.perf_counter()
-        price_tech = StepFService(app_config=None)._load_stepa_price_tech(out_root=out_root, mode=m, symbol=symbol)
-        phase2_df, regime_dminus1, regime_d, fit_info = self._build_phase2_for_day(price_tech, target_dt, cfg)
-        timings["phase2_fit_predict_sec"] = time.perf_counter() - t
+        cluster_context, cluster_meta = svc._load_cluster_context(
+            out_root=out_root,
+            input_mode=m,
+            mode=m,
+            retrain="off",
+            symbol=symbol,
+            cfg=StepFRouterConfig(output_root=str(out_root)),
+        )
+        phase2_df, regime_dminus1, regime_d, fit_info = self._build_phase2_for_day(cluster_context, target_dt, cfg, cluster_meta)
+        timings["cluster_context_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
-        logs_map = StepFService(app_config=None)._load_stepe_logs(out_root=out_root, mode=m, symbol=symbol, agents=agents)
-        merged_for_stats = phase2_df[["Date", "regime_id"]].copy()
-        for agent in agents:
-            adf = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
-            adf = adf.rename(columns={"ratio": f"ratio_{agent}", "stepE_ret_for_stats": f"ret_{agent}", "Split": f"Split_{agent}"})
-            merged_for_stats = merged_for_stats.merge(adf, on="Date", how="left")
+        price_tech = svc._load_stepa_price_tech(out_root=out_root, mode=m, symbol="SOXL")
+        price_tech_inv = svc._load_stepa_price_tech(out_root=out_root, mode=m, symbol="SOXS")
+        price_pair = (
+            price_tech[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
+            .merge(price_tech_inv[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"}), on="Date", how="inner")
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+        price_pair["r_soxl"] = (price_pair["price_soxl"].shift(-1) / price_pair["price_soxl"] - 1.0).fillna(0.0)
+        price_pair["r_soxs"] = (price_pair["price_soxs"].shift(-1) / price_pair["price_soxs"] - 1.0).fillna(0.0)
+        logs_map = svc._load_stepe_logs(step_e_root, symbol, agents)
+        merged_for_stats = svc._build_router_input_table(
+            cluster_context=phase2_df,
+            price_pair=price_pair,
+            logs_map=logs_map,
+            agents=agents,
+            date_range=SimpleNamespace(
+                train_start=str((target_dt - pd.Timedelta(days=365 * 3)).date()),
+                train_end=str((target_dt - pd.Timedelta(days=1)).date()),
+                test_start=str(target_dt.date()),
+                test_end=str(target_dt.date()),
+            ),
+        )
         merged_for_stats = merged_for_stats[merged_for_stats["Date"] <= (target_dt - pd.Timedelta(days=1))].copy()
-        split_cols = [f"Split_{a}" for a in agents if f"Split_{a}" in merged_for_stats.columns]
-        merged_for_stats["Split"] = merged_for_stats[split_cols].bfill(axis=1).iloc[:, 0].fillna("train") if split_cols else "train"
+        merged_for_stats["Split"] = "train"
 
         fcfg = StepFRouterConfig(
             topK=cfg.topk_branches_per_regime,
@@ -194,6 +208,12 @@ class StepFTwoStageRouter:
             "fit_window_days": fit_info.get("fit_window_days"),
             "n_fit_rows": fit_info.get("n_train_rows"),
             "params": asdict(cfg),
+            "cluster": {
+                "input_cluster_source": cluster_meta.get("assignments_source", ""),
+                "cluster_model_version": cluster_meta.get("cluster_model_version", ""),
+                "cluster_refresh_mode": cluster_meta.get("cluster_refresh_mode", "monthly_reuse"),
+                "cluster_training_performed": False,
+            },
             "stage0": {
                 "prev_regime_id": int(regime_dminus1),
                 "topk_candidates": [int(x) for x in topk_candidates],
@@ -250,76 +270,38 @@ class StepFTwoStageRouter:
                 out.append(stem[len(prefix) : -len(suffix)])
         return out
 
-    def _build_phase2_for_day(self, price_tech: pd.DataFrame, target_dt: pd.Timestamp, cfg: TwoStageConfig) -> Tuple[pd.DataFrame, int, int, Dict[str, object]]:
-        tech_cols = [c for c in price_tech.columns if c.endswith("_tech")]
-        tech = price_tech[["Date"] + tech_cols].copy()
-        tech.columns = ["Date"] + [c.replace("_tech", "") for c in tech_cols]
-        base_feat = _compute_base_features(price_tech, tech)
-        features = [c for c in ["Gap", "ATR_norm", "gap_atr", "vol_log_ratio_20", "bnf_score", "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "lower_wick_ratio", "upper_wick_ratio"] if c in base_feat.columns]
-        base_feat = base_feat[["Date"] + features].copy().sort_values("Date").reset_index(drop=True)
-
-        win, tgt = int(cfg.past_window_days), int(cfg.past_resample_len)
-        target_idx = np.linspace(0, win - 1, tgt)
-        z_rows, z_dates = [], []
-        for i in range(len(base_feat)):
-            if i + 1 < win:
-                continue
-            chunk = base_feat.iloc[i + 1 - win : i + 1]
-            vec = []
-            for c in features:
-                s = chunk[c].to_numpy(dtype=float)
-                vec.extend(np.interp(target_idx, np.arange(win), s).tolist())
-            z_rows.append(vec)
-            z_dates.append(base_feat.iloc[i]["Date"])
-        z = pd.DataFrame({"Date": pd.to_datetime(z_dates).normalize()})
-        if z_rows:
-            arr = np.asarray(z_rows, dtype=float)
-            for i in range(arr.shape[1]):
-                z[f"zp_{i:04d}"] = arr[:, i]
-        X_df = z.merge(base_feat, on="Date", how="left").sort_values("Date").reset_index(drop=True)
-        feat_cols = [c for c in X_df.columns if c != "Date"]
-        X_df[feat_cols] = X_df[feat_cols].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
+    def _build_phase2_for_day(
+        self,
+        cluster_context: pd.DataFrame,
+        target_dt: pd.Timestamp,
+        cfg: TwoStageConfig,
+        cluster_meta: Dict[str, object],
+    ) -> Tuple[pd.DataFrame, int, int, Dict[str, object]]:
+        phase2_df = cluster_context.copy()
+        phase2_df["Date"] = pd.to_datetime(phase2_df["Date"], errors="coerce").dt.normalize()
+        phase2_df = phase2_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
         fit_end = (target_dt - pd.Timedelta(days=1)).normalize()
-        fit_df = X_df[X_df["Date"] <= fit_end].copy()
+        fit_df = phase2_df[phase2_df["Date"] <= fit_end].copy()
         if int(cfg.fit_window_days) > 0 and len(fit_df) > int(cfg.fit_window_days):
-            fit_df = fit_df.iloc[-int(cfg.fit_window_days) :].copy()
-        if len(fit_df) < 40:
-            raise RuntimeError(f"insufficient fit rows for phase2: {len(fit_df)}")
+            fit_df = fit_df.iloc[-int(cfg.fit_window_days):].copy()
+        if fit_df.empty:
+            raise RuntimeError(f"insufficient upstream cluster rows for phase2: {len(fit_df)}")
 
-        scaler = RobustScaler() if cfg.robust_scaler else StandardScaler()
-        x_train = scaler.fit_transform(fit_df[feat_cols].to_numpy(dtype=float))
-        pca_n = max(1, min(int(cfg.pca_n_components), x_train.shape[0], x_train.shape[1]))
-        pca = PCA(n_components=pca_n, random_state=42)
-        x_train_p = pca.fit_transform(x_train)
-        clusterer = HDBSCAN(min_cluster_size=int(cfg.hdbscan_min_cluster_size), min_samples=int(cfg.hdbscan_min_samples), prediction_data=True)
-        clusterer.fit(x_train_p)
-        labels_train = clusterer.labels_.astype(int)
-        fit_df = fit_df.assign(regime_id=labels_train)
-
-        def _predict_one(dt: pd.Timestamp) -> int:
-            row = X_df[X_df["Date"] == dt]
+        def _cluster_at(dt: pd.Timestamp) -> int:
+            row = phase2_df.loc[phase2_df["Date"] == dt]
             if row.empty:
                 return -1
-            x = row[feat_cols].to_numpy(dtype=float)
-            x_s = scaler.transform(x)
-            x_p = pca.transform(x_s)
-            lab, _ = hdbscan_prediction.approximate_predict(clusterer, x_p)
-            return int(lab[0]) if len(lab) else -1
+            return int(pd.to_numeric(row["regime_id"], errors="coerce").fillna(-1).iloc[-1])
 
-        dminus1 = _predict_one(fit_end)
-        d = _predict_one(target_dt)
-        phase2_df = X_df[["Date"]].merge(fit_df[["Date", "regime_id"]], on="Date", how="left")
-        phase2_df["regime_id"] = phase2_df["regime_id"].fillna(-1).astype(int)
-
+        dminus1 = _cluster_at(fit_end)
+        d = _cluster_at(target_dt)
         fit_info = {
             "fit_end_date": str(fit_end.date()),
             "fit_window_days": int(cfg.fit_window_days),
             "n_train_rows": int(len(fit_df)),
-            "scaler": "RobustScaler" if cfg.robust_scaler else "StandardScaler",
-            "pca_n_components": int(pca_n),
-            "hdbscan_min_cluster_size": int(cfg.hdbscan_min_cluster_size),
-            "hdbscan_min_samples": int(cfg.hdbscan_min_samples),
+            "cluster_source": str(cluster_meta.get("assignments_source", "")),
+            "cluster_model_version": str(cluster_meta.get("cluster_model_version", "")),
+            "cluster_refresh_mode": str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse")),
         }
         return phase2_df, dminus1, d, fit_info
 

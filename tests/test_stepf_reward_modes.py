@@ -15,6 +15,31 @@ from ai_core.services import step_f_service as sf_mod
 from ai_core.services.step_f_service import StepFRouterConfig, StepFService
 
 
+def _cluster_context_stub() -> tuple[pd.DataFrame, dict[str, object]]:
+    return (
+        pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2024-01-01"]),
+                "regime_id": [1],
+                "cluster_id_stable": [1],
+                "cluster_id_raw20": [4],
+                "rare_flag_raw20": [0],
+                "confidence_stable": [1.0],
+                "confidence_raw20": [1.0],
+            }
+        ),
+        {
+            "assignments_source": "dprime_cluster_daily_assign:sim",
+            "cluster_model_version": "test-version",
+            "cluster_refresh_mode": "monthly_reuse",
+            "assignments_path": "dummy_assign.csv",
+            "summary_path": "dummy_summary.json",
+            "rare_flag_raw20_count": 0,
+            "cluster_summary_payload": {"raw_k": 20, "k_raw": 20, "k_valid": 1, "k_eff": 12},
+        },
+    )
+
+
 def _base_merged() -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -48,7 +73,7 @@ def _build_stubbed_stepf_service(tmp_path: Path, *, compare: bool = True, reward
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
-    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._load_cluster_context = lambda **kwargs: _cluster_context_stub()  # type: ignore[assignment]
     svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}, {"regime_id": 1, "agent": "a2", "IR": 0.0}])  # type: ignore[assignment]
     svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1|a2"}])  # type: ignore[assignment]
     svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
@@ -105,7 +130,7 @@ def test_reward_mode_outputs_are_separated(tmp_path) -> None:
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [1.0], "stepE_ret_for_stats": [0.01]}),
         "a2": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "Split": ["test"], "ratio": [0.5], "stepE_ret_for_stats": [0.02]}),
     }
-    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._load_cluster_context = lambda **kwargs: _cluster_context_stub()  # type: ignore[assignment]
     svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}, {"regime_id": 1, "agent": "a2", "IR": 0.0}])  # type: ignore[assignment]
     svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1|a2"}])  # type: ignore[assignment]
     svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
@@ -443,7 +468,7 @@ def test_stepf_regression_empty_config_but_stepe_logs_exist_no_agents_empty_erro
     svc = StepFService(app_config=app_config)
 
     svc._load_stepa_price_tech = lambda out_root, mode, symbol: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "price_exec": [100.0]})  # type: ignore[assignment]
-    svc._build_phase2_state = lambda **kwargs: pd.DataFrame({"Date": pd.to_datetime(["2024-01-01"]), "regime_id": [1], "confidence": [1.0]})  # type: ignore[assignment]
+    svc._load_cluster_context = lambda **kwargs: _cluster_context_stub()  # type: ignore[assignment]
     svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "dprime_all_features_h01", "IR": 1.0}])  # type: ignore[assignment]
     svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "dprime_all_features_h01"}])  # type: ignore[assignment]
     svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
