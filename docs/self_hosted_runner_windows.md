@@ -19,7 +19,7 @@
 ## 3. Runner 側の前提
 
 - デスクトップ PC が起動しており、runner が **Online** であること
-- リポジトリを checkout 可能であること
+- `actions/checkout` で `%GITHUB_WORKSPACE%` に repo を展開できること（OneDrive 配下の固定 clone は不要）
 - Python 実行環境があること（`requirements.txt` 相当）
 - `scripts\bat_config.bat` の既定値で問題ないこと
   - とくに `WORK_ROOT`（既定: `C:\work\apex_work\runs`）
@@ -29,8 +29,9 @@
 
 1. Actions の **Run Desktop Pipeline** を手動実行。
 2. runner がジョブを拾うことを確認。
-3. 完了後、`C:\work\apex_work\runs\<run_id>` と OneDrive 側 `runs\<run_id>` を確認。
-4. 失敗時も Actions Artifacts にログ収集されることを確認。
+3. ログ先頭の debug step で `%GITHUB_WORKSPACE%` / `PWD` / `git rev-parse --show-toplevel` が期待どおり出ていることを確認。
+4. 完了後、`C:\work\apex_work\runs\<run_id>` と OneDrive 側 `runs\<run_id>` を確認。
+5. 失敗時も Actions Artifacts にログ収集されることを確認。
 
 ## 運用・セキュリティ注意
 
