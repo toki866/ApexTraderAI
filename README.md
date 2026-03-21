@@ -35,6 +35,7 @@ python tools/run_pipeline.py --symbol SOXL --steps E --stepE-ppo-total-timesteps
 
 - 既存の `run_*.py` は後方互換ラッパで、内部的に同じパイプライン実行に委譲します。
 - 相対パス（`config/`, `data/`, `output/`）はリポジトリルート基準で解決されるため、実行時 CWD に依存しません。
+- GitHub Actions 実行時は `GITHUB_WORKSPACE` を repo ルートとして使います。ローカル手動実行は OneDrive 外の clone（推奨: `C:\work\apex-trader-ai`）を前提にしてください。
 
 ## データ準備（clone直後向け）
 
