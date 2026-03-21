@@ -22,16 +22,13 @@ def _default_date(mode: str) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run StepF close-pre two-stage router")
+    ap = argparse.ArgumentParser(description="Run StepF close-pre router with upstream DPrime cluster context")
     ap.add_argument("--symbol", required=True)
     ap.add_argument("--mode", default="live", choices=["sim", "live", "ops", "prod"])
     ap.add_argument("--date", default=None, help="YYYY-MM-DD")
     ap.add_argument("--output-root", default="output")
     ap.add_argument("--stage0-topk", type=int, default=3)
     ap.add_argument("--fit-window-days", type=int, default=504)
-    ap.add_argument("--pca-n-components", type=int, default=30)
-    ap.add_argument("--hdbscan-min-cluster-size", type=int, default=30)
-    ap.add_argument("--hdbscan-min-samples", type=int, default=10)
     ap.add_argument("--safe-branches", type=str, default="dprime_bnf_h01,dprime_all_features_h01")
     ap.add_argument("--topk-branches-per-regime", type=int, default=3)
     ap.add_argument("--refresh-stepb", type=int, default=1)
@@ -45,9 +42,6 @@ def main() -> None:
     cfg = {
         "stage0_topk": args.stage0_topk,
         "fit_window_days": args.fit_window_days,
-        "pca_n_components": args.pca_n_components,
-        "hdbscan_min_cluster_size": args.hdbscan_min_cluster_size,
-        "hdbscan_min_samples": args.hdbscan_min_samples,
         "safe_branches": args.safe_branches,
         "topk_branches_per_regime": args.topk_branches_per_regime,
         "refresh_stepb": bool(args.refresh_stepb),

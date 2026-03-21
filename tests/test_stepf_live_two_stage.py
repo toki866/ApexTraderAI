@@ -50,7 +50,6 @@ def test_stepe_policy_matches_log_position():
 
 
 def test_close_pre_smoke():
-    pytest.importorskip("hdbscan")
     pytest.importorskip("torch")
     from ai_core.live.stepf_two_stage_router import run_close_pre
 

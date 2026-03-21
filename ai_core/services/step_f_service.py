@@ -53,6 +53,8 @@ class StepFRouterConfig:
     agents: str = ""
     mode: str = "sim"
     phase2_state_path: Optional[str] = None
+    cluster_assignments_path: Optional[str] = None
+    cluster_summary_path: Optional[str] = None
     use_z_pred: bool = False
     z_pred_source: str = "dprime_mix_h02"
     robust_scaler: bool = True
@@ -1156,6 +1158,8 @@ class StepFService:
     def _run_router(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, data_cutoff: str = "", persist_primary_outputs: bool = True) -> StepFResult:
         timing = self._timing()
         with timing.stage("stepF.total"):
+            perf_marks: Dict[str, float] = {}
+            perf_t0 = time.perf_counter()
             out_root = self._resolve_output_root(cfg.output_root)
             print(f"[STEPF_ROOT] wrapper_cfg_output_root={cfg.output_root}")
             print(f"[STEPF_ROOT] service_app_output_root={getattr(self.app_config, 'output_root', '')}")
@@ -1207,6 +1211,7 @@ class StepFService:
                 prices_soxl = self._load_stepa_price_tech(out_root, input_mode, "SOXL")
                 prices_soxs = self._load_stepa_price_tech(out_root, input_mode, "SOXS")
                 logs_map = self._load_stepe_logs(selected_step_e_root, symbol, agents)
+            perf_marks["load"] = time.perf_counter() - perf_t0
             if not logs_map:
                 raise RuntimeError("StepF dependency missing: no StepE daily logs available for any configured agent")
             agents = [a for a in agents if a in logs_map]
@@ -1216,76 +1221,57 @@ class StepFService:
             price_pair["r_soxl"] = (price_pair["price_soxl"].shift(-1) / price_pair["price_soxl"] - 1.0).fillna(0.0)
             price_pair["r_soxs"] = (price_pair["price_soxs"].shift(-1) / price_pair["price_soxs"] - 1.0).fillna(0.0)
 
-            if cfg.phase2_state_path:
-                phase2 = pd.read_csv(cfg.phase2_state_path)
-                phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
-            elif mode == "live" and retrain == "off":
-                source_dir = Path(getattr(cfg, "model_source_dir", "") or (out_root / "stepF" / "live" / "retrain_on"))
-                source_p = source_dir / "phase2" / f"phase2_state_{symbol}.csv"
-                if not source_p.exists():
-                    source_p = out_root / "stepF" / "sim" / "phase2" / f"phase2_state_{symbol}.csv"
-                phase2 = pd.read_csv(source_p)
-                phase2["Date"] = pd.to_datetime(phase2["Date"], errors="coerce")
-            else:
-                with timing.stage("stepF.phase2", meta={"fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False)), "regime_id": "phase2", "cluster_id_stable": "phase2"}):
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore", category=PerformanceWarning)
-                        phase2 = self._build_phase2_state(
-                            cfg=cfg,
-                            date_range=date_range,
-                            symbol=symbol,
-                            mode=input_mode,
-                            out_root=out_root,
-                            price_tech=prices_soxl,
-                        )
-
-            phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
-            phase2.to_csv(phase2_path, index=False)
-
-            phase2_cols = [
-                c for c in (
-                    "Date",
-                    "regime_id",
-                    "cluster_id_stable",
-                    "cluster_id_raw20",
-                    "rare_flag_raw20",
-                    "confidence_stable",
-                    "confidence_raw20",
-                    "state_gap",
-                    "state_atr_norm",
-                    "state_ret_1",
-                    "state_ret_5",
-                    "state_ret_20",
-                    "state_range_atr",
-                    "state_body_ratio",
-                    "state_bnf_score",
-                    "state_context_norm",
+            with timing.stage("stepF.cluster_context", meta={"cluster_training_performed": False, "cluster_source": "upstream"}):
+                cluster_context, cluster_meta = self._load_cluster_context(
+                    out_root=out_root,
+                    input_mode=input_mode,
+                    mode=mode,
+                    retrain=retrain,
+                    symbol=symbol,
+                    cfg=cfg,
                 )
-                if c in phase2.columns
-            ]
-            merged = phase2[phase2_cols].merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
-            for agent in agents:
-                adf = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
-                adf = adf.rename(columns={"ratio": f"ratio_{agent}", "stepE_ret_for_stats": f"ret_{agent}", "Split": f"Split_{agent}"})
-                merged = merged.merge(adf, on="Date", how="left")
+            phase2_path = phase2_dir / f"phase2_state_{symbol}.csv"
+            cluster_context.to_csv(phase2_path, index=False)
 
-            merged = merged.sort_values("Date").reset_index(drop=True)
-            merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
+            with timing.stage("stepF.join_router_inputs"):
+                merged = self._build_router_input_table(
+                    cluster_context=cluster_context,
+                    price_pair=price_pair,
+                    logs_map=logs_map,
+                    agents=agents,
+                    date_range=date_range,
+                )
+            perf_marks["join"] = time.perf_counter() - perf_t0 - perf_marks.get("load", 0.0)
+            router_input_path = router_dir / f"stepF_router_input_{symbol}.csv"
+            merged.to_csv(router_input_path, index=False)
 
             if mode == "live" and retrain == "off":
                 source_dir = Path(getattr(cfg, "model_source_dir", "") or (out_root / "stepF" / "live" / "retrain_on"))
                 edge_path_src = source_dir / "router" / f"regime_edge_table_{symbol}.csv"
                 allow_path_src = source_dir / "router" / f"router_allowlist_{symbol}.csv"
+                context_profiles_src = source_dir / "router" / f"router_context_profiles_{symbol}.json"
                 if not edge_path_src.exists() or not allow_path_src.exists():
                     edge_path_src = out_root / "stepF" / "sim" / "router" / f"regime_edge_table_{symbol}.csv"
                     allow_path_src = out_root / "stepF" / "sim" / "router" / f"router_allowlist_{symbol}.csv"
+                    context_profiles_src = out_root / "stepF" / "sim" / "router" / f"router_context_profiles_{symbol}.json"
                 edge_table = pd.read_csv(edge_path_src)
                 allowlist = pd.read_csv(allow_path_src)
+                if context_profiles_src.exists():
+                    raw_profiles = json.loads(context_profiles_src.read_text(encoding="utf-8"))
+                    context_profiles = {
+                        (int(k.split("|", 2)[0]), int(k.split("|", 2)[1]), k.split("|", 2)[2]): {str(fk): float(fv) for fk, fv in v.items()}
+                        for k, v in raw_profiles.items()
+                    }
+                else:
+                    context_profiles = self._build_context_profiles(merged=merged, agents=agents)
             else:
                 with timing.stage("stepF.build_edge_table"):
                     edge_table = self._build_regime_edge_table(merged, agents, cfg)
                 with timing.stage("stepF.allowlist"):
                     allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
+                with timing.stage("stepF.aggregate_router_context"):
+                    context_profiles = self._build_context_profiles(merged=merged, agents=agents)
+            perf_marks["aggregate"] = time.perf_counter() - perf_t0 - perf_marks.get("load", 0.0) - perf_marks.get("join", 0.0)
             edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
             edge_table.to_csv(edge_path, index=False)
 
@@ -1293,8 +1279,18 @@ class StepFService:
 
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
-
-            context_profiles = self._build_context_profiles(merged=merged, agents=agents)
+            context_profiles_path = router_dir / f"router_context_profiles_{symbol}.json"
+            context_profiles_path.write_text(
+                json.dumps(
+                    {
+                        f"{rid}|{cid}|{agent}": {str(k): float(v) for k, v in profile.items()}
+                        for (rid, cid, agent), profile in context_profiles.items()
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             actual_device_name, device_warnings = self._resolve_device(getattr(cfg, "device", "auto"))
             with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}) :
                 daily = self._run_router_sim(
@@ -1307,6 +1303,7 @@ class StepFService:
                     context_profiles=context_profiles,
                     device_name=actual_device_name,
                 )
+            perf_marks["router_eval"] = time.perf_counter() - perf_t0 - perf_marks.get("load", 0.0) - perf_marks.get("join", 0.0) - perf_marks.get("aggregate", 0.0)
 
             if data_cutoff:
                 cutoff_dt = pd.to_datetime(data_cutoff, errors="coerce")
@@ -1337,12 +1334,16 @@ class StepFService:
                     )
                 daily["device_requested"] = str(getattr(cfg, "device", "auto"))
                 daily["device_execution"] = actual_device_name
-                daily["clusterer_type_requested"] = cluster_diag.get("clusterer_type_requested", "")
-                daily["clusterer_type_used"] = cluster_diag.get("clusterer_type_used", "")
-                daily["fallback_type"] = cluster_diag.get("fallback_type", "")
-                daily["fallback_used"] = bool(cluster_diag.get("fallback_used", False))
-                daily["fallback_reason"] = cluster_diag.get("fallback_reason", "")
-                daily["cluster_main_source"] = cluster_diag.get("cluster_main_source", "stable")
+                daily["clusterer_type_requested"] = "upstream_dprime_cluster"
+                daily["clusterer_type_used"] = "upstream_dprime_cluster"
+                daily["fallback_type"] = ""
+                daily["fallback_used"] = False
+                daily["fallback_reason"] = ""
+                daily["cluster_main_source"] = "cluster_id_stable"
+                daily["input_cluster_source"] = str(cluster_meta.get("assignments_source", ""))
+                daily["cluster_model_version"] = str(cluster_meta.get("cluster_model_version", ""))
+                daily["cluster_refresh_mode"] = str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse"))
+                daily["router_input_rows"] = int(len(merged))
                 eq_df = daily[daily["Split"] == "test"][["Date", "Split", "ratio", "ret", "equity"]].copy()
                 if persist_primary_outputs:
                     daily.to_csv(log_router_path, index=False)
@@ -1377,6 +1378,7 @@ class StepFService:
                     "turnover_sum": float(test_df["turnover"].astype(float).sum()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                     "turnover_mean": float(test_df["turnover"].astype(float).mean()) if "turnover" in test_df.columns and not test_df.empty else float("nan"),
                 }
+                perf_marks["write"] = time.perf_counter() - perf_t0 - perf_marks.get("load", 0.0) - perf_marks.get("join", 0.0) - perf_marks.get("aggregate", 0.0) - perf_marks.get("router_eval", 0.0)
                 summary.update({"mode": mode, "symbol": symbol, "agents": agents})
                 summary.update(
                     {
@@ -1410,30 +1412,55 @@ class StepFService:
                         "device_requested": str(getattr(cfg, "device", "auto")),
                         "device_execution": actual_device_name,
                         "device_warnings": list(device_warnings),
-                        "clusterer_type_requested": cluster_diag.get("clusterer_type_requested", ""),
-                        "clusterer_type_used": cluster_diag.get("clusterer_type_used", ""),
-                        "fallback_type": cluster_diag.get("fallback_type", ""),
-                        "fallback_used": bool(cluster_diag.get("fallback_used", False)),
-                        "fallback_reason": cluster_diag.get("fallback_reason", ""),
-                        "backend_resolved_name": cluster_diag.get("backend_resolved_name", ""),
-                        "backend_predict_methods": list(cluster_diag.get("backend_predict_methods", []) or []),
-                        "backend_methods": list(cluster_diag.get("backend_methods", []) or []),
-                        "diagnostic_stage": cluster_diag.get("diagnostic_stage", ""),
-                        "raw20_num_clusters_requested": int(cluster_diag.get("raw20_num_clusters_requested", 0) or 0),
-                        "raw20_regime_count": int(cluster_diag.get("raw20_regime_count", 0) or 0),
-                        "k_raw": int(cluster_diag.get("k_raw", cluster_diag.get("raw20_num_clusters_requested", 0)) or 0),
-                        "k_valid": int(cluster_diag.get("k_valid", 0) or 0),
-                        "k_eff": int(cluster_diag.get("k_eff", 0) or 0),
-                        "k_eff_min": int(cluster_diag.get("k_eff_min", 0) or 0),
-                        "stable_regime_count": int(cluster_diag.get("stable_regime_count", 0) or 0),
-                        "cluster_main_source": cluster_diag.get("cluster_main_source", "stable"),
-                        "rare_flag_raw20_count": int(cluster_diag.get("rare_flag_raw20_count", 0) or 0),
+                        "clusterer_type_requested": "upstream_dprime_cluster",
+                        "clusterer_type_used": "upstream_dprime_cluster",
+                        "fallback_type": "",
+                        "fallback_used": False,
+                        "fallback_reason": "",
+                        "backend_resolved_name": "upstream_dprime_cluster",
+                        "backend_predict_methods": [],
+                        "backend_methods": [],
+                        "diagnostic_stage": "upstream_cluster_consume",
+                        "raw20_num_clusters_requested": int(cluster_meta.get("cluster_summary_payload", {}).get("raw_k", 0) or 0),
+                        "raw20_regime_count": int(cluster_context["cluster_id_raw20"].nunique()) if "cluster_id_raw20" in cluster_context.columns else 0,
+                        "k_raw": int(cluster_meta.get("cluster_summary_payload", {}).get("k_raw", cluster_meta.get("cluster_summary_payload", {}).get("raw_k", 0)) or 0),
+                        "k_valid": int(cluster_meta.get("cluster_summary_payload", {}).get("k_valid", 0) or 0),
+                        "k_eff": int(cluster_meta.get("cluster_summary_payload", {}).get("k_eff", 0) or 0),
+                        "k_eff_min": int(getattr(cfg, "k_eff_min", 0) or 0),
+                        "stable_regime_count": int(cluster_context["cluster_id_stable"].nunique()) if "cluster_id_stable" in cluster_context.columns else 0,
+                        "cluster_main_source": "cluster_id_stable",
+                        "rare_flag_raw20_count": int(cluster_meta.get("rare_flag_raw20_count", 0) or 0),
+                        "input_cluster_source": str(cluster_meta.get("assignments_source", "")),
+                        "cluster_model_version": str(cluster_meta.get("cluster_model_version", "")),
+                        "cluster_refresh_mode": str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse")),
+                        "allowlist_source": "cached_router_allowlist" if (mode == "live" and retrain == "off") else "stepf_monthly_aggregate",
+                        "router_input_rows": int(len(merged)),
+                        "cluster_training_performed": False,
+                        "cluster_training_location": "upstream_dprime_cluster",
+                        "router_input_path": str(router_input_path),
+                        "cluster_assignments_path": str(cluster_meta.get("assignments_path", "")),
+                        "cluster_summary_path": str(cluster_meta.get("summary_path", "")) if cluster_meta.get("summary_path") else "",
+                        "timings_breakdown_sec": {
+                            "load": float(max(perf_marks.get("load", 0.0), 0.0)),
+                            "join": float(max(perf_marks.get("join", 0.0), 0.0)),
+                            "aggregate": float(max(perf_marks.get("aggregate", 0.0), 0.0)),
+                            "router_eval": float(max(perf_marks.get("router_eval", 0.0), 0.0)),
+                            "write": float(max(perf_marks.get("write", 0.0), 0.0)),
+                        },
                         **placeholder_metrics,
                         **placeholder_audit,
                     }
                 )
                 policy_compare = self._build_policy_compare_audit(daily=daily, merged=merged, agents=agents)
                 summary["policy_compare"] = policy_compare["summary"]
+                test_selected = daily_for_summary[daily_for_summary["Split"].astype(str).str.lower() == "test"]["selected_expert"] if "selected_expert" in daily_for_summary.columns else pd.Series(dtype="object")
+                summary["selected_expert_distribution"] = {str(k): int(v) for k, v in test_selected.value_counts(dropna=False).to_dict().items()}
+                rare_daily = daily_for_summary[pd.to_numeric(daily_for_summary.get("rare_flag_raw20"), errors="coerce").fillna(0).astype(int) == 1].copy() if "rare_flag_raw20" in daily_for_summary.columns else pd.DataFrame()
+                summary["rare_regime_selection_summary"] = {
+                    "rows": int(len(rare_daily)),
+                    "selected_expert_distribution": {str(k): int(v) for k, v in rare_daily.get("selected_expert", pd.Series(dtype="object")).value_counts(dropna=False).to_dict().items()} if not rare_daily.empty and "selected_expert" in rare_daily.columns else {},
+                    "ratio_mean": float(pd.to_numeric(rare_daily.get("ratio"), errors="coerce").mean()) if not rare_daily.empty and "ratio" in rare_daily.columns else 0.0,
+                }
                 if persist_primary_outputs:
                     summary_router_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
                 summary_with_reward = {**summary, "reward_mode": reward_mode}
@@ -1476,6 +1503,14 @@ class StepFService:
                     "device_requested": str(getattr(cfg, "device", "auto")),
                     "device_execution": actual_device_name,
                     "device_warnings": list(device_warnings),
+                    "input_cluster_source": str(cluster_meta.get("assignments_source", "")),
+                    "cluster_model_version": str(cluster_meta.get("cluster_model_version", "")),
+                    "cluster_refresh_mode": str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse")),
+                    "allowlist_source": "cached_router_allowlist" if (mode == "live" and retrain == "off") else "stepf_monthly_aggregate",
+                    "router_input_rows": int(len(merged)),
+                    "cluster_training_performed": False,
+                    "cluster_training_location": "upstream_dprime_cluster",
+                    "cluster_training_assertion": "StepF consumed upstream cluster assignments and did not refit PCA/HDBSCAN/TICC inside StepF.",
                     "ratio_distribution": {
                         "mean": float(daily["ratio"].mean()) if not daily.empty else 0.0,
                         "std": float(daily["ratio"].std(ddof=0)) if not daily.empty else 0.0,
@@ -1489,6 +1524,8 @@ class StepFService:
                     "all_zero_input_detected": bool(policy_compare["all_zero_input_detected"]),
                     "constant_output_detected": bool(policy_compare["constant_output_detected"]),
                     "policy_compare": policy_compare["summary"],
+                    "selected_expert_distribution": summary.get("selected_expert_distribution", {}),
+                    "rare_regime_selection_summary": summary.get("rare_regime_selection_summary", {}),
                     **placeholder_metrics,
                     **placeholder_audit,
                 }
@@ -1637,6 +1674,247 @@ class StepFService:
             out_df["stepE_ret_for_stats"] = pd.to_numeric(out_df["stepE_ret_for_stats"], errors="coerce").fillna(0.0)
             out[agent] = out_df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
         return out
+
+    def _resolve_cluster_context_sources(
+        self,
+        *,
+        out_root: Path,
+        input_mode: str,
+        mode: str,
+        retrain: str,
+        symbol: str,
+        cfg: StepFRouterConfig,
+    ) -> Dict[str, object]:
+        assignment_candidates: List[Tuple[str, Path]] = []
+        summary_candidates: List[Tuple[str, Path]] = []
+
+        explicit_assign = str(getattr(cfg, "cluster_assignments_path", "") or "").strip()
+        if explicit_assign:
+            assignment_candidates.append(("explicit_cluster_assignments_path", Path(explicit_assign)))
+        explicit_summary = str(getattr(cfg, "cluster_summary_path", "") or "").strip()
+        if explicit_summary:
+            summary_candidates.append(("explicit_cluster_summary_path", Path(explicit_summary)))
+
+        legacy_phase2 = str(getattr(cfg, "phase2_state_path", "") or "").strip()
+        if legacy_phase2:
+            assignment_candidates.append(("legacy_phase2_state_path", Path(legacy_phase2)))
+
+        dprime_modes = [str(input_mode or mode or "sim").strip().lower()]
+        if "sim" not in dprime_modes:
+            dprime_modes.append("sim")
+        if "live" not in dprime_modes:
+            dprime_modes.append("live")
+
+        for candidate_mode in dprime_modes:
+            stepd_dir = out_root / "stepDprime" / candidate_mode
+            assignment_candidates.extend(
+                [
+                    (f"dprime_cluster_daily_assign:{candidate_mode}", stepd_dir / f"stepDprime_cluster_daily_assign_{symbol}.csv"),
+                    (f"dprime_cluster_assignments:{candidate_mode}", stepd_dir / "cluster" / candidate_mode / f"cluster_assignments_{symbol}.csv"),
+                ]
+            )
+            summary_candidates.extend(
+                [
+                    (f"dprime_cluster_summary:{candidate_mode}", stepd_dir / f"stepDprime_cluster_summary_{symbol}.json"),
+                    (f"dprime_cluster_summary_canonical:{candidate_mode}", stepd_dir / "cluster" / candidate_mode / f"cluster_summary_{symbol}.json"),
+                ]
+            )
+
+        selected_assign_source = ""
+        selected_assign_path: Optional[Path] = None
+        for source_name, candidate_path in assignment_candidates:
+            if candidate_path.exists():
+                selected_assign_source = source_name
+                selected_assign_path = candidate_path
+                break
+
+        if selected_assign_path is None:
+            searched = ",".join(str(p) for _, p in assignment_candidates)
+            raise FileNotFoundError(
+                "StepF cluster context missing: "
+                f"symbol={symbol} searched_assignments=[{searched}]"
+            )
+
+        selected_summary_source = ""
+        selected_summary_path: Optional[Path] = None
+        for source_name, candidate_path in summary_candidates:
+            if candidate_path.exists():
+                selected_summary_source = source_name
+                selected_summary_path = candidate_path
+                break
+
+        refresh_mode = "monthly_reuse"
+        if selected_assign_source.startswith("explicit_") or selected_assign_source.startswith("legacy_phase2"):
+            refresh_mode = "unexpected_refit"
+        elif mode == "live" and retrain == "on":
+            refresh_mode = "monthly_refit"
+
+        return {
+            "assignments_path": selected_assign_path,
+            "assignments_source": selected_assign_source,
+            "summary_path": selected_summary_path,
+            "summary_source": selected_summary_source,
+            "cluster_refresh_mode": refresh_mode,
+        }
+
+    def _load_cluster_context(
+        self,
+        *,
+        out_root: Path,
+        input_mode: str,
+        mode: str,
+        retrain: str,
+        symbol: str,
+        cfg: StepFRouterConfig,
+    ) -> Tuple[pd.DataFrame, Dict[str, object]]:
+        source_info = self._resolve_cluster_context_sources(
+            out_root=out_root,
+            input_mode=input_mode,
+            mode=mode,
+            retrain=retrain,
+            symbol=symbol,
+            cfg=cfg,
+        )
+        assignments_path = Path(source_info["assignments_path"])
+        cluster_df = pd.read_csv(assignments_path)
+        if "Date" not in cluster_df.columns:
+            raise KeyError(f"{assignments_path} missing Date")
+        cluster_df["Date"] = pd.to_datetime(cluster_df["Date"], errors="coerce").dt.normalize()
+        cluster_df = cluster_df.dropna(subset=["Date"]).sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+
+        if "cluster_id_stable" not in cluster_df.columns:
+            if "regime_id" in cluster_df.columns:
+                cluster_df["cluster_id_stable"] = pd.to_numeric(cluster_df["regime_id"], errors="coerce").fillna(0).astype(int)
+            else:
+                raise KeyError(f"{assignments_path} missing cluster_id_stable")
+        if "cluster_id_raw20" not in cluster_df.columns:
+            cluster_df["cluster_id_raw20"] = pd.to_numeric(cluster_df["cluster_id_stable"], errors="coerce").fillna(0).astype(int)
+        if "rare_flag_raw20" not in cluster_df.columns:
+            cluster_df["rare_flag_raw20"] = 0
+        if "regime_id" not in cluster_df.columns:
+            cluster_df["regime_id"] = pd.to_numeric(cluster_df["cluster_id_stable"], errors="coerce").fillna(0).astype(int)
+
+        for col in ("regime_id", "cluster_id_stable", "cluster_id_raw20", "rare_flag_raw20"):
+            cluster_df[col] = pd.to_numeric(cluster_df[col], errors="coerce").fillna(0).astype(int)
+
+        summary_payload: Dict[str, object] = {}
+        summary_path = source_info.get("summary_path")
+        if isinstance(summary_path, Path) and summary_path.exists():
+            try:
+                summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                summary_payload = {}
+
+        version_hint = (
+            str(summary_payload.get("model_version", "") or "")
+            or str(summary_payload.get("fit_month", "") or "")
+            or str(summary_payload.get("fit_end_date", "") or "")
+        )
+        if not version_hint:
+            stat = assignments_path.stat()
+            version_hint = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        cluster_cols = [
+            c
+            for c in (
+                "Date",
+                "regime_id",
+                "cluster_id_stable",
+                "cluster_id_raw20",
+                "rare_flag_raw20",
+                "confidence_stable",
+                "confidence_raw20",
+                "state_gap",
+                "state_atr_norm",
+                "state_ret_1",
+                "state_ret_5",
+                "state_ret_20",
+                "state_range_atr",
+                "state_body_ratio",
+                "state_bnf_score",
+                "state_context_norm",
+            )
+            if c in cluster_df.columns
+        ]
+        cluster_context = cluster_df[cluster_cols].copy()
+        if "confidence_stable" not in cluster_context.columns:
+            cluster_context["confidence_stable"] = 1.0
+        if "confidence_raw20" not in cluster_context.columns:
+            cluster_context["confidence_raw20"] = 1.0
+
+        meta = {
+            **source_info,
+            "cluster_model_version": version_hint,
+            "cluster_training_performed": False,
+            "cluster_training_location": "upstream_dprime_cluster",
+            "cluster_summary_payload": summary_payload,
+            "cluster_rows": int(len(cluster_context)),
+            "cluster_unique_dates": int(cluster_context["Date"].nunique()) if not cluster_context.empty else 0,
+            "rare_flag_raw20_count": int(pd.to_numeric(cluster_context["rare_flag_raw20"], errors="coerce").fillna(0).astype(int).sum()) if "rare_flag_raw20" in cluster_context.columns else 0,
+        }
+        return cluster_context, meta
+
+    def _build_router_input_table(
+        self,
+        *,
+        cluster_context: pd.DataFrame,
+        price_pair: pd.DataFrame,
+        logs_map: Dict[str, pd.DataFrame],
+        agents: List[str],
+        date_range,
+    ) -> pd.DataFrame:
+        long_frames: List[pd.DataFrame] = []
+        for agent in agents:
+            if agent not in logs_map:
+                continue
+            agent_df = logs_map[agent][["Date", "Split", "ratio", "stepE_ret_for_stats"]].copy()
+            agent_df["agent"] = agent
+            long_frames.append(agent_df)
+
+        if not long_frames:
+            raise RuntimeError("StepF canonical input build failed: no StepE logs available after filtering")
+
+        long_df = pd.concat(long_frames, ignore_index=True)
+        long_df["Date"] = pd.to_datetime(long_df["Date"], errors="coerce").dt.normalize()
+        long_df = long_df.dropna(subset=["Date"]).sort_values(["Date", "agent"]).reset_index(drop=True)
+
+        split_df = (
+            long_df[["Date", "Split"]]
+            .dropna(subset=["Date"])
+            .drop_duplicates(subset=["Date"], keep="last")
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+        ratio_wide = long_df.pivot_table(index="Date", columns="agent", values="ratio", aggfunc="last")
+        ret_wide = long_df.pivot_table(index="Date", columns="agent", values="stepE_ret_for_stats", aggfunc="last")
+
+        ratio_wide = ratio_wide.rename(columns={agent: f"ratio_{agent}" for agent in ratio_wide.columns})
+        ret_wide = ret_wide.rename(columns={agent: f"ret_{agent}" for agent in ret_wide.columns})
+        expert_wide = pd.concat([ratio_wide, ret_wide], axis=1).reset_index()
+
+        merged = cluster_context.merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
+        merged = merged.merge(expert_wide, on="Date", how="left")
+        merged = merged.merge(split_df, on="Date", how="left")
+        if "Split" not in merged.columns:
+            merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
+        else:
+            missing_split = merged["Split"].isna() | (merged["Split"].astype(str).str.strip() == "")
+            merged.loc[missing_split, "Split"] = self._assign_split_by_date(merged.loc[missing_split, "Date"], date_range)
+
+        required_agent_cols = []
+        for agent in agents:
+            ratio_col = f"ratio_{agent}"
+            ret_col = f"ret_{agent}"
+            if ratio_col not in merged.columns:
+                merged[ratio_col] = np.nan
+            if ret_col not in merged.columns:
+                merged[ret_col] = np.nan
+            required_agent_cols.extend([ratio_col, ret_col])
+
+        merged = merged.sort_values("Date").reset_index(drop=True)
+        for col in required_agent_cols:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce")
+        return merged
 
     def _build_phase2_state(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, out_root: Path, price_tech: pd.DataFrame) -> pd.DataFrame:
         tech_cols = [c for c in price_tech.columns if c.endswith("_tech")]

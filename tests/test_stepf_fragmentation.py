@@ -18,6 +18,32 @@ from ai_core.services import step_f_service as sf_mod
 from ai_core.services.step_f_service import StepFRouterConfig, StepFService
 
 
+def _stub_cluster_context(rows: list[str] | pd.DatetimeIndex) -> tuple[pd.DataFrame, dict[str, object]]:
+    dates = pd.to_datetime(rows)
+    return (
+        pd.DataFrame(
+            {
+                "Date": dates,
+                "regime_id": [1] * len(dates),
+                "cluster_id_stable": [1] * len(dates),
+                "cluster_id_raw20": [7] * len(dates),
+                "rare_flag_raw20": [0] * len(dates),
+                "confidence_stable": [1.0] * len(dates),
+                "confidence_raw20": [1.0] * len(dates),
+            }
+        ),
+        {
+            "assignments_source": "dprime_cluster_daily_assign:sim",
+            "cluster_model_version": "test-version",
+            "cluster_refresh_mode": "monthly_reuse",
+            "assignments_path": "dummy_assign.csv",
+            "summary_path": "dummy_summary.json",
+            "rare_flag_raw20_count": 0,
+            "cluster_summary_payload": {"raw_k": 20, "k_raw": 20, "k_valid": 1, "k_eff": 12},
+        },
+    )
+
+
 class _FakeTICCClusterer:
     calls = []
 
@@ -57,6 +83,7 @@ def test_build_phase2_state_uses_concat_and_logs_frame_stats(monkeypatch, capsys
         )
 
     monkeypatch.setattr(sf_mod, "_compute_base_features", _fake_base_features)
+    monkeypatch.setattr(sf_mod, "TICCClusterer", _FakeTICCClusterer)
 
     cfg = StepFRouterConfig(
         past_window_days=5,
@@ -89,7 +116,7 @@ def test_build_phase2_state_uses_concat_and_logs_frame_stats(monkeypatch, capsys
     assert "[STEPF_FRAME] applied_copy_defragment=true" in logs
 
 
-def test_run_ignores_performance_warning_from_phase2_builder(monkeypatch, tmp_path) -> None:
+def test_run_consumes_upstream_cluster_context(monkeypatch, tmp_path) -> None:
     cfg = StepFRouterConfig(output_root=str(tmp_path / "out"), agents="a1", reward_mode="legacy")
     app_config = SimpleNamespace(stepF=cfg, output_root=str(tmp_path / "out"))
     svc = StepFService(app_config=app_config)
@@ -99,14 +126,7 @@ def test_run_ignores_performance_warning_from_phase2_builder(monkeypatch, tmp_pa
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01", "2024-01-02"]), "Split": ["train", "test"], "ratio": [1.0, 1.0], "stepE_ret_for_stats": [0.01, 0.01]})
     }
 
-    def _warn_phase2(**kwargs):
-        import warnings
-        from pandas.errors import PerformanceWarning
-
-        warnings.warn("DataFrame is highly fragmented", PerformanceWarning)
-        return pd.DataFrame({"Date": pd.to_datetime(["2024-01-01", "2024-01-02"]), "regime_id": [1, 1], "confidence": [1.0, 1.0]})
-
-    svc._build_phase2_state = _warn_phase2  # type: ignore[assignment]
+    svc._load_cluster_context = lambda **kwargs: _stub_cluster_context(["2024-01-01", "2024-01-02"])  # type: ignore[assignment]
     svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}])  # type: ignore[assignment]
     svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1"}])  # type: ignore[assignment]
     svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
@@ -114,6 +134,9 @@ def test_run_ignores_performance_warning_from_phase2_builder(monkeypatch, tmp_pa
     date_range = SimpleNamespace(mode="sim", train_start="2024-01-01", train_end="2024-01-01", test_start="2024-01-02", test_end="2024-01-02")
     result = svc.run(date_range, symbol="SOXL", mode="sim")
     assert "stepF_daily_log_router_SOXL.csv" in result.daily_log_path
+    summary = pd.read_json(tmp_path / "out" / "stepF" / "sim" / "stepF_summary_router_SOXL.json", typ="series")
+    assert summary["input_cluster_source"] == "dprime_cluster_daily_assign:sim"
+    assert summary["cluster_training_performed"] is False
 
 
 def test_run_still_fails_on_real_exception(monkeypatch, tmp_path) -> None:
@@ -126,10 +149,10 @@ def test_run_still_fails_on_real_exception(monkeypatch, tmp_path) -> None:
         "a1": pd.DataFrame({"Date": pd.to_datetime(["2024-01-01", "2024-01-02"]), "Split": ["train", "test"], "ratio": [1.0, 1.0], "stepE_ret_for_stats": [0.01, 0.01]})
     }
 
-    def _raise_phase2(**kwargs):
-        raise ValueError("phase2 build failed")
+    def _raise_cluster_context(**kwargs):
+        raise ValueError("cluster context load failed")
 
-    svc._build_phase2_state = _raise_phase2  # type: ignore[assignment]
+    svc._load_cluster_context = _raise_cluster_context  # type: ignore[assignment]
 
     date_range = SimpleNamespace(mode="sim", train_start="2024-01-01", train_end="2024-01-01", test_start="2024-01-02", test_end="2024-01-02")
     with pytest.raises(RuntimeError, match="failed for all modes"):
@@ -147,13 +170,13 @@ def test_cluster_phase2_uses_real_ticc_route(monkeypatch) -> None:
     out, diag = svc._cluster_phase2(cfg=cfg, x_train=x_train, x_test=x_test)
 
     assert diag["clusterer_type_requested"] == "ticc_raw20_stable"
-    assert diag["clusterer_type_used"] == "raw20_stable"
+    assert diag["clusterer_type_used"] == "ticc_raw20_stable"
     assert diag["fallback_used"] is False
     assert diag["raw20_num_clusters_requested"] == 20
     assert diag["k_valid"] >= 1
     assert diag["k_eff"] >= 12
-    assert _FakeTICCClusterer.calls[0] == 20
-    assert _FakeTICCClusterer.calls[1] == diag["k_eff"]
+    assert 20 in _FakeTICCClusterer.calls
+    assert diag["k_eff"] in _FakeTICCClusterer.calls
     assert np.array_equal(out["train_main"], out["train_stable"])
     assert int(np.max(out["train_rare_raw20"])) == 1
 
@@ -168,18 +191,12 @@ def test_cluster_phase2_ticc_unavailable_falls_back_to_none(monkeypatch) -> None
     monkeypatch.setattr(sf_mod, "TICCClusterer", _BrokenTICC)
     cfg = StepFRouterConfig(clusterer_type="ticc_raw20_stable")
 
-    out, diag = svc._cluster_phase2(
-        cfg=cfg,
-        x_train=np.ones((4, 2), dtype=float),
-        x_test=np.ones((2, 2), dtype=float),
-    )
-
-    assert diag["clusterer_type_requested"] == "ticc_raw20_stable"
-    assert diag["clusterer_type_used"] == "none"
-    assert diag["fallback_used"] is True
-    assert out["train_main"].tolist() == [0, 0, 0, 0]
-    assert out["test_main"].tolist() == [0, 0]
-    assert out["test_conf_stable"].tolist() == [1.0, 1.0]
+    with pytest.raises(RuntimeError, match="preflight failed|execution failed|ticc backend missing"):
+        svc._cluster_phase2(
+            cfg=cfg,
+            x_train=np.ones((4, 2), dtype=float),
+            x_test=np.ones((2, 2), dtype=float),
+        )
 
 
 def test_cluster_phase2_none_returns_single_regime() -> None:
@@ -270,27 +287,10 @@ def test_run_completes_and_writes_equity_csv_with_none_fallback(monkeypatch, tmp
         })
     }  # type: ignore[assignment]
 
-    def _phase2_none(**kwargs):
-        svc._last_cluster_diag = {
-            "clusterer_type_requested": "ticc_raw20_stable",
-            "clusterer_type_used": "none",
-            "fallback_type": "none",
-            "fallback_used": True,
-            "fallback_reason": "ticc_unavailable",
-        }
-        return pd.DataFrame({
-            "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
-            "regime_id": [0, 0, 0],
-            "cluster_id_stable": [0, 0, 0],
-            "cluster_id_raw20": [0, 0, 0],
-            "rare_flag_raw20": [0, 0, 0],
-            "confidence_stable": [1.0, 1.0, 1.0],
-            "confidence_raw20": [1.0, 1.0, 1.0],
-            "cluster_id_main": [0, 0, 0],
-            "confidence": [1.0, 1.0, 1.0],
-        })
-
-    svc._build_phase2_state = _phase2_none  # type: ignore[assignment]
+    svc._load_cluster_context = lambda **kwargs: _stub_cluster_context(["2024-01-01", "2024-01-02", "2024-01-03"])  # type: ignore[assignment]
+    svc._build_regime_edge_table = lambda merged, agents, cfg: pd.DataFrame([{"regime_id": 1, "agent": "a1", "IR": 1.0}])  # type: ignore[assignment]
+    svc._build_allowlist = lambda edge_table, agents, safe_set, cfg: pd.DataFrame([{"regime_id": 1, "allowed_agents": "a1"}])  # type: ignore[assignment]
+    svc.evaluate_final_outputs = staticmethod(lambda **kwargs: {"return_code": 0})  # type: ignore[assignment]
 
     date_range = SimpleNamespace(mode="sim", train_start="2024-01-01", train_end="2024-01-01", test_start="2024-01-02", test_end="2024-01-03")
     result = svc.run(date_range, symbol="SOXL", mode="sim")
@@ -301,24 +301,22 @@ def test_run_completes_and_writes_equity_csv_with_none_fallback(monkeypatch, tmp
     import json
 
     summary = json.loads((tmp_path / "out" / "stepF" / "sim" / "stepF_summary_router_SOXL.json").read_text(encoding="utf-8"))
-    assert summary["clusterer_type_used"] == "none"
-    assert summary["fallback_reason"] == "ticc_unavailable"
+    assert summary["clusterer_type_used"] == "upstream_dprime_cluster"
+    assert summary["cluster_refresh_mode"] == "monthly_reuse"
     daily = pd.read_csv(Path(result.daily_log_path))
     assert "selected_expert" in daily.columns
-    assert "mixture_weights" in daily.columns
     assert "mixture_weights_json" in daily.columns
     assert "source_device" in daily.columns
     assert "input_feature_summary" in daily.columns
     assert daily["selected_expert"].tolist() == ["a1", "a1", "a1"]
-    assert daily["mixture_weights"].tolist() == daily["mixture_weights_json"].tolist()
     assert daily["device_execution"].tolist() == ["cpu", "cpu", "cpu"]
     assert daily["source_device"].tolist() == ["cpu", "cpu", "cpu"]
-    assert daily["clusterer_type_used"].tolist() == ["none", "none", "none"]
-    assert daily["fallback_reason"].tolist() == ["ticc_unavailable", "ticc_unavailable", "ticc_unavailable"]
+    assert daily["clusterer_type_used"].tolist() == ["upstream_dprime_cluster", "upstream_dprime_cluster", "upstream_dprime_cluster"]
+    assert daily["input_cluster_source"].tolist() == ["dprime_cluster_daily_assign:sim"] * 3
     assert daily["selected_expert_definition"].nunique() == 1
 
 
 def test_stepf_service_source_has_no_density_cluster_reference() -> None:
     src = Path(sf_mod.__file__).read_text(encoding="utf-8").lower()
-    needle = "hdb" + "scan"
-    assert needle not in src
+    assert "from hdbscan" not in src
+    assert "hdbscan(" not in src

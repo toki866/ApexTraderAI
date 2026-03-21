@@ -11,6 +11,7 @@
 - `DPRIME` は **「StepD上位版」** です。`DPRIME` 単独で、チャート圧縮（Phase2）と RL state 生成まで実施します。
 - `StepE` は `DPRIME` が生成した state（必要に応じて embeddings 併用）を観測入力として利用します。
 - `StepE` は **PPO 専用**です。reward 定義・train/test 境界・StepE/StepF の責務分離は維持したまま、既定値は短時間学習向けに調整しています。
+- `StepF` は upstream の `cluster_id_stable` / `cluster_id_raw20` / `rare_flag_raw20` を consume して StepE 日次ログを束ねる最終 router 層です。StepF 自身は cluster/regime を再学習しません。
 
 ### 3ヶ月窓は2種類（用途が異なる）
 

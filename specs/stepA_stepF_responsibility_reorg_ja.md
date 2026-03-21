@@ -82,6 +82,11 @@
 - router / MARL を含む上位統合層。
 - StepE が生成した候補を選別・統合する。
 - live での最終判断直前レイヤとして扱う。
+- **cluster/regime の新規学習は行わない。**
+- `DPrimeCluster` が月1更新・月中日次 assign した `cluster_id_stable` を主入力として consume する。
+- 補助入力として `cluster_id_raw20` / `rare_flag_raw20` を受け取れる。
+- StepF が読むのは expert 本体ではなく、各 expert の `stepE_daily_log_*` にある日次 `ratio` / `ret` である。
+- StepF は `chosen_expert` / `selected_expert` と `final_ratio` を最終出力する router 層である。
 
 ---
 
@@ -113,6 +118,7 @@
 - StepE: 候補を作る層（candidate generation）。
 - StepF: 候補を統合し最終採択する層（selection/integration）。
 - よって責務境界は「個別 expert の性能最適化」と「市場最終出力の統合最適化」。
+- StepF 内で Phase2 / PCA / HDBSCAN / TICC による再クラスタリングをしてはならず、cluster 正本は常に `DPrimeCluster` 側に置く。
 
 ---
 
