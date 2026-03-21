@@ -31,9 +31,9 @@ def main() -> None:
     ap.add_argument("--fit-window-days", type=int, default=504)
     ap.add_argument("--safe-branches", type=str, default="dprime_bnf_h01,dprime_all_features_h01")
     ap.add_argument("--topk-branches-per-regime", type=int, default=3)
-    ap.add_argument("--refresh-stepb", type=int, default=1)
-    ap.add_argument("--refresh-dprime", type=int, default=1)
-    ap.add_argument("--dry-run", type=int, default=1)
+    ap.add_argument("--refresh-stepb", type=int, default=0)
+    ap.add_argument("--refresh-dprime", type=int, default=0)
+    ap.add_argument("--dry-run", type=int, default=0)
     args = ap.parse_args()
 
     from ai_core.live.stepf_two_stage_router import run_close_pre
@@ -46,6 +46,7 @@ def main() -> None:
         "topk_branches_per_regime": args.topk_branches_per_regime,
         "refresh_stepb": bool(args.refresh_stepb),
         "refresh_dprime": bool(args.refresh_dprime),
+        "dry_run": bool(args.dry_run),
     }
     decision = run_close_pre(
         symbol=args.symbol,
@@ -58,7 +59,8 @@ def main() -> None:
         f"[StepF close-pre] symbol={args.symbol} mode={decision['mode']} date={decision['target_date']} "
         f"regime_id={decision['stage1']['regime_id']} ratio_final={decision['ratio_final']:.6f} "
         f"branches={len(decision['ratios'])} stepb={decision['stepB']['executed']} "
-        f"dprime_profiles={len(decision['dprime']['executed_profiles'])} total_sec={decision['timing']['total_sec']:.3f}"
+        f"dprime_profiles={len(decision['dprime']['executed_profiles'])} dry_run={decision['dry_run']} "
+        f"total_sec={decision['timing']['total_sec']:.3f}"
     )
 
 
