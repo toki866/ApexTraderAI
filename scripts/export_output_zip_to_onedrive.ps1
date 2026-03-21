@@ -37,12 +37,11 @@ $zipLocalPath = Join-Path $runnerTemp $zipLocalName
 if (Test-Path $zipLocalPath) { Remove-Item -Path $zipLocalPath -Force }
 
 $stageRoot = Join-Path $runnerTemp ("output_zip_stage_" + [guid]::NewGuid().ToString('N'))
-$stageOutputDir = Join-Path $stageRoot $outputRootName
-$null = New-Item -Path $stageOutputDir -ItemType Directory -Force
+$null = New-Item -Path $stageRoot -ItemType Directory -Force
 
 $robocopyArgs = @(
   $resolvedOutputRoot,
-  $stageOutputDir,
+  $stageRoot,
   '/E','/R:1','/W:1','/NFL','/NDL','/NJH','/NJS'
 )
 & robocopy @robocopyArgs | Out-Null
@@ -78,7 +77,8 @@ $outputZipName = 'output.zip'
 
 $runManifestPath = Join-Path $resolvedOutputRoot 'run_manifest.json'
 $donePath = Join-Path $resolvedOutputRoot 'DONE.txt'
-$latestRunInfoPath = Join-Path $runnerTemp 'latest_run_info.json'
+$latestRunInfoName = if ([string]::IsNullOrWhiteSpace($env:APEX_RUN_ID)) { 'latest_run_info_local.json' } else { "latest_run_info_$($env:APEX_RUN_ID).json" }
+$latestRunInfoPath = Join-Path $runnerTemp $latestRunInfoName
 
 $runInfo = [ordered]@{
   run_id = $env:APEX_RUN_ID

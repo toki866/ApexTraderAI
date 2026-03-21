@@ -225,7 +225,7 @@ Workflow export payload (when `copy_to_onedrive=true`):
 - `DONE.txt`
 - optional `run_manifest.json`
 
-The workflow no longer mirrors the raw canonical `output/` directory to OneDrive; local canonical output remains the source of truth and OneDrive is treated as a lightweight export target.
+The workflow no longer mirrors the raw canonical `output/` directory to OneDrive; local canonical output remains the source of truth and OneDrive is treated as a lightweight export target. `output.zip` is produced from the local canonical output tree without trimming its contents.
 
 Snapshot destination resolution order:
 1. `%ONE_DRIVE_SNAPSHOTS_ROOT%`
