@@ -103,7 +103,7 @@ The tree below was generated from the current repository state (depth-limited).
   - `symbols` (comma-separated)
   - `start`, `end`, `test_start`
   - `train_years`, `test_months`
-  - `copy_to_onedrive` (boolean; currently reserved for future BAT integration)
+  - `copy_to_onedrive` (boolean; exports `output.zip` + lightweight metadata to OneDrive when enabled)
 
 ### Runner requirements
 - `runs-on: [self-hosted, windows]`
@@ -202,7 +202,8 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 - Run root: `C:\work\apex_work\runs\<run_id>`
 - Data: `...\data`
 - Pipeline outputs: `...\output`
-- Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>\logs\`
+- Canonical output root: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>`
+- Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>\logs\`
   - includes copied run/console/error/step-exec/diagnostics logs plus `logs_manifest.json`
 - DPrime audit outputs now include:
   - `stepDprime_base_meta_<SYMBOL>.json`
@@ -217,6 +218,14 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 Run destination resolution order:
 1. `%ONE_DRIVE_RUNS_ROOT%\<run_id>`
 2. `%OneDrive%\ApexTraderAI\runs\<run_id>`
+
+Workflow export payload (when `copy_to_onedrive=true`):
+- `output.zip`
+- `latest_run_info.json`
+- `DONE.txt`
+- optional `run_manifest.json`
+
+The workflow no longer mirrors the raw canonical `output/` directory to OneDrive; local canonical output remains the source of truth and OneDrive is treated as a lightweight export target. `output.zip` is produced from the local canonical output tree without trimming its contents.
 
 Snapshot destination resolution order:
 1. `%ONE_DRIVE_SNAPSHOTS_ROOT%`
@@ -234,7 +243,7 @@ Snapshot zip naming:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`
   - `run_<run_id>.zip`
-  - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>/logs/`
+  - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>_<YYYYMMDD>_<NNN>/logs/`
   - `logs_manifest.json`
 - Additional publication branch for evaluation snapshots: `output-latest`
   - stores only the latest snapshot payload (`output_latest.zip`, checksum, run metadata, and lightweight eval/index/report files)
@@ -249,7 +258,7 @@ Treat these as generated/runtime artifacts:
 - `output/`, `outputs/`, `logs/`, `artifacts/`, `pdf/`
 - `data/*.csv`
 - Local run folders under `C:\work\apex_work\runs\<run_id>`
-- OneDrive mirrors under `...\ApexTraderAI\runs\<run_id>`
+- OneDrive lightweight exports under `...\ApexTraderAI\runs\<run_id>`
 
 ## Naming conventions used by pipeline
 - `run_id`: `yyyyMMdd_HHmmss`
@@ -275,9 +284,9 @@ Treat these as generated/runtime artifacts:
 ## 6) Troubleshooting (known issues)
 
 ## 6.1 Runner service installed vs interactive user session
-**Symptom:** OneDrive paths unavailable, `%OneDrive%` empty, copy failures.
+**Symptom:** OneDrive paths unavailable, `%OneDrive%` empty, export warnings.
 
-- If runner runs as a service account without OneDrive sign-in, BAT fails resolving OneDrive destination.
+- If runner runs as a service account without OneDrive sign-in, the workflow should still complete local canonical output generation and only downgrade the OneDrive export to a warning.
 - Mitigation:
   - Run under signed-in desktop user context, or
   - set explicit `ONE_DRIVE_RUNS_ROOT` / `ONE_DRIVE_SNAPSHOTS_ROOT` to accessible paths.
@@ -296,12 +305,12 @@ Treat these as generated/runtime artifacts:
 - Existing workflow already applies `-NoProfile -ExecutionPolicy Bypass`.
 
 ## 6.4 OneDrive path/permission/encoding/long-path issues
-**Symptoms:** `robocopy` return code `>=8`, copy failures, path encoding problems.
+**Symptoms:** OneDrive export warnings, `output.zip` copy failures, path encoding problems.
 
 - Check destination existence and permissions for chosen user.
 - Keep run roots short (`C:\work\apex_work\runs`) to reduce path-length risk.
 - Ensure UTF-8 console mode (`chcp 65001`) remains in BAT (already present).
-- Inspect `logs\run_<run_id>.log` and failed `[CMD]`/`[RC]` pair.
+- Inspect `logs\run_<run_id>.log`, workflow summary, and `ONE_TAP_ERROR_REPORT.txt` for the recorded export warning reason.
 
 ## 6.5 Dirty git tree blocks local BAT run
 **Symptom:** BAT fails before running pipeline when local tree has uncommitted changes.
@@ -317,9 +326,7 @@ Treat these as generated/runtime artifacts:
    - `run_desktop_pipeline.yml` sets `INPUT_*` env vars, but `scripts/run_all_local_then_copy.bat` / `scripts/bat_config.bat` do not consume them.
    - Confirm intended behavior:
      - Should `workflow_dispatch` inputs override `SYMBOLS`, dates, mode, etc. in BAT?
-2. **`copy_to_onedrive` workflow input is marked reserved and appears unused.**
-   - Confirm whether OneDrive copy should become optional via this input.
-3. **Workflow output roots are centralized via env vars (`WORK_ROOT`, `CANONICAL_OUTPUT_ROOT`, `SESSION_LOG_ROOT`).**
+2. **Workflow output roots are centralized via env vars (`WORK_ROOT`, `CANONICAL_OUTPUT_ROOT`, `SESSION_LOG_ROOT`).**
    - Confirm whether multi-runner environments need different values from the current Windows defaults.
 
 ---
