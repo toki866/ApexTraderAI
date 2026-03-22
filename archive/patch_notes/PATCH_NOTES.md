@@ -16,3 +16,14 @@ Run:
   python tools\check_stepE_reward_alignment.py --symbol SOXL --mode sim
 
 You should see MAE ~ 0 and corr ~ 1.0 for `implied_r vs ret_cc_next` (when abs(pos) >= 0.2).
+
+
+## First rerun watchpoints
+After merge, prioritize checking the first full rerun for the following outputs:
+- `run_manifest.steps.F.status` should no longer remain `running` when StepF artifacts and audits are already present.
+- `run_manifest.steps.F.completed_at` should be populated once reconciliation promotes StepF to a terminal state.
+- `run_manifest.steps.F.audit_status` should reflect the reconciled StepF quality result (`PASS` / `WARN` / `FAIL`).
+- StepF market-alignment audit should be reviewed first to confirm the market-return semantics change removed the previous false FAIL pattern.
+- StepE leak / reward-alignment audit should be reviewed first to confirm the zero-baseline relative-error hardening removed the previous false FAIL pattern.
+
+This patch intentionally also narrows policy-compare scaling to the test window so the comparison magnitude remains interpretable during rerun triage.
