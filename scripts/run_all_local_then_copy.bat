@@ -18,7 +18,7 @@ if not defined COPY_TO_ONEDRIVE set "COPY_TO_ONEDRIVE=1"
 if /i "%COPY_TO_ONEDRIVE%"=="true" set "COPY_TO_ONEDRIVE=1"
 if /i "%COPY_TO_ONEDRIVE%"=="false" set "COPY_TO_ONEDRIVE=0"
 if not defined AUTO_PREPARE_DATA set "AUTO_PREPARE_DATA=1"
-if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
+if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=0"
 
 if defined APEX_RUN_ID (
   set "RUN_ID=%APEX_RUN_ID%"
@@ -34,9 +34,10 @@ if not defined RUN_ID (
 set "RUN_DIR=%WORK_ROOT%\%RUN_ID%"
 set "DATA_DIR=%RUN_DIR%\data"
 set "OUTPUT_DIR=%RUN_DIR%\output"
+set "CANONICAL_OUTPUT_ROOT=C:\work\apex_work\output"
+if defined APEX_CANONICAL_OUTPUT_ROOT set "CANONICAL_OUTPUT_ROOT=%APEX_CANONICAL_OUTPUT_ROOT%"
 set "LOG_DIR=%RUN_DIR%\logs"
 set "LOG_FILE=%LOG_DIR%\run_%RUN_ID%.log"
-set "ZIP_FILE=%RUN_DIR%\run_%RUN_ID%.zip"
 set "PIP_REQ_LOG=%LOG_DIR%\pip_install_requirements.log"
 set "PIP_REQ_TAIL=%LOG_DIR%\pip_install_tail_200.txt"
 
@@ -67,7 +68,7 @@ if not exist "%LOG_DIR%" (
   echo ==================================================
 ) > "%LOG_FILE%" 2>&1
 
-mkdir "%DATA_DIR%" "%OUTPUT_DIR%" "%LOG_DIR%" >nul 2>&1
+mkdir "%DATA_DIR%" "%LOG_DIR%" >nul 2>&1
 
 set "LAST_CMD=(not started)"
 set "LAST_EXIT=0"
@@ -77,7 +78,8 @@ for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT_SHA=%%h"
 (
   echo [RUN] commit=%COMMIT_SHA%
   echo [RUN] data_dir=%DATA_DIR%
-  echo [RUN] output_dir=%OUTPUT_DIR%
+  echo [RUN] canonical_output_root_base=%CANONICAL_OUTPUT_ROOT%
+  echo [RUN] provisional_output_dir=%OUTPUT_DIR%
 ) >> "%LOG_FILE%" 2>&1
 
 call :run git rev-parse --short HEAD
@@ -91,6 +93,20 @@ call :run where python
 call :run python --version
 call :run_python --version
 if errorlevel 1 goto :failed
+
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%resolve_output_dir.ps1" -Mode "%RUN_MODE%" -Symbol "%SYMBOL%" -TestStartDate "%TEST_START%" -CanonicalOutputRoot "%CANONICAL_OUTPUT_ROOT%" -AllocateNew -CreateDirectory`) do set "OUTPUT_DIR=%%P"
+if not defined OUTPUT_DIR (
+  echo [ERROR] failed to allocate canonical output directory.>> "%LOG_FILE%"
+  set "LAST_CMD=resolve_output_dir.ps1"
+  set "LAST_EXIT=2"
+  goto :failed
+)
+echo [RUN] allocated_canonical_output=%OUTPUT_DIR%>> "%LOG_FILE%"
+echo [RUN] output_dir=%OUTPUT_DIR%>> "%LOG_FILE%"
+echo [RUN] allocated_canonical_output=%OUTPUT_DIR%
+if /i not "%ZIP_ON_SUCCESS%"=="0" (
+  echo [WARN] ZIP_ON_SUCCESS is deprecated and ignored. local zip creation is disabled by policy.>> "%LOG_FILE%"
+)
 
 if /i "%GITHUB_ACTIONS%"=="true" goto :skip_git_sync
 
@@ -302,11 +318,6 @@ if errorlevel 1 goto :failed
   for /f %%h in ('git rev-parse --short HEAD 2^>nul') do echo commit=%%h
 )
 
-if "%ZIP_ON_SUCCESS%"=="1" (
-  call :run powershell -NoProfile -Command "Compress-Archive -Path '%OUTPUT_DIR%','%LOG_DIR%' -DestinationPath '%ZIP_FILE%' -Force"
-  if errorlevel 1 goto :failed
-)
-
 if not "%COPY_TO_ONEDRIVE%"=="1" (
   echo [WARN] COPY_TO_ONEDRIVE=0 -^> skip OneDrive copy and repo snapshot.>> "%LOG_FILE%"
   goto :success
@@ -314,47 +325,18 @@ if not "%COPY_TO_ONEDRIVE%"=="1" (
 
 set "ONE_DEST="
 if defined ONE_DRIVE_RUNS_ROOT (
-  set "ONE_DEST=%ONE_DRIVE_RUNS_ROOT%\%RUN_ID%"
+  set "ONE_DEST=%ONE_DRIVE_RUNS_ROOT%\export"
 ) else (
   if defined OneDrive (
-    set "ONE_DEST=%OneDrive%\ApexTraderAI\runs\%RUN_ID%"
+    set "ONE_DEST=%OneDrive%\ApexTraderAI\runs\export"
   ) else (
     echo [WARN] OneDrive path not found; skip copy. missing ONE_DRIVE_RUNS_ROOT and OneDrive.>> "%LOG_FILE%"
     goto :success
   )
 )
 
-call :run mkdir "%ONE_DEST%"
+call :run powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%export_output_zip_to_onedrive.ps1" -OutputRoot "%OUTPUT_DIR%" -CopyToOneDrive 1 -OutputRootSource local_batch_canonical_output -Mode "%RUN_MODE%" -Symbols "%SYMBOLS%" -TestStartDate "%TEST_START%" -TrainYears "%TRAIN_YEARS%" -TestMonths "%TEST_MONTHS%"
 if errorlevel 1 goto :failed
-
-call :run robocopy "%OUTPUT_DIR%" "%ONE_DEST%\output" /E /Z /R:2 /W:2
-set "ROBO_RC=%LAST_EXIT%"
-if %ROBO_RC% GEQ 8 (
-  echo [ERROR] robocopy output failed with code %ROBO_RC%>> "%LOG_FILE%"
-  set "LAST_CMD=robocopy output"
-  set "LAST_EXIT=%ROBO_RC%"
-  goto :failed
-)
-
-call :run robocopy "%LOG_DIR%" "%ONE_DEST%\logs" /E /Z /R:2 /W:2
-set "ROBO_RC=%LAST_EXIT%"
-if %ROBO_RC% GEQ 8 (
-  echo [ERROR] robocopy logs failed with code %ROBO_RC%>> "%LOG_FILE%"
-  set "LAST_CMD=robocopy logs"
-  set "LAST_EXIT=%ROBO_RC%"
-  goto :failed
-)
-
-if "%ZIP_ON_SUCCESS%"=="1" if exist "%ZIP_FILE%" (
-  call :run robocopy "%RUN_DIR%" "%ONE_DEST%" run_%RUN_ID%.zip /R:2 /W:2
-  set "ROBO_RC=%LAST_EXIT%"
-  if %ROBO_RC% GEQ 8 (
-    echo [ERROR] robocopy zip failed with code %ROBO_RC%>> "%LOG_FILE%"
-    set "LAST_CMD=robocopy zip"
-    set "LAST_EXIT=%ROBO_RC%"
-    goto :failed
-  )
-)
 
 set "SNAP_ROOT="
 if defined ONE_DRIVE_SNAPSHOTS_ROOT (
@@ -407,7 +389,7 @@ if exist "%SNAPSHOT_ZIP%" attrib +R "%SNAPSHOT_ZIP%" >nul 2>&1
 (
   echo [SUCCESS] Completed run_id=%RUN_ID%
   echo [SUCCESS] local_run_dir=%RUN_DIR%
-  if defined ONE_DEST echo [SUCCESS] onedrive_dest=%ONE_DEST%
+  if defined ONE_DEST echo [SUCCESS] onedrive_export_root=%ONE_DEST%
   if defined SNAPSHOT_ZIP echo [SUCCESS] repo_snapshot=%SNAPSHOT_ZIP%
   echo [SUCCESS] reproducible_command=%~nx0
 ) >> "%LOG_FILE%" 2>&1
@@ -416,7 +398,7 @@ echo [OK] run_id=%RUN_ID%
 echo [OK] output_root=!OUTPUT_DIR!
 echo [OK] wsl_output_root=!WSL_OUTPUT_DIR!
 echo [OK] local=%RUN_DIR%
-echo [OK] onedrive=%ONE_DEST%
+echo [OK] onedrive_export_root=%ONE_DEST%
 popd >nul
 exit /b 0
 

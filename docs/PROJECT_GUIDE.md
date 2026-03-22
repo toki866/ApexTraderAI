@@ -77,11 +77,11 @@ The tree below was generated from the current repository state (depth-limited).
 
 | File path | Role | Called by | Outputs produced |
 |---|---|---|---|
-| `.github/workflows/run_desktop_pipeline.yml` | Manual desktop pipeline workflow on self-hosted Windows runner | GitHub Actions `workflow_dispatch` | Workflow artifact `desktop-run-<run_id or github.run_id>` with console log, run logs, run zip |
+| `.github/workflows/run_desktop_pipeline.yml` | Manual desktop pipeline workflow on self-hosted Windows runner | GitHub Actions `workflow_dispatch` | Workflow artifact `desktop-run-<run_id or github.run_id>` with console log, run logs, and canonical logs |
 | `.github/workflows/ci.yml` | CI compile/import smoke checks on Ubuntu | GitHub push / pull_request triggers | CI job logs; no packaged runtime artifacts |
-| `scripts/run_all_local_then_copy.bat` | End-to-end local run wrapper: setup run dirs, run prep + pipeline, zip, OneDrive copy, snapshot zip | Workflow step “Run desktop BAT”; manual cmd/powershell execution | `C:\work\apex_work\runs\<run_id>\{data,output,logs}` + `run_<run_id>.zip` + OneDrive copy + `repo_<sha>_<run_id>.zip` snapshot |
+| `scripts/run_all_local_then_copy.bat` | End-to-end local run wrapper: setup run dirs, run prep + pipeline, export canonical output ZIP to OneDrive, snapshot repo | Workflow step “Run desktop BAT”; manual cmd/powershell execution | `C:\work\apex_work\runs\<run_id>\{data,logs}` + canonical output under `C:\work\apex_work\output\...` + OneDrive `output_YYYYMMDD_NNN.zip` + `repo_<sha>_<run_id>.zip` snapshot |
 | `scripts/bat_config.bat` | Default runtime variables (symbols, windows, mode, work root, flags) | Sourced by `run_all_local_then_copy.bat` / `doctor.bat` | Env vars only (no files directly) |
-| `scripts/copy_run_to_onedrive.bat` | Re-copy existing local run directory to OneDrive | Manual cmd/powershell execution | OneDrive run mirror under `<runs_root>\<run_id>` |
+| `scripts/copy_run_to_onedrive.bat` | Re-export an existing canonical output (or run directory) to OneDrive | Manual cmd/powershell execution | OneDrive `runs\export\output_YYYYMMDD_NNN.zip` |
 | `scripts/doctor.bat` | Preflight diagnostics (git/python/torch/data files) | Manual cmd/powershell execution | `doctor_<run_id>.log` in run logs folder |
 | `tools/prepare_data.py` | Download + normalize OHLCV CSVs from yfinance | `run_all_local_then_copy.bat`; manual CLI | `prices_<SYMBOL>.csv` under selected `--data-dir` |
 | `tools/run_pipeline.py` | Headless Step A→F orchestrator (standard: A,B,C,DPRIME,E,F) with mode/agent flags | `run_all_local_then_copy.bat`; manual CLI | Step outputs under `--output-root` (default `output/`) |
@@ -103,7 +103,7 @@ The tree below was generated from the current repository state (depth-limited).
   - `symbols` (comma-separated)
   - `start`, `end`, `test_start`
   - `train_years`, `test_months`
-  - `copy_to_onedrive` (boolean; exports `output.zip` + lightweight metadata to OneDrive when enabled)
+  - `copy_to_onedrive` (boolean; exports canonical output to OneDrive as `output_YYYYMMDD_NNN.zip` when enabled)
 
 ### Runner requirements
 - `runs-on: [self-hosted, windows]`
@@ -130,10 +130,10 @@ The tree below was generated from the current repository state (depth-limited).
    - logs commit and all executed commands
    - runs:
      - `python tools\run_with_python.py tools\prepare_data.py ... --data-dir <RUN_DIR>\data`
-     - `python tools\run_with_python.py tools\run_pipeline.py ... --output-root <RUN_DIR>\output --data-dir <RUN_DIR>\data`
-   - writes `DONE.txt` under output
-   - creates zip `run_<run_id>.zip` containing output + logs (via `Compress-Archive`)
-   - copies output/logs/zip to OneDrive run destination (`robocopy`)
+     - `python tools\run_with_python.py tools\run_pipeline.py ... --output-root <canonical_output_root> --data-dir <RUN_DIR>\data`
+   - writes `DONE.txt` under canonical output
+   - does **not** create a local run ZIP
+   - creates only a canonical-output ZIP in OneDrive export destination (`output_YYYYMMDD_NNN.zip`)
    - creates repo snapshot zip in OneDrive snapshot root (`repo_<shortsha>_<run_id>.zip`)
    - emits `[OK] run_id=<run_id>` to stdout for workflow parsing
 6. **Resolve latest run artifacts** (PowerShell):
@@ -201,7 +201,7 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 ## Local disk outputs (BAT default)
 - Run root: `C:\work\apex_work\runs\<run_id>`
 - Data: `...\data`
-- Pipeline outputs: `...\output`
+- Pipeline outputs: canonical output is written directly under `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>`
 - Canonical output root: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>`
 - Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>\logs\`
   - includes copied run/console/error/step-exec/diagnostics logs plus `logs_manifest.json`
@@ -211,21 +211,18 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
   - READY/FAILED markers under `stepDprime\<mode>\pipeline_markers\`
 - StepE summaries now retain training/runtime config such as policy kind, PPO parameters, device, seed, and DPrime embedding usage.
 - Logs: `...\logs\run_<run_id>.log`
-- Completion marker: `...\output\DONE.txt`
-- Run zip: `...\run_<run_id>.zip` (contains `output/` and `logs/`)
+- Completion marker: `<canonical output>\DONE.txt`
+- Local ZIP archives are no longer generated; canonical output remains the only local source of truth.
 
 ## OneDrive outputs
 Run destination resolution order:
-1. `%ONE_DRIVE_RUNS_ROOT%\<run_id>`
-2. `%OneDrive%\ApexTraderAI\runs\<run_id>`
+1. `%ONE_DRIVE_RUNS_ROOT%\export`
+2. `%OneDrive%\ApexTraderAI\runs\export`
 
 Workflow export payload (when `copy_to_onedrive=true`):
-- `output.zip`
-- `latest_run_info.json`
-- `DONE.txt`
-- optional `run_manifest.json`
+- canonical-output ZIP only: `output_YYYYMMDD_NNN.zip`
 
-The workflow no longer mirrors the raw canonical `output/` directory to OneDrive; local canonical output remains the source of truth and OneDrive is treated as a lightweight export target. `output.zip` is produced from the local canonical output tree without trimming its contents.
+The workflow no longer mirrors the raw canonical `output/` directory to OneDrive. Instead, it scans the shared export directory for existing `output_YYYYMMDD_NNN.zip` files, assigns the next `NNN` for the local date, writes audit metadata locally (`latest_run_info.json` / `onedrive_zip_export_audit.json`), and stores only the canonical-output ZIP in OneDrive.
 
 Snapshot destination resolution order:
 1. `%ONE_DRIVE_SNAPSHOTS_ROOT%`
@@ -242,7 +239,6 @@ Snapshot zip naming:
 - Staged files:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`
-  - `run_<run_id>.zip`
   - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>_<YYYYMMDD>_<NNN>/logs/`
   - `logs_manifest.json`
 - Additional publication branch for evaluation snapshots: `output-latest`
@@ -258,11 +254,11 @@ Treat these as generated/runtime artifacts:
 - `output/`, `outputs/`, `logs/`, `artifacts/`, `pdf/`
 - `data/*.csv`
 - Local run folders under `C:\work\apex_work\runs\<run_id>`
-- OneDrive lightweight exports under `...\ApexTraderAI\runs\<run_id>`
+- OneDrive lightweight exports under `...\ApexTraderAI\runs\export`
 
 ## Naming conventions used by pipeline
 - `run_id`: `yyyyMMdd_HHmmss`
-- Run zip: `run_<run_id>.zip`
+- OneDrive export zip: `output_YYYYMMDD_NNN.zip`
 - Run log: `logs\run_<run_id>.log`
 - Doctor log: `logs\doctor_<run_id>.log`
 - Repo snapshot zip: `repo_<short_sha>_<run_id>.zip`
@@ -305,7 +301,7 @@ Treat these as generated/runtime artifacts:
 - Existing workflow already applies `-NoProfile -ExecutionPolicy Bypass`.
 
 ## 6.4 OneDrive path/permission/encoding/long-path issues
-**Symptoms:** OneDrive export warnings, `output.zip` copy failures, path encoding problems.
+**Symptoms:** OneDrive export warnings, `output_YYYYMMDD_NNN.zip` creation/copy failures, path encoding problems.
 
 - Check destination existence and permissions for chosen user.
 - Keep run roots short (`C:\work\apex_work\runs`) to reduce path-length risk.
@@ -352,7 +348,7 @@ Before changing orchestration:
   - `scripts/run_all_local_then_copy.bat`
 - Preserve artifact discoverability:
   - `[OK] run_id=...` line in console
-  - `logs\run_*.log` and `run_<run_id>.zip`
+  - `logs\run_*.log` and canonical logs in the staged artifact
 - Keep OneDrive fallback behavior (`ONE_DRIVE_*` overrides then `%OneDrive%`).
 - Prefer `-NoProfile -ExecutionPolicy Bypass` PowerShell style.
 - Re-run at least:
