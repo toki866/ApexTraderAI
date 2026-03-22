@@ -48,24 +48,6 @@ function Add-SummaryLines {
   Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $Lines.ToArray()
 }
 
-function Add-MarkdownSummaryLine {
-  param(
-    [Parameter(Mandatory = $true)]
-    [System.Collections.Generic.List[string]]$Lines,
-    [Parameter(Mandatory = $true)]
-    [string]$Label,
-    [Parameter(Mandatory = $true)]
-    [string]$ModeValue,
-    [Parameter(Mandatory = $false)]
-    [AllowEmptyString()]
-    [string]$Value = ''
-  )
-
-  $safeModeValue = if ([string]::IsNullOrWhiteSpace($ModeValue)) { 'unknown' } else { $ModeValue }
-  $safeValue = if ($null -eq $Value) { '' } else { [string]$Value }
-  $Lines.Add(('- {0} ({1}): `{2}`' -f $Label, $safeModeValue, $safeValue))
-}
-
 try {
   $resolvedOutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
   if (-not (Test-Path -LiteralPath $resolvedOutputRoot)) {
@@ -177,18 +159,17 @@ try {
     Add-Content -Path $ReportPath -Value ('[ZIP_EXPORT] warning={0}' -f $zipExportWarning)
   }
 
-  $summaryMode = if ([string]::IsNullOrWhiteSpace($effectiveMode)) { 'unknown' } else { $effectiveMode }
   $summaryLines = New-StringList
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'local canonical output path' -ModeValue $summaryMode -Value $resolvedOutputRoot
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'output_root_name' -ModeValue $summaryMode -Value $effectiveOutputRootName
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'output_root_source' -ModeValue $summaryMode -Value $effectiveOutputRootSource
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'mode' -ModeValue $summaryMode -Value $effectiveMode
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'symbol' -ModeValue $summaryMode -Value $primarySymbol
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'test_start_date' -ModeValue $summaryMode -Value $TestStartDate
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'onedrive export name' -ModeValue $summaryMode -Value $oneDriveExportName
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'onedrive output zip path' -ModeValue $summaryMode -Value $oneDriveExportPath
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'output_zip_size_bytes' -ModeValue $summaryMode -Value ('{0}' -f $zipExportResult.zip_size_bytes)
-  Add-MarkdownSummaryLine -Lines $summaryLines -Label 'onedrive_export_result' -ModeValue $summaryMode -Value $zipExportStatus
+  $summaryLines.Add(('- local canonical output path ({0}): `{1}`' -f $effectiveMode, $resolvedOutputRoot))
+  $summaryLines.Add(('- output_root_name ({0}): `{1}`' -f $effectiveMode, $effectiveOutputRootName))
+  $summaryLines.Add(('- output_root_source ({0}): `{1}`' -f $effectiveMode, $effectiveOutputRootSource))
+  $summaryLines.Add(('- mode ({0}): `{1}`' -f $effectiveMode, $effectiveMode))
+  $summaryLines.Add(('- symbol ({0}): `{1}`' -f $effectiveMode, $primarySymbol))
+  $summaryLines.Add(('- test_start_date ({0}): `{1}`' -f $effectiveMode, $TestStartDate))
+  $summaryLines.Add(('- onedrive export name ({0}): `{1}`' -f $effectiveMode, $oneDriveExportName))
+  $summaryLines.Add(('- onedrive output zip path ({0}): `{1}`' -f $effectiveMode, $oneDriveExportPath))
+  $summaryLines.Add(('- output_zip_size_bytes ({0}): `{1}`' -f $effectiveMode, $zipExportResult.zip_size_bytes))
+  $summaryLines.Add(('- onedrive_export_result ({0}): `{1}`' -f $effectiveMode, $zipExportStatus))
   Add-SummaryLines -Lines $summaryLines
 
   Add-Content -Path $ReportPath -Value ('[OK] finalize output_root={0}' -f $resolvedOutputRoot)
