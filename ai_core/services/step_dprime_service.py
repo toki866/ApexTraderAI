@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.utils.extmath import randomized_svd
 
 from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
@@ -71,7 +73,21 @@ class StepDPrimeConfig:
     pred_k: int = 20
     z_past_dim: int = 32
     z_pred_dim: int = 32
+    z_state_dim: int = 64
     verbose: bool = True
+    encoder_type: str = "legacy"
+    transformer_d_model: int = 64
+    transformer_nhead: int = 4
+    transformer_num_layers: int = 2
+    transformer_ff_dim: int = 128
+    transformer_dropout: float = 0.1
+    transformer_epochs: int = 4
+    transformer_batch_size: int = 64
+    transformer_lr: float = 1e-3
+    transformer_mask_ratio: float = 0.15
+    transformer_seed: int = 42
+    feature_version: str = "stepdprime_rl_v2"
+    cluster_source_version: str = "stepA_only_cluster_v1"
     # cluster regime scaffold (some options are placeholders / not yet wired)
     enable_cluster_regime: bool = True
     enable_cluster_monthly_refit: bool = True
@@ -535,6 +551,177 @@ def _infer_family(profile: str) -> str:
     return "bnf"
 
 
+def _normalize_encoder_type(value: str) -> str:
+    token = str(value or "legacy").strip().lower()
+    if token not in {"legacy", "transformer"}:
+        raise ValueError(f"unsupported StepDPrime encoder_type={value!r}. expected legacy|transformer")
+    return token
+
+
+def _fit_sequence_scaler(train: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    arr = np.asarray(train, dtype=float)
+    if arr.ndim != 3:
+        raise ValueError(f"expected 3D array for sequence scaler, got shape={arr.shape}")
+    flat = arr.reshape(-1, arr.shape[-1])
+    mu = np.nan_to_num(flat.mean(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
+    sd = np.nan_to_num(flat.std(axis=0), nan=1.0, posinf=1.0, neginf=1.0)
+    sd = np.where(sd < 1e-8, 1.0, sd)
+    return mu.astype(float), sd.astype(float)
+
+
+def _apply_sequence_scaler(x: np.ndarray, mu: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=float)
+    out = (arr - np.asarray(mu, dtype=float).reshape(1, 1, -1)) / np.asarray(sd, dtype=float).reshape(1, 1, -1)
+    out, _ = _sanitize_matrix(out.reshape(arr.shape[0], -1), name="seq_scale.out", clip_abs=1e6)
+    return out.reshape(arr.shape[0], arr.shape[1], arr.shape[2])
+
+
+def _add_rl_scalar_context(data: pd.DataFrame) -> pd.DataFrame:
+    out = data.copy()
+    close = pd.to_numeric(out.get("Close_anchor"), errors="coerce").replace(0, np.nan)
+    volume = pd.to_numeric(out.get("Volume"), errors="coerce").replace(0, np.nan)
+    ret_1 = pd.to_numeric(out.get("ret_1"), errors="coerce")
+    if ret_1 is None or ret_1.isna().all():
+        ret_1 = close.pct_change(1)
+
+    rolling_vol20 = ret_1.rolling(20, min_periods=5).std(ddof=0)
+    rolling_vol63 = ret_1.rolling(63, min_periods=10).std(ddof=0)
+    rolling_vol252 = ret_1.rolling(252, min_periods=20).std(ddof=0)
+    ma20 = close.rolling(20, min_periods=5).mean()
+    ma63 = close.rolling(63, min_periods=10).mean()
+    ma252 = close.rolling(252, min_periods=20).mean()
+    rolling_max252 = close.rolling(252, min_periods=20).max()
+    vol_ma20 = volume.rolling(20, min_periods=5).mean()
+    vol_ma63 = volume.rolling(63, min_periods=10).mean()
+    yearly_ret = close.pct_change(252)
+    background_ret_8y = close.pct_change(252 * 8)
+
+    out["ctx_volatility_20"] = rolling_vol20
+    out["ctx_volatility_63"] = rolling_vol63
+    out["ctx_volatility_252"] = rolling_vol252
+    out["ctx_trend_20"] = close / ma20 - 1.0
+    out["ctx_trend_63"] = close / ma63 - 1.0
+    out["ctx_trend_252"] = close / ma252 - 1.0
+    out["ctx_turnover_20"] = volume / vol_ma20 - 1.0
+    out["ctx_turnover_63"] = volume / vol_ma63 - 1.0
+    out["ctx_drawdown_252"] = close / rolling_max252 - 1.0
+    out["ctx_long_ret_252"] = yearly_ret
+    out["ctx_long_ret_8y"] = background_ret_8y
+    out["ctx_long_vol_252"] = rolling_vol252
+    out["ctx_gap_atr"] = pd.to_numeric(out.get("gap_atr"), errors="coerce")
+    out["ctx_atr_norm"] = pd.to_numeric(out.get("ATR_norm"), errors="coerce")
+    out["ctx_ret_20"] = pd.to_numeric(out.get("ret_20"), errors="coerce")
+
+    for col in [c for c in out.columns if str(c).startswith("ctx_")]:
+        out[col] = pd.to_numeric(out[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return out
+
+
+def _load_json_dict(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _update_json_profiles(path: Path, profile: str, payload: Dict[str, Any], *, root_defaults: Optional[Dict[str, Any]] = None) -> None:
+    base = _load_json_dict(path)
+    if root_defaults:
+        for key, value in root_defaults.items():
+            base.setdefault(key, _json_safe(value))
+    profiles = base.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles[str(profile)] = _json_safe(payload)
+    base["profiles"] = profiles
+    path.write_text(json.dumps(_json_safe(base), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+class _DPrimeTwoTowerTransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        past_dim: int,
+        pred_dim: int,
+        past_len: int,
+        pred_len: int,
+        cluster_dim: int,
+        scalar_dim: int,
+        d_model: int,
+        nhead: int,
+        num_layers: int,
+        ff_dim: int,
+        dropout: float,
+        z_past_dim: int,
+        z_pred_dim: int,
+        z_state_dim: int,
+        next_feature_dim: int,
+    ) -> None:
+        super().__init__()
+        self.past_len = int(past_len)
+        self.pred_len = int(pred_len)
+        self.past_in = nn.Linear(past_dim, d_model)
+        self.pred_in = nn.Linear(pred_dim, d_model)
+        self.past_pos = nn.Parameter(torch.zeros(1, past_len, d_model))
+        self.pred_pos = nn.Parameter(torch.zeros(1, pred_len, d_model))
+        enc_cfg = dict(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.past_encoder = nn.TransformerEncoder(nn.TransformerEncoderLayer(**enc_cfg), num_layers=num_layers)
+        self.pred_encoder = nn.TransformerEncoder(nn.TransformerEncoderLayer(**enc_cfg), num_layers=num_layers)
+        self.past_proj = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, z_past_dim), nn.GELU())
+        self.pred_proj = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, z_pred_dim), nn.GELU())
+        self.past_recon = nn.Linear(d_model, past_dim)
+        self.pred_recon = nn.Linear(d_model, pred_dim)
+        fusion_in = z_past_dim + z_pred_dim + cluster_dim + scalar_dim
+        self.fusion = nn.Sequential(
+            nn.LayerNorm(fusion_in),
+            nn.Linear(fusion_in, max(z_state_dim, fusion_in // 2)),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(max(z_state_dim, fusion_in // 2), z_state_dim),
+        )
+        self.next_feature_head = nn.Linear(z_state_dim, next_feature_dim)
+        self.future_return_head = nn.Linear(z_state_dim, 1)
+        self.future_sign_head = nn.Linear(z_state_dim, 1)
+        self.future_vol_head = nn.Linear(z_state_dim, 1)
+
+    def _encode_tower(self, x: torch.Tensor, proj: nn.Linear, pos: torch.Tensor, encoder: nn.Module, out_proj: nn.Module) -> Tuple[torch.Tensor, torch.Tensor]:
+        h = proj(x) + pos[:, : x.shape[1], :]
+        h = encoder(h)
+        pooled = h.mean(dim=1)
+        z = out_proj(pooled)
+        return h, z
+
+    def forward(self, past_x: torch.Tensor, pred_x: torch.Tensor, cluster_x: torch.Tensor, scalar_x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        past_tokens, z_past = self._encode_tower(past_x, self.past_in, self.past_pos, self.past_encoder, self.past_proj)
+        pred_tokens, z_pred = self._encode_tower(pred_x, self.pred_in, self.pred_pos, self.pred_encoder, self.pred_proj)
+        fused = torch.cat([z_past, z_pred, cluster_x, scalar_x], dim=1)
+        z_state = self.fusion(fused)
+        return {
+            "past_tokens": past_tokens,
+            "pred_tokens": pred_tokens,
+            "z_past": z_past,
+            "z_pred": z_pred,
+            "z_state": z_state,
+            "past_recon": self.past_recon(past_tokens),
+            "pred_recon": self.pred_recon(pred_tokens),
+            "next_features": self.next_feature_head(z_state),
+            "future_return": self.future_return_head(z_state).squeeze(1),
+            "future_sign_logits": self.future_sign_head(z_state).squeeze(1),
+            "future_vol": self.future_vol_head(z_state).squeeze(1),
+        }
+
+
 
 class DPrimeRLService:
     """Build RL state by integrating past features, cluster IDs, and prediction summaries."""
@@ -609,6 +796,8 @@ class DPrimeRLService:
             data[f"pred_ret_{i:02d}"] = pd.to_numeric(data[c], errors="coerce") / data["Close_anchor"].replace(0, np.nan) - 1.0
             data[f"pred_ret_{i:02d}"] = data[f"pred_ret_{i:02d}"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+        data = _add_rl_scalar_context(data)
+        encoder_type = _normalize_encoder_type(cfg.encoder_type)
         num_cols = [c for c in data.columns if c != "Date" and pd.api.types.is_numeric_dtype(data[c])]
         bnf_cols = [
             "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
@@ -616,10 +805,29 @@ class DPrimeRLService:
         ]
         mix_cols = bnf_cols + ["RSI", "MACD_hist", "macd_hist_delta", "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20"]
         all_cols = [c for c in num_cols if c not in {"Open", "High", "Low", "Close", "Volume", "Close_anchor"}]
+        scalar_cols = [
+            "ctx_volatility_20",
+            "ctx_volatility_63",
+            "ctx_volatility_252",
+            "ctx_trend_20",
+            "ctx_trend_63",
+            "ctx_trend_252",
+            "ctx_turnover_20",
+            "ctx_turnover_63",
+            "ctx_drawdown_252",
+            "ctx_long_ret_252",
+            "ctx_long_ret_8y",
+            "ctx_long_vol_252",
+            "ctx_gap_atr",
+            "ctx_atr_norm",
+            "ctx_ret_20",
+        ]
+        scalar_cols = [c for c in scalar_cols if c in data.columns]
 
         results: Dict[str, object] = {
             "mode": cfg.mode,
             "symbol": cfg.symbol,
+            "encoder_type": encoder_type,
             "profiles": {},
             "output_dir": str(stepd_dir),
             "pred_source_selected": pred_meta.get("pred_source_selected", ""),
@@ -633,6 +841,21 @@ class DPrimeRLService:
         idx_test = [i for i, d in enumerate(date_list) if te_s <= d <= te_e]
         if min(idx_test) < cfg.l_past - 1:
             raise RuntimeError("insufficient history before test_start for L_past window")
+
+        meta_root_defaults = {
+            "symbol": cfg.symbol,
+            "mode": str(cfg.mode),
+            "encoder_type": encoder_type,
+            "hidden_dim": int(cfg.transformer_d_model),
+            "num_layers": int(cfg.transformer_num_layers),
+            "input_blocks": ["past_context", "prediction_context", "cluster_context", "scalar_context"],
+            "train_range": {"start": str(tr_s.date()), "end": str(tr_e.date())},
+            "feature_version": str(cfg.feature_version),
+            "cluster_source_version": str(cfg.cluster_source_version),
+            "cluster_contract": "stepA_only_cluster",
+        }
+        meta_path = stepd_dir / "stepDprime_embedding_meta.json"
+        schema_path = stepd_dir / "stepDprime_state_schema.json"
 
         last_profile = ""
         with timing.stage("stepDPrimeRL.total"):
@@ -652,76 +875,245 @@ class DPrimeRLService:
                     with timing.stage("stepDPrimeRL.profile.state_build", agent_id=str(profile), meta={"profile": str(profile), "agent_kind": "profile", "profile_name": str(profile)}):
                         pass
                     pred_use_cols = [f"pred_ret_{s:02d}" for s in pred_steps]
+                    pred_all_cols = [f"pred_ret_{s:02d}" for s in range(1, cfg.pred_k + 1)]
+                    next_feature_cols = past_cols[: min(8, len(past_cols))]
 
-                    def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
-                        xp, xf, ds = [], [], []
+                    def _build_rows(indices: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[pd.Timestamp]]:
+                        xp_seq, pred_seq, x_cluster, x_scalar, next_targets, aux_targets, ds = [], [], [], [], [], [], []
                         for i in indices:
                             if i < cfg.l_past - 1:
                                 continue
                             hist = data.iloc[i - cfg.l_past + 1 : i + 1][past_cols].to_numpy(dtype=float)
-                            xp.append(hist.reshape(-1))
+                            xp_seq.append(hist)
+                            row_pred = pd.to_numeric(data.iloc[i][pred_all_cols], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+                            prev_pred = np.concatenate([[0.0], row_pred[:-1]])
+                            delta_pred = row_pred - prev_pred
+                            horiz_frac = np.arange(1, cfg.pred_k + 1, dtype=float) / float(max(cfg.pred_k, 1))
+                            active_mask = np.array([1.0 if (k in pred_steps or pred_type == "3scale") else 0.0 for k in range(1, cfg.pred_k + 1)], dtype=float)
+                            pred_block = np.stack([
+                                row_pred * active_mask,
+                                delta_pred * active_mask,
+                                horiz_frac * active_mask,
+                            ], axis=1)
+                            pred_seq.append(pred_block)
                             ds.append(data.iloc[i]["Date"])
-                            if pred_type == "3scale":
-                                p = data.iloc[i][[f"pred_ret_{k:02d}" for k in range(1, cfg.pred_k + 1)]].to_numpy(dtype=float)
-                                xf.append(np.concatenate([p[:5], p[:10], p[:20]], axis=0))
-                            else:
-                                xf.append(data.iloc[i][pred_use_cols].to_numpy(dtype=float))
-                        return np.asarray(xp, float), np.asarray(xf, float), ds
+                            x_cluster.append([
+                                float(pd.to_numeric(pd.Series([data.iloc[i]["cluster_id_stable"]]), errors="coerce").iloc[0]) / 20.0,
+                                float(pd.to_numeric(pd.Series([data.iloc[i]["cluster_id_raw20"]]), errors="coerce").iloc[0]) / 20.0,
+                                float(pd.to_numeric(pd.Series([data.iloc[i]["rare_flag_raw20"]]), errors="coerce").iloc[0]),
+                            ])
+                            x_scalar.append(pd.to_numeric(data.iloc[i][scalar_cols], errors="coerce").fillna(0.0).to_numpy(dtype=float))
+                            next_idx = min(i + 1, len(data) - 1)
+                            next_targets.append(pd.to_numeric(data.iloc[next_idx][next_feature_cols], errors="coerce").fillna(0.0).to_numpy(dtype=float))
+                            aux_targets.append([
+                                float(pd.to_numeric(pd.Series([data.iloc[next_idx].get("ret_1", 0.0)]), errors="coerce").fillna(0.0).iloc[0]),
+                                float(pd.to_numeric(pd.Series([data.iloc[next_idx].get("ret_1", 0.0)]), errors="coerce").fillna(0.0).iloc[0] > 0.0),
+                                float(pd.to_numeric(pd.Series([data.iloc[next_idx].get("ctx_volatility_20", 0.0)]), errors="coerce").fillna(0.0).iloc[0]),
+                            ])
+                        return (
+                            np.asarray(xp_seq, dtype=float),
+                            np.asarray(pred_seq, dtype=float),
+                            np.asarray(x_cluster, dtype=float),
+                            np.asarray(x_scalar, dtype=float),
+                            np.asarray(next_targets, dtype=float),
+                            np.asarray(aux_targets, dtype=float),
+                            ds,
+                        )
 
                     t_state_rows = time.perf_counter()
-                    Xp_tr, Xf_tr, Dtr = _build_rows(idx_train)
-                    Xp_te, Xf_te, Dte = _build_rows(idx_test)
+                    Xp_tr_seq, Xf_tr_seq, Xc_tr, Xs_tr, Ynext_tr, Yaux_tr, Dtr = _build_rows(idx_train)
+                    Xp_te_seq, Xf_te_seq, Xc_te, Xs_te, Ynext_te, Yaux_te, Dte = _build_rows(idx_test)
                     _log_timing(f"profile_{profile}.state_generation", t_state_rows)
                     if len(Dtr) == 0 or len(Dte) == 0:
                         raise RuntimeError(f"profile={profile}: no rows for train/test")
+                    Xp_tr_before = int(np.asarray(Xp_tr_seq, dtype=float).size - int(np.isfinite(np.asarray(Xp_tr_seq, dtype=float)).sum()))
+                    Xp_tr_seq = np.nan_to_num(Xp_tr_seq, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xp_te_seq = np.nan_to_num(Xp_te_seq, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xf_tr_seq = np.nan_to_num(Xf_tr_seq, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xf_te_seq = np.nan_to_num(Xf_te_seq, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xc_tr = np.nan_to_num(Xc_tr, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xc_te = np.nan_to_num(Xc_te, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xs_tr = np.nan_to_num(Xs_tr, nan=0.0, posinf=0.0, neginf=0.0)
+                    Xs_te = np.nan_to_num(Xs_te, nan=0.0, posinf=0.0, neginf=0.0)
+                    Ynext_tr = np.nan_to_num(Ynext_tr, nan=0.0, posinf=0.0, neginf=0.0)
+                    Ynext_te = np.nan_to_num(Ynext_te, nan=0.0, posinf=0.0, neginf=0.0)
+                    Yaux_tr = np.nan_to_num(Yaux_tr, nan=0.0, posinf=0.0, neginf=0.0)
+                    Yaux_te = np.nan_to_num(Yaux_te, nan=0.0, posinf=0.0, neginf=0.0)
 
-                    Xp_tr_before = int(np.asarray(Xp_tr, dtype=float).size - int(np.isfinite(np.asarray(Xp_tr, dtype=float)).sum()))
-                    Xp_tr, xp_tr_diag = _sanitize_matrix(Xp_tr, name=f"{profile}.Xp_tr", clip_abs=1e6)
-                    Xf_tr, xf_tr_diag = _sanitize_matrix(Xf_tr, name=f"{profile}.Xf_tr", clip_abs=1e6)
-                    Xp_te, _ = _sanitize_matrix(Xp_te, name=f"{profile}.Xp_te", clip_abs=1e6)
-                    Xf_te, _ = _sanitize_matrix(Xf_te, name=f"{profile}.Xf_te", clip_abs=1e6)
+                    if encoder_type == "legacy":
+                        Xp_tr = Xp_tr_seq.reshape(Xp_tr_seq.shape[0], -1)
+                        Xp_te = Xp_te_seq.reshape(Xp_te_seq.shape[0], -1)
+                        Xf_tr = Xf_tr_seq.reshape(Xf_tr_seq.shape[0], -1)
+                        Xf_te = Xf_te_seq.reshape(Xf_te_seq.shape[0], -1)
+                        Xp_tr, xp_tr_diag = _sanitize_matrix(Xp_tr, name=f"{profile}.Xp_tr", clip_abs=1e6)
+                        Xf_tr, xf_tr_diag = _sanitize_matrix(Xf_tr, name=f"{profile}.Xf_tr", clip_abs=1e6)
+                        Xp_te, _ = _sanitize_matrix(Xp_te, name=f"{profile}.Xp_te", clip_abs=1e6)
+                        Xf_te, _ = _sanitize_matrix(Xf_te, name=f"{profile}.Xf_te", clip_abs=1e6)
 
-                    mu_p, sd_p = _fit_scaler(Xp_tr)
-                    mu_f, sd_f = _fit_scaler(Xf_tr)
+                        mu_p, sd_p = _fit_scaler(Xp_tr)
+                        mu_f, sd_f = _fit_scaler(Xf_tr)
 
-                    Xp_tr_n, _ = _sanitize_matrix((Xp_tr - mu_p) / sd_p, name=f"{profile}.Xp_tr_norm", clip_abs=1e6)
-                    Xf_tr_n, _ = _sanitize_matrix((Xf_tr - mu_f) / sd_f, name=f"{profile}.Xf_tr_norm", clip_abs=1e6)
+                        Xp_tr_n, _ = _sanitize_matrix((Xp_tr - mu_p) / sd_p, name=f"{profile}.Xp_tr_norm", clip_abs=1e6)
+                        Xf_tr_n, _ = _sanitize_matrix((Xf_tr - mu_f) / sd_f, name=f"{profile}.Xf_tr_norm", clip_abs=1e6)
 
-                    t_pca_fit = time.perf_counter()
-                    comp_p, d_p, pca_p_diag = _fit_pca(Xp_tr_n, cfg.z_past_dim)
-                    pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
-                    comp_f, d_f, pca_f_diag = _fit_pca(Xf_tr_n, pred_dim)
-                    _log_timing(f"profile_{profile}.pca_fit", t_pca_fit)
+                        t_pca_fit = time.perf_counter()
+                        comp_p, d_p, pca_p_diag = _fit_pca(Xp_tr_n, cfg.z_past_dim)
+                        pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
+                        comp_f, d_f, pca_f_diag = _fit_pca(Xf_tr_n, pred_dim)
+                        _log_timing(f"profile_{profile}.pca_fit", t_pca_fit)
 
-                    t_proj = time.perf_counter()
-                    Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
-                    Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
-                    _log_timing(f"profile_{profile}.projection", t_proj)
+                        t_proj = time.perf_counter()
+                        Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
+                        Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
+                        Zs_tr = np.concatenate([Zp_tr, Zf_tr], axis=1)
+                        Zs_te = np.concatenate([Zp_te, Zf_te], axis=1)
+                        _log_timing(f"profile_{profile}.projection", t_proj)
+                        model_diag: Dict[str, Any] = {
+                            "profile": profile,
+                            "Xp_tr_shape": [int(v) for v in Xp_tr.shape],
+                            "Xf_tr_shape": [int(v) for v in Xf_tr.shape],
+                            "Xp_tr_nonfinite_count_before": int(Xp_tr_before),
+                            "Xp_tr_nonfinite_count_after": int(xp_tr_diag["nonfinite_count_after"]),
+                            "Xp_tr_zero_var_cols": int(xp_tr_diag["zero_var_cols"]),
+                            "pca_method_used": str(pca_p_diag["pca_method_used"]),
+                            "fallback_used": bool(pca_p_diag["fallback_used"]),
+                            "z_past_dim_requested": int(cfg.z_past_dim),
+                            "z_past_dim_used": int(d_p),
+                            "z_pred_dim_requested": int(pred_dim),
+                            "z_pred_dim_used": int(d_f),
+                            "pred_pca_method_used": str(pca_f_diag["pca_method_used"]),
+                            "pred_fallback_used": bool(pca_f_diag["fallback_used"]),
+                            "Xf_tr_nonfinite_count_after": int(xf_tr_diag["nonfinite_count_after"]),
+                            "encoder_type": "legacy",
+                        }
+                    else:
+                        t_transformer = time.perf_counter()
+                        mu_p, sd_p = _fit_sequence_scaler(Xp_tr_seq)
+                        mu_f, sd_f = _fit_sequence_scaler(Xf_tr_seq)
+                        mu_s, sd_s = _fit_scaler(Xs_tr)
+                        Xp_tr_n = _apply_sequence_scaler(Xp_tr_seq, mu_p, sd_p)
+                        Xp_te_n = _apply_sequence_scaler(Xp_te_seq, mu_p, sd_p)
+                        Xf_tr_n = _apply_sequence_scaler(Xf_tr_seq, mu_f, sd_f)
+                        Xf_te_n = _apply_sequence_scaler(Xf_te_seq, mu_f, sd_f)
+                        Xs_tr_n, _ = _sanitize_matrix((Xs_tr - mu_s) / sd_s, name=f"{profile}.Xs_tr_norm", clip_abs=1e6)
+                        Xs_te_n, _ = _sanitize_matrix((Xs_te - mu_s) / sd_s, name=f"{profile}.Xs_te_norm", clip_abs=1e6)
+                        device = torch.device("cuda" if _cuda_available() else "cpu")
+                        torch.manual_seed(int(cfg.transformer_seed))
+                        if device.type == "cuda":
+                            torch.cuda.manual_seed_all(int(cfg.transformer_seed))
+                        model = _DPrimeTwoTowerTransformer(
+                            past_dim=int(Xp_tr_n.shape[2]),
+                            pred_dim=int(Xf_tr_n.shape[2]),
+                            past_len=int(Xp_tr_n.shape[1]),
+                            pred_len=int(Xf_tr_n.shape[1]),
+                            cluster_dim=int(Xc_tr.shape[1]),
+                            scalar_dim=int(Xs_tr_n.shape[1]),
+                            d_model=int(cfg.transformer_d_model),
+                            nhead=int(cfg.transformer_nhead),
+                            num_layers=int(cfg.transformer_num_layers),
+                            ff_dim=int(cfg.transformer_ff_dim),
+                            dropout=float(cfg.transformer_dropout),
+                            z_past_dim=int(cfg.z_past_dim),
+                            z_pred_dim=int(cfg.z_pred_dim),
+                            z_state_dim=int(cfg.z_state_dim),
+                            next_feature_dim=int(Ynext_tr.shape[1]),
+                        ).to(device)
+                        optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.transformer_lr))
+                        batch_size = max(8, int(cfg.transformer_batch_size))
+                        mask_ratio = float(cfg.transformer_mask_ratio)
+                        n_train = int(Xp_tr_n.shape[0])
+                        epoch_losses: List[float] = []
 
-                    pca_diag = {
-                        "profile": profile,
-                        "Xp_tr_shape": [int(v) for v in Xp_tr.shape],
-                        "Xf_tr_shape": [int(v) for v in Xf_tr.shape],
-                        "Xp_tr_nonfinite_count_before": int(Xp_tr_before),
-                        "Xp_tr_nonfinite_count_after": int(xp_tr_diag["nonfinite_count_after"]),
-                        "Xp_tr_zero_var_cols": int(xp_tr_diag["zero_var_cols"]),
-                        "pca_method_used": str(pca_p_diag["pca_method_used"]),
-                        "fallback_used": bool(pca_p_diag["fallback_used"]),
-                        "z_past_dim_requested": int(cfg.z_past_dim),
-                        "z_past_dim_used": int(d_p),
-                        "z_pred_dim_requested": int(pred_dim),
-                        "z_pred_dim_used": int(d_f),
-                        "pred_pca_method_used": str(pca_f_diag["pca_method_used"]),
-                        "pred_fallback_used": bool(pca_f_diag["fallback_used"]),
-                        "Xf_tr_nonfinite_count_after": int(xf_tr_diag["nonfinite_count_after"]),
-                    }
+                        past_tr_t = torch.tensor(Xp_tr_n, dtype=torch.float32, device=device)
+                        pred_tr_t = torch.tensor(Xf_tr_n, dtype=torch.float32, device=device)
+                        cluster_tr_t = torch.tensor(Xc_tr, dtype=torch.float32, device=device)
+                        scalar_tr_t = torch.tensor(Xs_tr_n, dtype=torch.float32, device=device)
+                        next_tr_t = torch.tensor(Ynext_tr, dtype=torch.float32, device=device)
+                        ret_tr_t = torch.tensor(Yaux_tr[:, 0], dtype=torch.float32, device=device)
+                        sign_tr_t = torch.tensor(Yaux_tr[:, 1], dtype=torch.float32, device=device)
+                        vol_tr_t = torch.tensor(Yaux_tr[:, 2], dtype=torch.float32, device=device)
+
+                        for _epoch in range(max(1, int(cfg.transformer_epochs))):
+                            perm = torch.randperm(n_train, device=device)
+                            batch_losses: List[float] = []
+                            model.train()
+                            for start in range(0, n_train, batch_size):
+                                idx = perm[start : start + batch_size]
+                                past_batch = past_tr_t[idx]
+                                pred_batch = pred_tr_t[idx]
+                                cluster_batch = cluster_tr_t[idx]
+                                scalar_batch = scalar_tr_t[idx]
+                                next_batch = next_tr_t[idx]
+                                ret_batch = ret_tr_t[idx]
+                                sign_batch = sign_tr_t[idx]
+                                vol_batch = vol_tr_t[idx]
+                                past_mask = (torch.rand_like(past_batch[..., :1]) < mask_ratio).expand_as(past_batch)
+                                pred_mask = (torch.rand_like(pred_batch[..., :1]) < mask_ratio).expand_as(pred_batch)
+                                past_in = past_batch.masked_fill(past_mask, 0.0)
+                                pred_in = pred_batch.masked_fill(pred_mask, 0.0)
+                                out = model(past_in, pred_in, cluster_batch, scalar_batch)
+                                recon_loss = F.mse_loss(out["past_recon"][past_mask], past_batch[past_mask]) if bool(past_mask.any().item()) else torch.tensor(0.0, device=device)
+                                pred_recon_loss = F.mse_loss(out["pred_recon"][pred_mask], pred_batch[pred_mask]) if bool(pred_mask.any().item()) else torch.tensor(0.0, device=device)
+                                next_loss = F.mse_loss(out["next_features"], next_batch)
+                                ret_loss = F.mse_loss(out["future_return"], ret_batch)
+                                sign_loss = F.binary_cross_entropy_with_logits(out["future_sign_logits"], sign_batch)
+                                vol_loss = F.mse_loss(out["future_vol"], vol_batch)
+                                loss = recon_loss + pred_recon_loss + 0.5 * next_loss + 0.25 * ret_loss + 0.1 * sign_loss + 0.25 * vol_loss
+                                optimizer.zero_grad(set_to_none=True)
+                                loss.backward()
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                                optimizer.step()
+                                batch_losses.append(float(loss.detach().cpu().item()))
+                            epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
+
+                        @torch.no_grad()
+                        def _encode_arrays(
+                            past_arr: np.ndarray,
+                            pred_arr: np.ndarray,
+                            cluster_arr: np.ndarray,
+                            scalar_arr: np.ndarray,
+                        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                            model.eval()
+                            out = model(
+                                torch.tensor(past_arr, dtype=torch.float32, device=device),
+                                torch.tensor(pred_arr, dtype=torch.float32, device=device),
+                                torch.tensor(cluster_arr, dtype=torch.float32, device=device),
+                                torch.tensor(scalar_arr, dtype=torch.float32, device=device),
+                            )
+                            return (
+                                out["z_past"].detach().cpu().numpy().astype(float),
+                                out["z_pred"].detach().cpu().numpy().astype(float),
+                                out["z_state"].detach().cpu().numpy().astype(float),
+                            )
+
+                        Zp_tr, Zf_tr, Zs_tr = _encode_arrays(Xp_tr_n, Xf_tr_n, Xc_tr, Xs_tr_n)
+                        Zp_te, Zf_te, Zs_te = _encode_arrays(Xp_te_n, Xf_te_n, Xc_te, Xs_te_n)
+                        d_p = int(Zp_tr.shape[1])
+                        d_f = int(Zf_tr.shape[1])
+                        model_diag = {
+                            "profile": profile,
+                            "encoder_type": "transformer",
+                            "device": device.type,
+                            "past_seq_shape": [int(v) for v in Xp_tr_seq.shape],
+                            "pred_seq_shape": [int(v) for v in Xf_tr_seq.shape],
+                            "cluster_shape": [int(v) for v in Xc_tr.shape],
+                            "scalar_shape": [int(v) for v in Xs_tr.shape],
+                            "masked_reconstruction": "enabled",
+                            "next_step_feature_prediction": "enabled",
+                            "aux_targets": ["future_return", "future_sign", "future_volatility"],
+                            "transformer_epochs": int(cfg.transformer_epochs),
+                            "epoch_losses": epoch_losses,
+                            "z_past_dim_used": d_p,
+                            "z_pred_dim_used": d_f,
+                            "z_state_dim_used": int(Zs_tr.shape[1]),
+                        }
+                        _log_timing(f"profile_{profile}.transformer_fit", t_transformer)
+                        print(f"[STEPDPRIME_XFMR] profile={profile} device={device.type} epochs={cfg.transformer_epochs} z_state_dim={Zs_tr.shape[1]}")
+
                     pca_diag_path = stepd_dir / f"stepDprime_pca_diagnostics_{profile}_{cfg.symbol}.json"
-                    pca_diag_path.write_text(json.dumps(_json_safe(pca_diag), indent=2, ensure_ascii=False), encoding="utf-8")
+                    pca_diag_path.write_text(json.dumps(_json_safe(model_diag), indent=2, ensure_ascii=False), encoding="utf-8")
                     results["pca_diagnostics_files"].append(str(pca_diag_path))
-                    print(f"[STEPDPRIME_PCA] profile={profile} Xp_tr_shape={Xp_tr.shape} Xf_tr_shape={Xf_tr.shape}")
-                    print(f"[STEPDPRIME_PCA] nonfinite_before={Xp_tr_before} zero_var_cols={xp_tr_diag['zero_var_cols']}")
-                    print(f"[STEPDPRIME_PCA] method={pca_p_diag['pca_method_used']} fallback_used={pca_p_diag['fallback_used']}")
-                    print(f"[STEPDPRIME_PCA] z_past_dim_used={d_p} z_pred_dim_used={d_f}")
+                    print(f"[STEPDPRIME_MODEL] profile={profile} encoder_type={encoder_type} z_past_dim_used={d_p} z_pred_dim_used={d_f}")
 
                     t_groupby = time.perf_counter()
                     ref = (
@@ -739,23 +1131,27 @@ class DPrimeRLService:
                         val = pd.to_numeric(pd.Series([ref.at[ts, column]]), errors="coerce").iloc[0]
                         return float(0.0 if pd.isna(val) else val)
 
-                    def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray) -> pd.DataFrame:
-                        out = pd.DataFrame({"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")})
+                    def _to_df(ds: List[pd.Timestamp], zp: np.ndarray, zf: np.ndarray, zs: np.ndarray) -> pd.DataFrame:
+                        payload: Dict[str, Any] = {"Date": pd.to_datetime(ds).strftime("%Y-%m-%d")}
                         for j in range(zp.shape[1]):
-                            out[f"zp_{j:03d}"] = zp[:, j]
+                            payload[f"zp_{j:03d}"] = zp[:, j]
                         for j in range(zf.shape[1]):
-                            out[f"zf_{j:03d}"] = zf[:, j]
-                        out["gap_atr"] = [_scalar(d, "gap_atr", 0.0) for d in pd.to_datetime(ds)]
-                        out["ATR_norm"] = [_scalar(d, "ATR_norm", 0.0) for d in pd.to_datetime(ds)]
-                        out["cluster_id_raw20"] = [int(round(_scalar(d, "cluster_id_raw20", 0.0))) for d in pd.to_datetime(ds)]
-                        out["cluster_id_stable"] = [int(round(_scalar(d, "cluster_id_stable", 0.0))) for d in pd.to_datetime(ds)]
-                        out["rare_flag_raw20"] = [int(round(_scalar(d, "rare_flag_raw20", 0.0))) for d in pd.to_datetime(ds)]
-                        out["pos_prev"] = 0.0
-                        out["action_prev"] = 0.0
-                        out["time_in_trade"] = 0.0
-                        return out
+                            payload[f"zf_{j:03d}"] = zf[:, j]
+                        for j in range(zs.shape[1]):
+                            payload[f"zs_{j:03d}"] = zs[:, j]
+                        payload["gap_atr"] = [_scalar(d, "gap_atr", 0.0) for d in pd.to_datetime(ds)]
+                        payload["ATR_norm"] = [_scalar(d, "ATR_norm", 0.0) for d in pd.to_datetime(ds)]
+                        payload["cluster_id_raw20"] = [int(round(_scalar(d, "cluster_id_raw20", 0.0))) for d in pd.to_datetime(ds)]
+                        payload["cluster_id_stable"] = [int(round(_scalar(d, "cluster_id_stable", 0.0))) for d in pd.to_datetime(ds)]
+                        payload["rare_flag_raw20"] = [int(round(_scalar(d, "rare_flag_raw20", 0.0))) for d in pd.to_datetime(ds)]
+                        for scalar_col in scalar_cols:
+                            payload[scalar_col] = [_scalar(d, scalar_col, 0.0) for d in pd.to_datetime(ds)]
+                        payload["pos_prev"] = 0.0
+                        payload["action_prev"] = 0.0
+                        payload["time_in_trade"] = 0.0
+                        return pd.DataFrame(payload)
 
-                    df_tr, df_te = _to_df(Dtr, Zp_tr, Zf_tr), _to_df(Dte, Zp_te, Zf_te)
+                    df_tr, df_te = _to_df(Dtr, Zp_tr, Zf_tr, Zs_tr), _to_df(Dte, Zp_te, Zf_te, Zs_te)
                     p_tr = stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv"
                     p_te = stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv"
                     s_path = stepd_dir / f"stepDprime_split_summary_{profile}_{cfg.symbol}.csv"
@@ -781,7 +1177,9 @@ class DPrimeRLService:
                         {"key": "train_start", "value": str(tr_s.date())}, {"key": "train_end", "value": str(tr_e.date())},
                         {"key": "test_start", "value": str(te_s.date())}, {"key": "test_end", "value": str(te_e.date())},
                         {"key": "L_past", "value": cfg.l_past}, {"key": "pred_type", "value": pred_type}, {"key": "pred_k", "value": cfg.pred_k},
+                        {"key": "encoder_type", "value": encoder_type},
                         {"key": "z_past_dim", "value": int(d_p)}, {"key": "z_pred_dim", "value": int(d_f)},
+                        {"key": "z_state_dim", "value": int(Zs_tr.shape[1])},
                         {"key": "rows_train_written", "value": int(len(df_tr))}, {"key": "rows_test_written", "value": int(len(df_te))},
                         {"key": "warmup_rows", "value": int(warmup_rows)},
                         {"key": "first_valid_date", "value": "" if pd.isna(first_valid_ts) else str(first_valid_ts.date())},
@@ -797,10 +1195,12 @@ class DPrimeRLService:
                         {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
                         {"key": "dprime_cluster_status", "value": cluster_status},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
-                        {"key": "pca_components_shape", "value": f"past={comp_p.shape},pred={comp_f.shape}"},
+                        {"key": "model_components_shape", "value": json.dumps({"z_past": list(Zp_tr.shape), "z_pred": list(Zf_tr.shape), "z_state": list(Zs_tr.shape)})},
                     ]).to_csv(s_path, index=False)
 
-                    emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
+                    emb_cols = [c for c in df_tr.columns if c.startswith("zs_")]
+                    if not emb_cols:
+                        emb_cols = [c for c in df_tr.columns if c.startswith("zp_") or c.startswith("zf_")]
 
                     def _to_emb_df(df_state: pd.DataFrame) -> pd.DataFrame:
                         out = pd.DataFrame({"Date": pd.to_datetime(df_state["Date"], errors="coerce").dt.strftime("%Y-%m-%d")})
@@ -832,12 +1232,58 @@ class DPrimeRLService:
                     df_emb_all.to_csv(ep_all_named, index=False)
                     _log_timing(f"profile_{profile}.csv_save", t_save)
 
+                    emb_values = df_emb_all[[c for c in df_emb_all.columns if c.startswith("emb_")]].to_numpy(dtype=float) if len(df_emb_all) else np.zeros((0, 0), dtype=float)
+                    nonzero_ratio = float(np.count_nonzero(np.abs(emb_values) > 1e-12) / emb_values.size) if emb_values.size > 0 else 0.0
+                    merge_ratio = float(len(df_emb_all) / expected_base_rows) if expected_base_rows > 0 else 0.0
+                    _update_json_profiles(
+                        meta_path,
+                        profile,
+                        {
+                            "encoder_type": encoder_type,
+                            "family": fam,
+                            "pred_type": pred_type,
+                            "hidden_dim": int(cfg.transformer_d_model) if encoder_type == "transformer" else None,
+                            "num_layers": int(cfg.transformer_num_layers) if encoder_type == "transformer" else None,
+                            "input_blocks": {
+                                "past_context": list(past_cols),
+                                "prediction_context": list(pred_use_cols if pred_type != "3scale" else pred_all_cols),
+                                "cluster_context": ["cluster_id_stable", "cluster_id_raw20", "rare_flag_raw20"],
+                                "scalar_context": list(scalar_cols),
+                            },
+                            "train_range": {"start": str(tr_s.date()), "end": str(tr_e.date())},
+                            "feature_version": str(cfg.feature_version),
+                            "cluster_source_version": str(cfg.cluster_source_version),
+                            "merge_ratio": merge_ratio,
+                            "nonzero_ratio": nonzero_ratio,
+                            "effective_embedding_rows": int(effective_embedding_rows),
+                            "expected_base_rows": int(expected_base_rows),
+                            "diagnostics_path": str(pca_diag_path),
+                        },
+                        root_defaults=meta_root_defaults,
+                    )
+                    _update_json_profiles(
+                        schema_path,
+                        profile,
+                        {
+                            "state_columns": {
+                                "date": ["Date"],
+                                "past_embedding": [c for c in df_tr.columns if c.startswith("zp_")],
+                                "pred_embedding": [c for c in df_tr.columns if c.startswith("zf_")],
+                                "state_embedding": [c for c in df_tr.columns if c.startswith("zs_")],
+                                "cluster_context": ["cluster_id_raw20", "cluster_id_stable", "rare_flag_raw20"],
+                                "scalar_context": list(scalar_cols),
+                                "compatibility": ["gap_atr", "ATR_norm", "pos_prev", "action_prev", "time_in_trade"],
+                            }
+                        },
+                        root_defaults={"symbol": cfg.symbol, "mode": str(cfg.mode), "encoder_type": encoder_type},
+                    )
                     _log_timing(f"profile_{profile}.total", t_profile_total)
 
                     results["profiles"][profile] = {
                         "train": str(p_tr),
                         "test": str(p_te),
                         "summary": str(s_path),
+                        "encoder_type": encoder_type,
                         "warmup_rows": int(warmup_rows),
                         "first_valid_date": "" if pd.isna(first_valid_ts) else str(first_valid_ts.date()),
                         "expected_base_rows": int(expected_base_rows),
@@ -1149,6 +1595,7 @@ class StepDPrimeService:
                 "symbol": cfg.symbol,
                 "mode": str(cfg.mode),
                 "profile": profile,
+                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
                 "family": family,
                 "pred_type": pred_type,
                 "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
@@ -1157,6 +1604,8 @@ class StepDPrimeService:
                 "state_train_path": _normalize_output_path(train_path, output_root=output_root),
                 "state_test_path": _normalize_output_path(test_path, output_root=output_root),
                 "embeddings_all_path": _normalize_output_path(emb_path, output_root=output_root),
+                "embedding_meta_path": _normalize_output_path(stepd_dir / "stepDprime_embedding_meta.json", output_root=output_root),
+                "state_schema_path": _normalize_output_path(stepd_dir / "stepDprime_state_schema.json", output_root=output_root),
                 "warmup_rows": warmup_rows,
                 "first_valid_date": first_valid_date,
                 "expected_base_rows": expected_base_rows,
@@ -1196,6 +1645,7 @@ class StepDPrimeService:
                 "symbol": cfg.symbol,
                 "mode": str(cfg.mode),
                 "profile": profile,
+                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
                 "family": family,
                 "pred_type": pred_type,
                 "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
@@ -1204,6 +1654,8 @@ class StepDPrimeService:
                 "state_train_path": _normalize_output_path(stepd_dir / f"stepDprime_state_train_{profile}_{cfg.symbol}.csv", output_root=output_root),
                 "state_test_path": _normalize_output_path(stepd_dir / f"stepDprime_state_test_{profile}_{cfg.symbol}.csv", output_root=output_root),
                 "embeddings_all_path": _normalize_output_path(stepd_dir / "embeddings" / f"stepDprime_{profile}_{cfg.symbol}_embeddings_all.csv", output_root=output_root),
+                "embedding_meta_path": _normalize_output_path(stepd_dir / "stepDprime_embedding_meta.json", output_root=output_root),
+                "state_schema_path": _normalize_output_path(stepd_dir / "stepDprime_state_schema.json", output_root=output_root),
                 "warmup_rows": _safe_int(split_meta.get("warmup_rows", 0), 0),
                 "first_valid_date": str(split_meta.get("first_valid_date", "") or ""),
                 "expected_base_rows": _safe_int(split_meta.get("expected_base_rows", 0), 0),
@@ -1246,8 +1698,11 @@ class StepDPrimeService:
             out = {
                 "mode": cfg.mode,
                 "symbol": cfg.symbol,
+                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
                 "profiles": profile_results,
                 "output_dir": _normalize_output_path(stepd_dir, output_root=Path(cfg.output_root)),
+                "embedding_meta": _normalize_output_path(stepd_dir / "stepDprime_embedding_meta.json", output_root=Path(cfg.output_root)),
+                "state_schema": _normalize_output_path(stepd_dir / "stepDprime_state_schema.json", output_root=Path(cfg.output_root)),
                 "dprime_cluster": {
                     "status": base.status,
                     "cluster_daily_path": _normalize_output_path(base.cluster_daily_path, output_root=Path(cfg.output_root)),
