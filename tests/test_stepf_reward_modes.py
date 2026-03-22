@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -540,3 +541,27 @@ def test_stepf_resolve_output_root_prefers_effective_root_when_config_is_default
     resolved = svc._resolve_output_root("output")
 
     assert resolved == effective_root.resolve()
+
+
+def test_policy_compare_audit_uses_test_window_only() -> None:
+    svc = StepFService(app_config=SimpleNamespace())
+    merged = pd.DataFrame(
+        [
+            {"Date": "2023-01-01", "Split": "train", "ret_a1": 0.20, "ret_a2": 0.01, "state_x": 1.0},
+            {"Date": "2023-01-02", "Split": "train", "ret_a1": 0.20, "ret_a2": 0.01, "state_x": 1.0},
+            {"Date": "2024-01-01", "Split": "test", "ret_a1": 0.01, "ret_a2": 0.02, "state_x": 1.0},
+            {"Date": "2024-01-02", "Split": "test", "ret_a1": -0.01, "ret_a2": 0.03, "state_x": 1.0},
+        ]
+    )
+    daily = pd.DataFrame(
+        [
+            {"Date": "2024-01-01", "Split": "test", "equity": 1.01, "ratio": 0.5, "selected_expert": "a2", "regime_id": 1, "cluster_id_stable": 1, "reward": 0.01},
+            {"Date": "2024-01-02", "Split": "test", "equity": 1.0302, "ratio": 0.5, "selected_expert": "a2", "regime_id": 1, "cluster_id_stable": 1, "reward": 0.02},
+        ]
+    )
+
+    audit = svc._build_policy_compare_audit(daily=daily, merged=merged, agents=["a1", "a2"])
+
+    assert audit["summary"]["fixed_best_agent"] == "a1"
+    assert audit["summary"]["fixed_best_test_equity_end"] == pytest.approx((1.0 + 0.01) * (1.0 - 0.01))
+    assert audit["summary"]["oracle_test_equity_end"] == pytest.approx((1.0 + 0.02) * (1.0 + 0.03))

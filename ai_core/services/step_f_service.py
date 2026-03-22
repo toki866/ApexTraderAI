@@ -2521,13 +2521,14 @@ class StepFService:
 
     def _build_policy_compare_audit(self, daily: pd.DataFrame, merged: pd.DataFrame, agents: List[str]) -> Dict[str, object]:
         train_df = merged[merged["Split"].astype(str).str.lower() == "train"].copy()
+        test_df = merged[merged["Split"].astype(str).str.lower() == "test"].copy()
         fixed_best = ""
         if not train_df.empty:
             means = {a: float(pd.to_numeric(train_df.get(f"ret_{a}"), errors="coerce").mean()) for a in agents}
             fixed_best = max(means, key=means.get)
         oracle_reward = []
         fixed_reward = []
-        for row in merged.itertuples(index=False):
+        for row in test_df.itertuples(index=False):
             agent_rewards = [float(getattr(row, f"ret_{a}", np.nan)) for a in agents if np.isfinite(float(getattr(row, f"ret_{a}", np.nan)))]
             oracle_reward.append(max(agent_rewards) if agent_rewards else 0.0)
             fixed_reward.append(float(getattr(row, f"ret_{fixed_best}", 0.0) or 0.0) if fixed_best else 0.0)
@@ -2698,9 +2699,9 @@ class StepFService:
         out_df = pd.DataFrame(out)
         if out_df.empty:
             return out_df
-        out_df["ret"] = pd.to_numeric(out_df["reward"], errors="coerce").shift(1).fillna(0.0)
+        out_df["ret"] = pd.to_numeric(out_df["ret_selected"], errors="coerce").fillna(0.0) - pd.to_numeric(out_df["cost"], errors="coerce").fillna(0.0)
         out_df["realized_ret"] = out_df["ret"]
-        out_df["realized_ret_next"] = pd.to_numeric(out_df["reward"], errors="coerce").fillna(0.0)
+        out_df["realized_ret_next"] = out_df["ret"]
         out_df["equity"] = (1.0 + out_df["ret"].astype(float)).cumprod()
         return out_df
 

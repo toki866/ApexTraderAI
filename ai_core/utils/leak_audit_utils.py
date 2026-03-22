@@ -9,6 +9,7 @@ import pandas as pd
 
 
 EQ_TOL = 1e-10
+EQ_ABS_TOL = 1e-12
 
 
 def _require_columns(df: pd.DataFrame, required: list[str]) -> None:
@@ -21,11 +22,16 @@ def _equity_reconstruction_rel_err(eq: np.ndarray, ret: np.ndarray) -> float:
     if eq.size == 0:
         return 0.0
     eq_recon = np.cumprod(1.0 + ret)
-    denom = np.where(np.abs(eq) < 1e-18, np.nan, eq)
-    rel = np.abs(eq_recon / denom - 1.0)
-    if np.isnan(rel).all():
-        return float("inf")
-    return float(np.nanmax(rel))
+    first_recon = float(eq_recon[0]) if eq_recon.size else 1.0
+    first_eq = float(eq[0]) if eq.size else 1.0
+    if abs(first_recon) <= 1e-18:
+        scale = 0.0 if abs(first_eq) <= EQ_ABS_TOL else 1.0
+    else:
+        scale = first_eq / first_recon
+    eq_recon = eq_recon * scale
+    denom = np.maximum(np.maximum(np.abs(eq), np.abs(eq_recon)), EQ_ABS_TOL)
+    rel = np.abs(eq_recon - eq) / denom
+    return float(np.nanmax(rel)) if np.isfinite(rel).any() else 0.0
 
 
 def audit_stepE_reward_alignment(df: pd.DataFrame, split: str = "test", tol: float = 1e-12) -> Dict[str, Any]:
