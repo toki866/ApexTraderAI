@@ -2616,126 +2616,45 @@ jobs:
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           WSL_DISTRO: Ubuntu
         run: |
-          $ErrorActionPreference = 'Continue'
+          $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] finalize'
+          Add-Content -Path $rp -Value '[STEP] finalize'
 
-          $finalizeEffectiveRc = 0
-          $zipExportResult = $null
-          $zipExportStatus = 'not_started'
-          $zipExportWarning = ''
-          $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-
-          try {
-            if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
-            if (-not $outRoot) { throw 'finalize output root is empty' }
-            if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
-
-            @("run_id=$env:APEX_RUN_ID",
-              "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
-              "commit=$env:GITHUB_SHA",
-              "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8 -ErrorAction Stop
-            Write-Host "[OK] DONE.txt written to $outRoot"
-            Write-Host "[OK] run_id=$env:APEX_RUN_ID"
-            Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
-            Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-
-            $strictRequired = @(
-              (Join-Path $outRoot 'run_manifest.json'),
-              (Join-Path $outRoot 'reuse_signature.json'),
-              (Join-Path $outRoot 'timings.csv')
-            )
-            $missingStrict = @($strictRequired | Where-Object { -not (Test-Path $_) })
-            if ($missingStrict.Count -gt 0) {
-              Add-Content $rp ("[NG] strict_required_missing={0}" -f ($missingStrict -join ','))
-              throw "Missing strict required artifacts: $($missingStrict -join ',')"
-            }
-
-            $outputRootName = if ($env:OUTPUT_ROOT_NAME) { $env:OUTPUT_ROOT_NAME } else { Split-Path -Leaf $outRoot }
-            $outputRootSource = if ($env:OUTPUT_ROOT_SOURCE) { $env:OUTPUT_ROOT_SOURCE } else { 'env_effective_win_output' }
-            $namingDate = $env:OUTPUT_ROOT_NAMING_DATE
-            $namingSeq = $env:OUTPUT_ROOT_NAMING_SEQ
-            $copyEffective = if ($env:COPY_TO_ONEDRIVE -eq '1') { '1' } else { '0' }
-
-            foreach ($line in @(
-              "[OUTPUT_ROOT] local_output_root=$outRoot",
-              "[OUTPUT_ROOT] output_root_name=$outputRootName",
-              "[OUTPUT_ROOT] output_root_source=$outputRootSource",
-              "[OUTPUT_ROOT] reuse_match_found=$env:REUSE_MATCH_FOUND",
-              "[OUTPUT_ROOT] copy_to_onedrive_effective=$copyEffective"
-            )) {
-              Write-Host $line
-              Add-Content $rp $line
-            }
-            if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate"; Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
-            if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq"; Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
-
-            $zipExportScript = Join-Path $env:REPO_ROOT 'scripts\export_output_zip_to_onedrive.ps1'
-            if (-not (Test-Path $zipExportScript)) {
-              throw "export_output_zip_to_onedrive script missing: $zipExportScript"
-            }
-            $zipExportArgs = @(
-              '-OutputRoot', $outRoot,
-              '-CopyToOneDrive', $copyEffective,
-              '-OutputRootSource', $outputRootSource,
-              '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
-              '-Mode', $env:MODE,
-              '-Symbols', '${{ inputs.symbols }}',
-              '-TestStartDate', '${{ inputs.test_start_date }}',
-              '-TrainYears', '${{ inputs.train_years }}',
-              '-TestMonths', '${{ inputs.test_months }}',
-              '-EmitJson'
-            )
-            $zipExportResult = (& powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs | Select-Object -Last 1 | ConvertFrom-Json)
-            $zipExportStatus = "$($zipExportResult.export_result)"
-            $zipExportWarning = "$($zipExportResult.export_warning)"
-
-            "OUTPUT_ZIP_PATH=$($zipExportResult.output_zip_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            foreach ($line in @(
-              "[ZIP_EXPORT] zip_source_output_root=$outRoot",
-              "[ZIP_EXPORT] onedrive_zip_path=$($zipExportResult.output_zip_path)",
-              "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
-              "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
-              "[ZIP_EXPORT] result=$zipExportStatus"
-            )) {
-              Write-Host $line
-              Add-Content $rp $line
-            }
-            if ($zipExportWarning) {
-              Write-Warning "[ZIP_EXPORT] warning=$zipExportWarning"
-              Add-Content $rp "[ZIP_EXPORT] warning=$zipExportWarning"
-            }
-
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
-              "- output_root ($env:MODE): `$outRoot`",
-              "- output_root_name ($env:MODE): `$outputRootName`",
-              "- output_root_source ($env:MODE): `$outputRootSource`",
-              "- onedrive_output_zip_path ($env:MODE): `$($zipExportResult.output_zip_path)`",
-              "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
-              "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
-            )
-
-            Add-Content $rp "[OK] finalize output_root=$outRoot"
-          }
-          catch {
-            $finalizeEffectiveRc = 1
-            if ($zipExportStatus -eq 'not_started') { $zipExportStatus = 'fail' }
-            Write-Error "finalize failed: $_"
-            Add-Content $rp ("[NG] finalize exception={0}" -f $_)
+          $finalizeScript = Join-Path $env:REPO_ROOT 'scripts\finalize_output_export.ps1'
+          if (-not (Test-Path -LiteralPath $finalizeScript)) {
+            throw "finalize_output_export script missing: $finalizeScript"
           }
 
-          $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
-          Write-Host "[FINALIZE] zip_export_result=$zipExportStatus"
-          if ($zipExportWarning) { Write-Host "[FINALIZE] zip_export_warning=$zipExportWarning" }
-          Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
-          Add-Content $rp "[FINALIZE] zip_export_result=$zipExportStatus"
-          if ($zipExportWarning) { Add-Content $rp "[FINALIZE] zip_export_warning=$zipExportWarning" }
-          Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
+          $outRoot = if ($env:EFFECTIVE_WIN_OUTPUT) { $env:EFFECTIVE_WIN_OUTPUT } else { $env:WIN_OUTPUT_DIR }
+          if (-not $outRoot) {
+            throw 'finalize output root is empty'
+          }
 
-          exit $finalizeEffectiveRc
+          $finalizeArgs = @(
+            '-OutputRoot', $outRoot,
+            '-ReportPath', $rp,
+            '-CopyToOneDrive', $env:COPY_TO_ONEDRIVE,
+            '-OutputRootName', $env:OUTPUT_ROOT_NAME,
+            '-OutputRootSource', $env:OUTPUT_ROOT_SOURCE,
+            '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
+            '-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE,
+            '-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ,
+            '-Mode', $env:MODE,
+            '-Symbols', '${{ inputs.symbols }}',
+            '-TestStartDate', '${{ inputs.test_start_date }}',
+            '-TrainYears', '${{ inputs.train_years }}',
+            '-TestMonths', '${{ inputs.test_months }}',
+            '-EmitJson'
+          )
+          $finalizeJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $finalizeScript @finalizeArgs | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $finalizeResult = $finalizeJson | ConvertFrom-Json
+          "OUTPUT_ZIP_PATH=$($finalizeResult.output_zip_path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ZIP_SIZE_BYTES=$($finalizeResult.zip_size_bytes)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ONEDRIVE_DESTINATION_DIR=$($finalizeResult.onedrive_destination_dir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Stage console log in workspace
         if: always()
@@ -7219,126 +7138,45 @@ jobs:
           COPY_TO_ONEDRIVE: ${{ inputs.copy_to_onedrive && '1' || '0' }}
           WSL_DISTRO: Ubuntu
         run: |
-          $ErrorActionPreference = 'Continue'
+          $ErrorActionPreference = 'Stop'
           $rp = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
-          Add-Content $rp '[STEP] finalize'
+          Add-Content -Path $rp -Value '[STEP] finalize'
 
-          $finalizeEffectiveRc = 0
-          $zipExportResult = $null
-          $zipExportStatus = 'not_started'
-          $zipExportWarning = ''
-          $outRoot = $env:EFFECTIVE_WIN_OUTPUT
-
-          try {
-            if (-not $outRoot) { $outRoot = $env:WIN_OUTPUT_DIR }
-            if (-not $outRoot) { throw 'finalize output root is empty' }
-            if (-not (Test-Path $outRoot)) { New-Item -Path $outRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
-
-            @("run_id=$env:APEX_RUN_ID",
-              "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
-              "commit=$env:GITHUB_SHA",
-              "mode=$env:MODE") | Set-Content (Join-Path $outRoot 'DONE.txt') -Encoding UTF8 -ErrorAction Stop
-            Write-Host "[OK] DONE.txt written to $outRoot"
-            Write-Host "[OK] run_id=$env:APEX_RUN_ID"
-            Add-Content $rp ("[TIMING] events_path={0}" -f (Join-Path $outRoot (Join-Path "timing" (Join-Path $env:MODE "timing_events.jsonl"))))
-            Add-Content $rp ("[TIMING] csv_path={0}" -f (Join-Path $outRoot "timings.csv"))
-
-            $strictRequired = @(
-              (Join-Path $outRoot 'run_manifest.json'),
-              (Join-Path $outRoot 'reuse_signature.json'),
-              (Join-Path $outRoot 'timings.csv')
-            )
-            $missingStrict = @($strictRequired | Where-Object { -not (Test-Path $_) })
-            if ($missingStrict.Count -gt 0) {
-              Add-Content $rp ("[NG] strict_required_missing={0}" -f ($missingStrict -join ','))
-              throw "Missing strict required artifacts: $($missingStrict -join ',')"
-            }
-
-            $outputRootName = if ($env:OUTPUT_ROOT_NAME) { $env:OUTPUT_ROOT_NAME } else { Split-Path -Leaf $outRoot }
-            $outputRootSource = if ($env:OUTPUT_ROOT_SOURCE) { $env:OUTPUT_ROOT_SOURCE } else { 'env_effective_win_output' }
-            $namingDate = $env:OUTPUT_ROOT_NAMING_DATE
-            $namingSeq = $env:OUTPUT_ROOT_NAMING_SEQ
-            $copyEffective = if ($env:COPY_TO_ONEDRIVE -eq '1') { '1' } else { '0' }
-
-            foreach ($line in @(
-              "[OUTPUT_ROOT] local_output_root=$outRoot",
-              "[OUTPUT_ROOT] output_root_name=$outputRootName",
-              "[OUTPUT_ROOT] output_root_source=$outputRootSource",
-              "[OUTPUT_ROOT] reuse_match_found=$env:REUSE_MATCH_FOUND",
-              "[OUTPUT_ROOT] copy_to_onedrive_effective=$copyEffective"
-            )) {
-              Write-Host $line
-              Add-Content $rp $line
-            }
-            if ($namingDate) { Write-Host "[OUTPUT_ROOT] naming_date=$namingDate"; Add-Content $rp "[OUTPUT_ROOT] naming_date=$namingDate" }
-            if ($namingSeq) { Write-Host "[OUTPUT_ROOT] naming_seq=$namingSeq"; Add-Content $rp "[OUTPUT_ROOT] naming_seq=$namingSeq" }
-
-            $zipExportScript = Join-Path $env:REPO_ROOT 'scripts\export_output_zip_to_onedrive.ps1'
-            if (-not (Test-Path $zipExportScript)) {
-              throw "export_output_zip_to_onedrive script missing: $zipExportScript"
-            }
-            $zipExportArgs = @(
-              '-OutputRoot', $outRoot,
-              '-CopyToOneDrive', $copyEffective,
-              '-OutputRootSource', $outputRootSource,
-              '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
-              '-Mode', $env:MODE,
-              '-Symbols', '${{ inputs.symbols }}',
-              '-TestStartDate', '${{ inputs.test_start_date }}',
-              '-TrainYears', '${{ inputs.train_years }}',
-              '-TestMonths', '${{ inputs.test_months }}',
-              '-EmitJson'
-            )
-            $zipExportResult = (& powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs | Select-Object -Last 1 | ConvertFrom-Json)
-            $zipExportStatus = "$($zipExportResult.export_result)"
-            $zipExportWarning = "$($zipExportResult.export_warning)"
-
-            "OUTPUT_ZIP_PATH=$($zipExportResult.output_zip_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-            "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-            foreach ($line in @(
-              "[ZIP_EXPORT] zip_source_output_root=$outRoot",
-              "[ZIP_EXPORT] onedrive_zip_path=$($zipExportResult.output_zip_path)",
-              "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
-              "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
-              "[ZIP_EXPORT] result=$zipExportStatus"
-            )) {
-              Write-Host $line
-              Add-Content $rp $line
-            }
-            if ($zipExportWarning) {
-              Write-Warning "[ZIP_EXPORT] warning=$zipExportWarning"
-              Add-Content $rp "[ZIP_EXPORT] warning=$zipExportWarning"
-            }
-
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
-              "- output_root ($env:MODE): `$outRoot`",
-              "- output_root_name ($env:MODE): `$outputRootName`",
-              "- output_root_source ($env:MODE): `$outputRootSource`",
-              "- onedrive_output_zip_path ($env:MODE): `$($zipExportResult.output_zip_path)`",
-              "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
-              "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
-            )
-
-            Add-Content $rp "[OK] finalize output_root=$outRoot"
-          }
-          catch {
-            $finalizeEffectiveRc = 1
-            if ($zipExportStatus -eq 'not_started') { $zipExportStatus = 'fail' }
-            Write-Error "finalize failed: $_"
-            Add-Content $rp ("[NG] finalize exception={0}" -f $_)
+          $finalizeScript = Join-Path $env:REPO_ROOT 'scripts\finalize_output_export.ps1'
+          if (-not (Test-Path -LiteralPath $finalizeScript)) {
+            throw "finalize_output_export script missing: $finalizeScript"
           }
 
-          $finalizeStepResult = if ($finalizeEffectiveRc -eq 0) { 'success' } else { 'fail' }
-          Write-Host "[FINALIZE] zip_export_result=$zipExportStatus"
-          if ($zipExportWarning) { Write-Host "[FINALIZE] zip_export_warning=$zipExportWarning" }
-          Write-Host "[FINALIZE] finalize_step_result=$finalizeStepResult"
-          Add-Content $rp "[FINALIZE] zip_export_result=$zipExportStatus"
-          if ($zipExportWarning) { Add-Content $rp "[FINALIZE] zip_export_warning=$zipExportWarning" }
-          Add-Content $rp "[FINALIZE] finalize_step_result=$finalizeStepResult"
+          $outRoot = if ($env:EFFECTIVE_WIN_OUTPUT) { $env:EFFECTIVE_WIN_OUTPUT } else { $env:WIN_OUTPUT_DIR }
+          if (-not $outRoot) {
+            throw 'finalize output root is empty'
+          }
 
-          exit $finalizeEffectiveRc
+          $finalizeArgs = @(
+            '-OutputRoot', $outRoot,
+            '-ReportPath', $rp,
+            '-CopyToOneDrive', $env:COPY_TO_ONEDRIVE,
+            '-OutputRootName', $env:OUTPUT_ROOT_NAME,
+            '-OutputRootSource', $env:OUTPUT_ROOT_SOURCE,
+            '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
+            '-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE,
+            '-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ,
+            '-Mode', $env:MODE,
+            '-Symbols', '${{ inputs.symbols }}',
+            '-TestStartDate', '${{ inputs.test_start_date }}',
+            '-TrainYears', '${{ inputs.train_years }}',
+            '-TestMonths', '${{ inputs.test_months }}',
+            '-EmitJson'
+          )
+          $finalizeJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $finalizeScript @finalizeArgs | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $finalizeResult = $finalizeJson | ConvertFrom-Json
+          "OUTPUT_ZIP_PATH=$($finalizeResult.output_zip_path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTPUT_ZIP_SIZE_BYTES=$($finalizeResult.zip_size_bytes)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ONEDRIVE_DESTINATION_DIR=$($finalizeResult.onedrive_destination_dir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Stage console log in workspace
         if: always()
