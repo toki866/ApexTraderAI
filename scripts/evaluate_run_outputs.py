@@ -23,6 +23,8 @@ import importlib.util
 import numpy as np
 import pandas as pd
 
+from ai_core.utils.cluster_eval import run_cluster_evaluation
+
 _MPL_SPEC = importlib.util.find_spec("matplotlib")
 MPL_AVAILABLE = _MPL_SPEC is not None
 if MPL_AVAILABLE:
@@ -1499,6 +1501,12 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     except Exception as exc:
         report["stepF_compare"] = {"status": "WARN", "summary": "compare skipped", "reason": f"exception: {exc}"}
 
+    # Cluster evaluation subsystem
+    try:
+        report["cluster_eval"] = run_cluster_evaluation(output_root=output_root, mode=mode, symbol=symbol)
+    except Exception as exc:
+        report["cluster_eval"] = {"status": "WARN", "summary": "cluster evaluation skipped", "reason": f"exception: {exc}"}
+
     statuses = [
         report["stepA"]["status"],
         report["stepB"]["status"],
@@ -1642,6 +1650,17 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     cl = stepf_cmp.get("cluster", {}) if isinstance(stepf_cmp.get("cluster", {}), dict) else {}
     lines.append(f"- cluster_status: {cl.get('status', 'PENDING')} ({cl.get('reason', 'cluster comparison pending')})")
+
+    cluster_eval = report.get("cluster_eval", {}) if isinstance(report.get("cluster_eval", {}), dict) else {}
+    lines.extend([
+        "",
+        "## ClusterEval",
+        f"- status: **{cluster_eval.get('status', 'SKIP')}**",
+        f"- summary: {cluster_eval.get('summary', cluster_eval.get('reason', 'NA'))}",
+        f"- out_dir: {_fmt(cluster_eval.get('out_dir'))}",
+        f"- stable_top_clusters: {_fmt(cluster_eval.get('stable_top_clusters'))}",
+        f"- raw20_top_clusters: {_fmt(cluster_eval.get('raw20_top_clusters'))}",
+    ])
 
     div = report.get("diversity", {})
     lines.extend([
@@ -1787,6 +1806,13 @@ def render_summary(report: dict[str, Any]) -> str:
         lines.append(
             f"    {r.get('name')} equity_multiple={_fmt(r.get('equity_multiple'))} regret_vs_fixed_best={_fmt(r.get('regret_vs_fixed_best'))} pick_match_rate_vs_oracle={_fmt(r.get('pick_match_rate_vs_oracle'))}"
         )
+
+    cluster_eval = report.get("cluster_eval", {}) if isinstance(report.get("cluster_eval", {}), dict) else {}
+    lines.append("ClusterEval:")
+    lines.append(f"  status={cluster_eval.get('status', 'SKIP')} summary={cluster_eval.get('summary', cluster_eval.get('reason', 'NA'))}")
+    lines.append(f"  out_dir={_fmt(cluster_eval.get('out_dir'))}")
+    lines.append(f"  stable_top_clusters={_fmt(cluster_eval.get('stable_top_clusters'))}")
+    lines.append(f"  raw20_top_clusters={_fmt(cluster_eval.get('raw20_top_clusters'))}")
 
     div = report.get("diversity", {})
     lines.append("Diversity:")
