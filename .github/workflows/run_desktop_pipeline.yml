@@ -2531,7 +2531,31 @@ jobs:
             $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootForPackage -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                $env:MODE
+                '-Symbol'
+                $primarySymbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRootForPackage)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRootForPackage
+                )
+              }
+              $resolveArgs += @(
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRootForPackage = "$($resolvedOutput.path)"
               }
@@ -2911,7 +2935,33 @@ jobs:
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
               if (Test-Path $resolveScript) {
-                $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootFromLog -RunDir $runDir.FullName -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+                $resolveArgs = @(
+                  '-NoProfile'
+                  '-ExecutionPolicy'
+                  'Bypass'
+                  '-File'
+                  $resolveScript
+                  '-Mode'
+                  $env:MODE
+                  '-Symbol'
+                  $primarySymbol
+                  '-TestStartDate'
+                  '${{ inputs.test_start_date }}'
+                  '-CanonicalOutputRoot'
+                  $env:CANONICAL_OUTPUT_ROOT
+                )
+                if (-not [string]::IsNullOrWhiteSpace($outputRootFromLog)) {
+                  $resolveArgs += @(
+                    '-PreferredOutputRoot'
+                    $outputRootFromLog
+                  )
+                }
+                $resolveArgs += @(
+                  '-RunDir'
+                  $runDir.FullName
+                  '-EmitJson'
+                )
+                $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
                 if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                   $outputRoot = "$($resolvedOutput.path)"
                   Write-Host "Resolved output_root from helper ($($resolvedOutput.source)): $outputRoot"
@@ -3122,7 +3172,31 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
           $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
           if (Test-Path $resolveScript) {
-            $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $env:EFFECTIVE_WIN_OUTPUT -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+            $resolveArgs = @(
+              '-NoProfile'
+              '-ExecutionPolicy'
+              'Bypass'
+              '-File'
+              $resolveScript
+              '-Mode'
+              '${{ env.MODE }}'
+              '-Symbol'
+              $symbol
+              '-TestStartDate'
+              '${{ inputs.test_start_date }}'
+              '-CanonicalOutputRoot'
+              $env:CANONICAL_OUTPUT_ROOT
+            )
+            if (-not [string]::IsNullOrWhiteSpace($env:EFFECTIVE_WIN_OUTPUT)) {
+              $resolveArgs += @(
+                '-PreferredOutputRoot'
+                $env:EFFECTIVE_WIN_OUTPUT
+              )
+            }
+            $resolveArgs += @(
+              '-EmitJson'
+            )
+            $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
             if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
               $outputRoot = "$($resolvedOutput.path)"
             }
@@ -3169,7 +3243,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
@@ -3218,7 +3318,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
@@ -3261,7 +3387,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
@@ -6968,7 +7120,33 @@ jobs:
               $primarySymbol = (('${{ inputs.symbols }}' -split ',')[0].Trim()).ToUpperInvariant()
               $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
               if (Test-Path $resolveScript) {
-                $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode $env:MODE -Symbol $primarySymbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRootFromLog -RunDir $runDir.FullName -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+                $resolveArgs = @(
+                  '-NoProfile'
+                  '-ExecutionPolicy'
+                  'Bypass'
+                  '-File'
+                  $resolveScript
+                  '-Mode'
+                  $env:MODE
+                  '-Symbol'
+                  $primarySymbol
+                  '-TestStartDate'
+                  '${{ inputs.test_start_date }}'
+                  '-CanonicalOutputRoot'
+                  $env:CANONICAL_OUTPUT_ROOT
+                )
+                if (-not [string]::IsNullOrWhiteSpace($outputRootFromLog)) {
+                  $resolveArgs += @(
+                    '-PreferredOutputRoot'
+                    $outputRootFromLog
+                  )
+                }
+                $resolveArgs += @(
+                  '-RunDir'
+                  $runDir.FullName
+                  '-EmitJson'
+                )
+                $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
                 if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                   $outputRoot = "$($resolvedOutput.path)"
                   Write-Host "Resolved output_root from helper ($($resolvedOutput.source)): $outputRoot"
@@ -7201,7 +7379,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
@@ -7250,7 +7454,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
@@ -7293,7 +7523,33 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = 'SOXL' }
             $resolveScript = Join-Path $env:REPO_ROOT 'scripts\resolve_output_dir.ps1'
             if (Test-Path $resolveScript) {
-              $resolvedOutput = (& powershell -NoProfile -ExecutionPolicy Bypass -File $resolveScript -Mode '${{ env.MODE }}' -Symbol $symbol -TestStartDate '${{ inputs.test_start_date }}' -CanonicalOutputRoot $env:CANONICAL_OUTPUT_ROOT -PreferredOutputRoot $outputRoot -RunDir $runDir -EmitJson | Select-Object -Last 1 | ConvertFrom-Json)
+              $resolveArgs = @(
+                '-NoProfile'
+                '-ExecutionPolicy'
+                'Bypass'
+                '-File'
+                $resolveScript
+                '-Mode'
+                '${{ env.MODE }}'
+                '-Symbol'
+                $symbol
+                '-TestStartDate'
+                '${{ inputs.test_start_date }}'
+                '-CanonicalOutputRoot'
+                $env:CANONICAL_OUTPUT_ROOT
+              )
+              if (-not [string]::IsNullOrWhiteSpace($outputRoot)) {
+                $resolveArgs += @(
+                  '-PreferredOutputRoot'
+                  $outputRoot
+                )
+              }
+              $resolveArgs += @(
+                '-RunDir'
+                $runDir
+                '-EmitJson'
+              )
+              $resolvedOutput = (& powershell @resolveArgs | Select-Object -Last 1 | ConvertFrom-Json)
               if ($resolvedOutput.path -and (Test-Path $resolvedOutput.path)) {
                 $outputRoot = "$($resolvedOutput.path)"
               }
