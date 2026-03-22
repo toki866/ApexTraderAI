@@ -1,9 +1,0 @@
-﻿job.status=failure
-
-=== tail: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\run_all_local_then_copy_console.log ===
-
-=== tail: C:\work\apex_work\runs\gh22519795433_att1_sim_20260228_202455_a7660ff\logs\run_gh22519795433_att1_sim_20260228_202455_a7660ff.log ===
-
-=== tail: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_out\workflow_console.log ===
-
-=== tail: C:\Users\becky\OneDrive\デスクトップ\Python\apex-trader-ai\actions-runner\_work\_temp\diag_out\workflow_tail.txt ===
