@@ -147,12 +147,14 @@ $runInfo = [ordered]@{
   test_start_date = $TestStartDate
   train_years = $TrainYears
   test_months = $TestMonths
+  local_canonical_output_path = $resolvedOutputRoot
   output_root = $resolvedOutputRoot
   output_root_name = $outputRootName
   output_root_source = $OutputRootSource
   reuse_match_found = $ReuseMatchFound
   onedrive_export_requested = $exportRequested
   onedrive_export_destination_dir = $oneDriveDestinationDir
+  onedrive_export_name = $outputZipName
   onedrive_zip_name = $outputZipName
   onedrive_zip_path = $outputZipPath
   onedrive_zip_local_date = $localDateStamp
@@ -172,7 +174,9 @@ $runInfo = [ordered]@{
 }
 
 $exportAudit = [ordered]@{
+  local_canonical_output_path = $resolvedOutputRoot
   source_canonical_output_path = $resolvedOutputRoot
+  onedrive_export_name = $outputZipName
   destination_onedrive_output_path = $outputZipPath
   destination_onedrive_zip_path = $outputZipPath
   export_date = $exportDate
@@ -187,8 +191,10 @@ Write-JsonFile -Path $latestRunInfoPath -Value $runInfo
 Write-JsonFile -Path $exportAuditPath -Value $exportAudit
 
 $result = [ordered]@{
+  local_canonical_output_path = $resolvedOutputRoot
   output_zip_path = $outputZipPath
   output_zip_name = $outputZipName
+  onedrive_export_name = $outputZipName
   zip_size_bytes = $zipSizeBytes
   onedrive_destination_dir = $oneDriveDestinationDir
   export_requested = $exportRequested
