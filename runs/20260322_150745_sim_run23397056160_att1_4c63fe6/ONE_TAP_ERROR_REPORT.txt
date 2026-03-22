@@ -1,0 +1,81 @@
+﻿=== ONE TAP ERROR REPORT ===
+timestamp=2026-03-22 15:07:24 +09:00
+repo=toki866/ApexTraderAI
+ref=refs/heads/main
+sha=4c63fe68d950c516de2399eb448cc73237ede153
+run_id=23397056160
+run_attempt=1
+
+[STEP] initialize_one_tap_report
+[OK] report initialized
+[PATH] C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\ONE_TAP_ERROR_REPORT.txt
+[INFO] prep_repo_outcome=skipped
+[INFO] REPO_ROOT=C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI
+
+[INFO] HEAD=(unavailable: You cannot call a method on a null-valued expression.)
+
+## GPU_DIAGNOSTICS
+torch (unavailable)
+cuda_available False
+gpu CPU
+timestamp, utilization.gpu [%], utilization.memory [%], memory.used [MiB]
+2026/03/22 15:07:25.845, 1 %, 13 %, 1970 MiB
+
+
+[STEP] append_error_tails
+timestamp=2026-03-22 15:07:26 +09:00
+[INFO] apex_run_id=
+---- python_env ----
+C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe
+The expression after '&' in a pipeline element produced an object that was not valid. It must result in a command name,
+ a script block, or a CommandInfo object.
+At C:\work\actions-runner\_work\_temp\93adf955-a7bd-4856-805b-58de0fa776ec.ps1:18 char:10
++ try { (& $env:WINDOWS_PYTHON_EXE --version 2>&1) | Add-Content $repor ...
++          ~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:String) [], RuntimeException
+    + FullyQualifiedErrorId : BadExpression
+ 
+
+The expression after '&' in a pipeline element produced an object that was not valid. It must result in a command name,
+ a script block, or a CommandInfo object.
+At C:\work\actions-runner\_work\_temp\93adf955-a7bd-4856-805b-58de0fa776ec.ps1:19 char:10
++ try { (& $env:WINDOWS_PYTHON_EXE -c "import sys; print(sys.executable ...
++          ~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:String) [], RuntimeException
+    + FullyQualifiedErrorId : BadExpression
+ 
+
+[INFO] console_log=C:\work\actions-runner\_work\_temp\run_all_local_then_copy_console.log
+[WARN] console log not found
+[INFO] work_root=C:\work\apex_work\runs
+[INFO] session_log_root=C:\work\apex_work\session_logs
+[INFO] latest_run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[WARN] run_*.log not found in RUN_LOG_PATH/session_logs/runs fallback
+[STEP] package_diagnostics_to_onedrive
+[INFO] diag_script=C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[PUBLISH] output_root=
+[NG] package_diagnostics_to_onedrive
+[NG] diagnostics script not found
+
+[STEP] resolve_latest_run_artifacts
+[INFO] work_root=C:\work\apex_work\runs
+[OK] resolve_latest_run_artifacts
+[OK] run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[OK] run_id=gh23354558894_att1_sim_20260321_103819_1c7bc29
+
+
+[CSV_REPORT]
+- diag_report_index=https://github.com/toki866/ApexTraderAI/blob/diag-logs/reports/23397056160_1/sim/index.md
+- diag_report_path=reports/23397056160_1/sim/index.md
+- metrics_md=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.md
+- metrics_csv=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.csv
+- metrics_plots=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/plots
+
+## publish_diag_logs warnings
+[WARN] publish issue: output_root not found: C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29\output
+[WARN] publish issue: StepA files missing in diag publish output.
+[WARN] publish issue: StepB files missing in diag publish output.
+[WARN] publish issue: StepDPrime files missing in diag publish output.
+[WARN] publish issue: StepE files missing in diag publish output.
+[WARN] publish issue: StepF files missing in diag publish output.
