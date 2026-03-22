@@ -2,42 +2,35 @@
 setlocal EnableExtensions
 
 if "%~1"=="" (
-  echo Usage: %~nx0 ^<local_run_dir^>
-  echo Example: %~nx0 C:\work\apex_work\runs\20260115_073000
+  echo Usage: %~nx0 ^<canonical_output_dir_or_run_dir^>
+  echo Example: %~nx0 C:\work\apex_work\output\sim\SOXL\2022-01-03_20260322_001
   exit /b 2
 )
 
-set "RUN_DIR=%~1"
-if not exist "%RUN_DIR%" (
-  echo [ERROR] run dir not found: %RUN_DIR%
+set "INPUT_PATH=%~1"
+if not exist "%INPUT_PATH%" (
+  echo [ERROR] path not found: %INPUT_PATH%
   exit /b 3
 )
 
-for %%I in ("%RUN_DIR%") do set "RUN_ID=%%~nxI"
-
-if defined ONE_DRIVE_RUNS_ROOT (
-  set "DEST=%ONE_DRIVE_RUNS_ROOT%\%RUN_ID%"
-) else if defined OneDrive (
-  set "DEST=%OneDrive%\ApexTraderAI\runs\%RUN_ID%"
+set "OUTPUT_ROOT="
+if exist "%INPUT_PATH%\run_manifest.json" (
+  set "OUTPUT_ROOT=%INPUT_PATH%"
+) else if exist "%INPUT_PATH%\output\run_manifest.json" (
+  set "OUTPUT_ROOT=%INPUT_PATH%\output"
+) else if exist "%INPUT_PATH%\output" (
+  set "OUTPUT_ROOT=%INPUT_PATH%\output"
 ) else (
-  echo [ERROR] OneDrive path is not set. Define OneDrive or ONE_DRIVE_RUNS_ROOT.
-  exit /b 4
+  set "OUTPUT_ROOT=%INPUT_PATH%"
 )
 
-mkdir "%DEST%" >nul 2>&1
-robocopy "%RUN_DIR%\output" "%DEST%\output" /E /Z /R:2 /W:2
-set "RC=%ERRORLEVEL%"
-if %RC% GEQ 8 exit /b %RC%
-
-robocopy "%RUN_DIR%\logs" "%DEST%\logs" /E /Z /R:2 /W:2
-set "RC=%ERRORLEVEL%"
-if %RC% GEQ 8 exit /b %RC%
-
-if exist "%RUN_DIR%\run_%RUN_ID%.zip" (
-  robocopy "%RUN_DIR%" "%DEST%" "run_%RUN_ID%.zip" /R:2 /W:2
-  set "RC=%ERRORLEVEL%"
-  if %RC% GEQ 8 exit /b %RC%
+if not defined APEX_RUN_ID (
+  for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "APEX_RUN_ID=%%i"
 )
 
-echo [OK] copied run %RUN_ID% to %DEST%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0export_output_zip_to_onedrive.ps1" -OutputRoot "%OUTPUT_ROOT%" -CopyToOneDrive 1 -OutputRootSource manual_copy_run_to_onedrive -EmitJson
+set "RC=%ERRORLEVEL%"
+if %RC% GEQ 1 exit /b %RC%
+
+echo [OK] exported canonical output zip from %OUTPUT_ROOT%
 exit /b 0

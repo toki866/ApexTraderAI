@@ -3,11 +3,11 @@
 ## 追加されたスクリプト
 
 - `scripts\run_all_local_then_copy.bat`
-  - メイン実行。`run_id` 付きのローカル作業ディレクトリに `data/output/logs` を作成し、StepA〜F 完了後に OneDrive へまとめてコピーします。
+  - メイン実行。`run_id` 付きのローカル作業ディレクトリに `data/logs` を作成し、canonical output へ直接出力した後、必要時のみ OneDrive 向け ZIP を作成します。
 - `scripts\doctor.bat`
   - 実行前診断。`git hash`、`python --version`、`torch/cuda`、`data\prices_*.csv` の存在と更新日時をログ化します。
 - `scripts\copy_run_to_onedrive.bat`
-  - ローカルの既存 run フォルダを OneDrive に再コピーします。
+  - canonical output または既存 run フォルダを入力に取り、canonical output 由来の ZIP だけを OneDrive に再エクスポートします。
 - `scripts\bat_config.bat`
   - `SYMBOLS/日付範囲/WORK_ROOT` などの既定値を集約しています。
 
@@ -29,18 +29,18 @@ scripts\run_all_local_then_copy.bat
 既定では以下に出力されます。
 
 - `C:\work\apex_work\runs\<run_id>\data`
-- `C:\work\apex_work\runs\<run_id>\output`
 - `C:\work\apex_work\runs\<run_id>\logs\run_<run_id>.log`
-- （既定有効）`C:\work\apex_work\runs\<run_id>\run_<run_id>.zip`
+- `C:\work\apex_work\output\<mode>\<symbol>\<test_start>_<YYYYMMDD>_<NNN>`（canonical output 正本）
+- ローカル ZIP は生成しません
 
 ## OneDrive コピー先
 
 優先順:
 
-1. `%ONE_DRIVE_RUNS_ROOT%\<run_id>`
-2. `%OneDrive%\ApexTraderAI\runs\<run_id>`
+1. `%ONE_DRIVE_RUNS_ROOT%\export`
+2. `%OneDrive%\ApexTraderAI\runs\export`
 
-コピーは `robocopy /E /Z /R:2 /W:2` を使い、戻り値 `0..7` を成功、`8+` を失敗として扱います。
+保存されるのは canonical output を ZIP 化した `output_YYYYMMDD_NNN.zip` のみです。同日内の連番は既存 ZIP を走査して最大番号+1で採番します。
 
 ## 失敗時（エラーパケット）
 
@@ -63,5 +63,5 @@ GPT/Codex へは次を貼ると再現しやすいです。
 
 ```bat
 scripts\doctor.bat
-scripts\copy_run_to_onedrive.bat C:\work\apex_work\runs\<run_id>
+scripts\copy_run_to_onedrive.bat C:\work\apex_work\output\sim\SOXL\2022-01-03_20260322_001
 ```

@@ -19,7 +19,7 @@ if not defined REUSE_OUTPUT set "REUSE_OUTPUT=1"
 if not defined FORCE_REBUILD set "FORCE_REBUILD=0"
 
 if not defined WORK_ROOT set "WORK_ROOT=C:\work\apex_work\runs"
-if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=1"
+if not defined ZIP_ON_SUCCESS set "ZIP_ON_SUCCESS=0"
 if not defined AUTO_PREPARE_DATA set "AUTO_PREPARE_DATA=0"
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
 

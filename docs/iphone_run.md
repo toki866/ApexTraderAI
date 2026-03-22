@@ -24,18 +24,16 @@
 ## 3. 完了後の成果物の見方
 
 1. **OneDrive（本命）**
-   - `runs/<run_id>/output`
-   - `runs/<run_id>/logs`
-   - `runs/<run_id>/run_<run_id>.zip`（ZIP 有効時）
+   - `runs/export/output_YYYYMMDD_NNN.zip`
 2. **Actions Artifacts（保険）**
-   - `desktop-run-<run_id>` にコンソールログと run ログ（可能なら zip）を保存。
+   - `desktop-run-<run_id>` にコンソールログ、run ログ、canonical logs を保存。
    - ワークフロー失敗時でも `if: always()` で収集を試行。
 
 ## 4. 失敗時の確認ポイント
 
 1. `Run desktop BAT` の失敗コマンドを確認。
 2. Artifacts から `run_*.log` をダウンロードして確認。
-3. OneDrive 側に `logs` があれば同一 run のログを確認。
+3. OneDrive では ZIP 名から日付・連番を確認し、詳細ログは Actions Artifacts または canonical output 側を確認。
 
 ## 運用・セキュリティ注意
 

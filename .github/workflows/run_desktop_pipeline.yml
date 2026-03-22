@@ -35,7 +35,7 @@ on:
         default: "3"
         type: string
       copy_to_onedrive:
-        description: "Export output zip to OneDrive (1=true, 0=false)"
+        description: "Export canonical output to OneDrive as output_YYYYMMDD_NNN.zip (1=true, 0=false)"
         required: true
         default: true
         type: boolean
@@ -2690,13 +2690,13 @@ jobs:
             $zipExportStatus = "$($zipExportResult.export_result)"
             $zipExportWarning = "$($zipExportResult.export_warning)"
 
-            "OUTPUT_ZIP_LOCAL_PATH=$($zipExportResult.zip_local_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "OUTPUT_ZIP_PATH=$($zipExportResult.output_zip_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
             foreach ($line in @(
               "[ZIP_EXPORT] zip_source_output_root=$outRoot",
-              "[ZIP_EXPORT] zip_local_path=$($zipExportResult.zip_local_path)",
+              "[ZIP_EXPORT] onedrive_zip_path=$($zipExportResult.output_zip_path)",
               "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
               "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
               "[ZIP_EXPORT] result=$zipExportStatus"
@@ -2713,7 +2713,7 @@ jobs:
               "- output_root ($env:MODE): `$outRoot`",
               "- output_root_name ($env:MODE): `$outputRootName`",
               "- output_root_source ($env:MODE): `$outputRootSource`",
-              "- output_zip_local_path ($env:MODE): `$($zipExportResult.zip_local_path)`",
+              "- onedrive_output_zip_path ($env:MODE): `$($zipExportResult.output_zip_path)`",
               "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
               "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
             )
@@ -7293,13 +7293,13 @@ jobs:
             $zipExportStatus = "$($zipExportResult.export_result)"
             $zipExportWarning = "$($zipExportResult.export_warning)"
 
-            "OUTPUT_ZIP_LOCAL_PATH=$($zipExportResult.zip_local_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "OUTPUT_ZIP_PATH=$($zipExportResult.output_zip_path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "OUTPUT_ZIP_SIZE_BYTES=$($zipExportResult.zip_size_bytes)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
             "ONEDRIVE_DESTINATION_DIR=$($zipExportResult.onedrive_destination_dir)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
             foreach ($line in @(
               "[ZIP_EXPORT] zip_source_output_root=$outRoot",
-              "[ZIP_EXPORT] zip_local_path=$($zipExportResult.zip_local_path)",
+              "[ZIP_EXPORT] onedrive_zip_path=$($zipExportResult.output_zip_path)",
               "[ZIP_EXPORT] zip_size_bytes=$($zipExportResult.zip_size_bytes)",
               "[ZIP_EXPORT] onedrive_dest=$($zipExportResult.onedrive_destination_dir)",
               "[ZIP_EXPORT] result=$zipExportStatus"
@@ -7316,7 +7316,7 @@ jobs:
               "- output_root ($env:MODE): `$outRoot`",
               "- output_root_name ($env:MODE): `$outputRootName`",
               "- output_root_source ($env:MODE): `$outputRootSource`",
-              "- output_zip_local_path ($env:MODE): `$($zipExportResult.zip_local_path)`",
+              "- onedrive_output_zip_path ($env:MODE): `$($zipExportResult.output_zip_path)`",
               "- output_zip_size_bytes ($env:MODE): `$($zipExportResult.zip_size_bytes)`",
               "- onedrive_export_result ($env:MODE): `$zipExportStatus`"
             )
