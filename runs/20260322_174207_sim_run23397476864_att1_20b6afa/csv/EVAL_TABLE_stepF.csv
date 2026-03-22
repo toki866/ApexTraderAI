@@ -1,0 +1,2 @@
+file,test_days,equity_multiple,max_dd,mean_ret,std_ret,sharpe,split_source,split_col_present,train_rows,test_rows,status
+stepF_equity_marl_SOXL.csv,63,1.1916422066427026,-0.15342703146823766,0.0032114589262884456,0.03855759553411437,1.3221864403562424,csv,True,0,63,OK
