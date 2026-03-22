@@ -1,0 +1,131 @@
+﻿=== ONE TAP ERROR REPORT ===
+timestamp=2026-03-22 14:28:56 +09:00
+repo=toki866/ApexTraderAI
+ref=refs/heads/main
+sha=1e66a228c03ef0e6f08aa6b25fa39c7d72242bfc
+run_id=23396502000
+run_attempt=1
+
+[STEP] initialize_one_tap_report
+[OK] report initialized
+[PATH] C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI\temp\ONE_TAP_ERROR_REPORT.txt
+[INFO] prep_repo_outcome=success
+[INFO] REPO_ROOT=C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI
+
+[INFO] HEAD=1e66a22
+
+[STEP] bootstrap_windows_python
+[PY_BOOTSTRAP] whoami=nt authority\network service
+[PY_BOOTSTRAP] service_context=NT AUTHORITY\NETWORK SERVICE
+[PY_BOOTSTRAP] PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\libnvvp;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\libnvvp;C:\Program Files\Oculus\Support\oculus-runtime;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files (x86)\Intel\Intel(R) Management Engine Components\DAL;C:\Program Files\Intel\Intel(R) Management Engine Components\DAL;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Program Files (x86)\QuickTime\QTSystem\;C:\Program Files\Git\cmd;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Users\becky\AppData\Local\Programs\Python\Python310\;C:\ffmpeg\bin\;C:\Program Files\NVIDIA Corporation\Nsight Compute 2024.3.0\;C:\Program Files\dotnet\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\Incredibuild;C:\Program Files\Docker\Docker\resources\bin;C:\WINDOWS\ServiceProfiles\NetworkService\AppData\Local\Microsoft\WindowsApps
+[PY_BOOTSTRAP] WINDOWS_PYTHON_EXE(input)=
+[PY_BOOTSTRAP] Get-Command python=(not found)
+[PY_BOOTSTRAP] Get-Command py=C:\Windows\py.exe
+## GPU_DIAGNOSTICS
+torch (unavailable)
+cuda_available False
+gpu CPU
+timestamp, utilization.gpu [%], utilization.memory [%], memory.used [MiB]
+2026/03/22 14:29:00.631, 7 %, 6 %, 1964 MiB
+
+[PREPARE_ENV][FINAL] WIN_RUN_DIR=
+[PREPARE_ENV][FINAL] WIN_DATA_DIR=
+[PREPARE_ENV][FINAL] WIN_OUTPUT_DIR=
+[PREPARE_ENV][FINAL] WSL_REPO_ROOT=
+[PREPARE_ENV][FINAL] WSL_DATA_DIR=
+[PREPARE_ENV][FINAL] WSL_OUTPUT_DIR=
+[PREPARE_ENV][FINAL] prepare_environment_outcome=skipped
+[STEP] resolve_reuse_stepa
+[REUSE] stepa_simple_diag_parse_error=Invalid JSON primitive: .
+[REUSE] primary_symbol=SOXL
+[REUSE] data_prepare_symbols=SOXL,SOXS
+[REUSE] stepa_execution_symbols=SOXL
+[REUSE] stepa_reuse_symbols=SOXL
+[REUSE] stepa_reuse_scope=stepA_simple
+[REUSE] stepa_reuse_key=mode=sim|symbols=SOXL|test_start=2022-01-03|train_years=8|test_months=3
+[REUSE] stepa_reuse_match_found=true
+[REUSE] STEPA_REUSE_MATCH_FOUND=true
+[REUSE] stepa_reuse_matched_output_root=
+[REUSE] stepa_reuse_matched_run_id=
+[REUSE] stepa_reuse_selected_policy=canonical_output_root
+[REUSE] stepa_reuse_reason=missing_required_outputs
+[REUSE] stepa_reuse_canonical_output_root=
+[REUSE] stepa_reuse_eval_stepa_path=
+[REUSE] stepa_reuse_stepa_path=
+[STEP] resolve_reuse_pipeline
+[REUSE] strict_reuse_decision=delegated_to_output_root_reuse
+[REUSE] final_EFFECTIVE_WIN_OUTPUT=''
+[REUSE] final_EFFECTIVE_WSL_OUTPUT=''
+[STEP] step_a_entry
+[STEP_STATUS] requested_steps=
+[STEP_STATUS] prepare_environment_outcome=skipped
+[STEP_STATUS] resolve_reuse_outcome=success_via_stepa_simple
+[STEP_STATUS] validate_context_outcome=not_defined
+[STEP_STATUS] WIN_OUTPUT_DIR=
+[STEP_STATUS] WSL_OUTPUT_DIR=
+[STEP_STATUS] outRoot=
+[STEP_STATUS] wslOut=
+[WARN] step_a skipped reason=prepare_environment_skipped
+[STEP_STATUS] step_a_decision_final=skip reason=prepare_environment_skipped
+[STEP_STATUS] step_a_entry_result=skip rc=0 last_exitcode=
+[STEP_STATUS] step_a_entry_outRoot=''
+[STEP_STATUS] step_a_entry_wslOut=''
+[STEP_STATUS] step_a_manifest_path=''
+
+[STEP] append_error_tails
+timestamp=2026-03-22 14:29:05 +09:00
+[INFO] apex_run_id=
+---- python_env ----
+INFO: Could not find files for the given pattern(s).
+The expression after '&' in a pipeline element produced an object that was not valid. It must result in a command name,
+ a script block, or a CommandInfo object.
+At C:\work\actions-runner\_work\_temp\bc56ad95-a51b-4103-9864-abc6ef9db50f.ps1:18 char:10
++ try { (& $env:WINDOWS_PYTHON_EXE --version 2>&1) | Add-Content $repor ...
++          ~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:String) [], RuntimeException
+    + FullyQualifiedErrorId : BadExpression
+ 
+
+The expression after '&' in a pipeline element produced an object that was not valid. It must result in a command name,
+ a script block, or a CommandInfo object.
+At C:\work\actions-runner\_work\_temp\bc56ad95-a51b-4103-9864-abc6ef9db50f.ps1:19 char:10
++ try { (& $env:WINDOWS_PYTHON_EXE -c "import sys; print(sys.executable ...
++          ~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:String) [], RuntimeException
+    + FullyQualifiedErrorId : BadExpression
+ 
+
+[INFO] console_log=C:\work\actions-runner\_work\_temp\run_all_local_then_copy_console.log
+[WARN] console log not found
+[INFO] work_root=C:\work\apex_work\runs
+[INFO] session_log_root=C:\work\apex_work\session_logs
+[INFO] latest_run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[WARN] run_*.log not found in RUN_LOG_PATH/session_logs/runs fallback
+[STEP] package_diagnostics_to_onedrive
+[INFO] diag_script=C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI\scripts\package_diagnostics_to_onedrive.ps1
+[PUBLISH] run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[PUBLISH] output_root=
+[NG] package_diagnostics_to_onedrive
+[NG] exit_code=1
+
+[STEP] resolve_latest_run_artifacts
+[INFO] work_root=C:\work\apex_work\runs
+[OK] resolve_latest_run_artifacts
+[OK] run_dir=C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29
+[OK] run_id=gh23354558894_att1_sim_20260321_103819_1c7bc29
+
+
+[CSV_REPORT]
+- diag_report_index=https://github.com/toki866/ApexTraderAI/blob/diag-logs/reports/23396502000_1/sim/index.md
+- diag_report_path=reports/23396502000_1/sim/index.md
+- metrics_md=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.md
+- metrics_csv=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/metrics_summary.csv
+- metrics_plots=https://raw.githubusercontent.com/toki866/ApexTraderAI/diag-logs/latest/reports/plots
+
+## publish_diag_logs warnings
+[WARN] publish issue: output_root not found: C:\work\apex_work\runs\gh23354558894_att1_sim_20260321_103819_1c7bc29\output
+[WARN] publish issue: StepA files missing in diag publish output.
+[WARN] publish issue: StepB files missing in diag publish output.
+[WARN] publish issue: StepDPrime files missing in diag publish output.
+[WARN] publish issue: StepE files missing in diag publish output.
+[WARN] publish issue: StepF files missing in diag publish output.
