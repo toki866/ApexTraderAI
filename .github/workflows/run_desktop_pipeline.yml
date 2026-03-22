@@ -4039,16 +4039,16 @@ jobs:
           $csvIndexLines = New-Object System.Collections.Generic.List[string]
           $csvIndexLines.Add('# CSV Index')
           $csvIndexLines.Add('')
-          $csvIndexLines.Add(('- run_folder: {0}' -f $runFolderName))
-          $csvIndexLines.Add(('- source_run_dir: {0}' -f $runDir))
-          $csvIndexLines.Add(('- source_output_root: {0}' -f $outputRoot))
-          $csvIndexLines.Add(('- output_root_source: {0}' -f $outputRootSource))
-          $csvIndexLines.Add(('- found_count: {0}' -f $allMatchedCandidates.Count))
-          $csvIndexLines.Add(('- published_count: {0}' -f $publishedCsv.Count))
+          $csvIndexLines.Add("- run_folder: $runFolderName")
+          $csvIndexLines.Add("- source_run_dir: $runDir")
+          $csvIndexLines.Add("- source_output_root: $outputRoot")
+          $csvIndexLines.Add("- output_root_source: $outputRootSource")
+          $csvIndexLines.Add("- found_count: $($allMatchedCandidates.Count)")
+          $csvIndexLines.Add("- published_count: $($publishedCsv.Count)")
           $csvIndexLines.Add('')
           $csvIndexLines.Add('## Used globs')
           foreach ($spec in $specs) {
-            $csvIndexLines.Add(('- {0} :: {1}' -f $spec.Label, $spec.RelativeGlob))
+            $csvIndexLines.Add(("- {0} :: {1}" -f $spec.Label, $spec.RelativeGlob))
           }
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_SUMMARY.txt')
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.md')
@@ -4064,7 +4064,7 @@ jobs:
             $csvIndexLines.Add('## Published files')
             foreach ($item in $publishedCsv) {
               $headNote = if ($item.HeadOnly) { $item.HeadNote } else { 'original file copied' }
-              $csvIndexLines.Add(('- [{0}]({1}) | label={2} | bytes={3} | source_pattern={4} | head_policy={5}' -f $item.Name, $item.RelativePath, $item.Label, $item.SizeBytes, $item.SourcePattern, $headNote))
+              $csvIndexLines.Add("- [$($item.Name)]($($item.RelativePath)) | label=$($item.Label) | bytes=$($item.SizeBytes) | source_pattern=$($item.SourcePattern) | head_policy=$headNote")
             }
           }
 
@@ -4072,7 +4072,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Expanded search paths')
             foreach ($pat in $searchedPatterns) {
-              $csvIndexLines.Add(('- {0}' -f $pat))
+              $csvIndexLines.Add("- $pat")
             }
           }
 
@@ -4080,7 +4080,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Warnings')
             foreach ($warn in $publishWarnings) {
-              $csvIndexLines.Add(('- {0}' -f $warn))
+              $csvIndexLines.Add("- $warn")
             }
           }
 
@@ -4106,7 +4106,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Final warnings')
             foreach ($warn in $publishWarnings) {
-              $csvIndexLines.Add(('- {0}' -f $warn))
+              $csvIndexLines.Add("- $warn")
             }
           }
 
@@ -4134,27 +4134,27 @@ jobs:
           try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
           if ($keepLatest -lt 1) { $keepLatest = 1 }
 
-          $latestOneTapLines = New-Object System.Collections.Generic.List[string]
-          $latestOneTapLines.Add('# Latest ONE_TAP report')
-          $latestOneTapLines.Add('')
-          $latestOneTapLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestOneTapLines.Add(('- report: ./runs/{0}/ONE_TAP_ERROR_REPORT.txt' -f $runFolderName))
-          $latestOneTapLines -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
+          @(
+            '# Latest ONE_TAP report',
+            '',
+            "- folder: $runFolderName",
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+          ) -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
 
-          $latestCsvLines = New-Object System.Collections.Generic.List[string]
-          $latestCsvLines.Add('# Latest CSV index')
-          $latestCsvLines.Add('')
-          $latestCsvLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestCsvLines.Add(('- keep_latest: {0}' -f $keepLatest))
-          $latestCsvLines.Add(('- csv_index: ./runs/{0}/CSV_INDEX.md' -f $runFolderName))
-          $latestCsvLines -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
+          @(
+            '# Latest CSV index',
+            '',
+            "- folder: $runFolderName",
+            "- keep_latest: $keepLatest",
+            "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
+          ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
 
-          $latestReportLines = New-Object System.Collections.Generic.List[string]
-          $latestReportLines.Add('# Latest Report index')
-          $latestReportLines.Add('')
-          $latestReportLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestReportLines.Add(('- report_index: ./runs/{0}/report/index.md' -f $runFolderName))
-          $latestReportLines -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
+          @(
+            '# Latest Report index',
+            '',
+            "- folder: $runFolderName",
+            "- report_index: ./runs/$runFolderName/report/index.md"
+          ) -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
 
           $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
@@ -8437,16 +8437,16 @@ jobs:
           $csvIndexLines = New-Object System.Collections.Generic.List[string]
           $csvIndexLines.Add('# CSV Index')
           $csvIndexLines.Add('')
-          $csvIndexLines.Add(('- run_folder: {0}' -f $runFolderName))
-          $csvIndexLines.Add(('- source_run_dir: {0}' -f $runDir))
-          $csvIndexLines.Add(('- source_output_root: {0}' -f $outputRoot))
-          $csvIndexLines.Add(('- output_root_source: {0}' -f $outputRootSource))
-          $csvIndexLines.Add(('- found_count: {0}' -f $allMatchedCandidates.Count))
-          $csvIndexLines.Add(('- published_count: {0}' -f $publishedCsv.Count))
+          $csvIndexLines.Add("- run_folder: $runFolderName")
+          $csvIndexLines.Add("- source_run_dir: $runDir")
+          $csvIndexLines.Add("- source_output_root: $outputRoot")
+          $csvIndexLines.Add("- output_root_source: $outputRootSource")
+          $csvIndexLines.Add("- found_count: $($allMatchedCandidates.Count)")
+          $csvIndexLines.Add("- published_count: $($publishedCsv.Count)")
           $csvIndexLines.Add('')
           $csvIndexLines.Add('## Used globs')
           foreach ($spec in $specs) {
-            $csvIndexLines.Add(('- {0} :: {1}' -f $spec.Label, $spec.RelativeGlob))
+            $csvIndexLines.Add(("- {0} :: {1}" -f $spec.Label, $spec.RelativeGlob))
           }
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_SUMMARY.txt')
           $csvIndexLines.Add('- Eval :: temp/eval/EVAL_REPORT.md')
@@ -8462,7 +8462,7 @@ jobs:
             $csvIndexLines.Add('## Published files')
             foreach ($item in $publishedCsv) {
               $headNote = if ($item.HeadOnly) { $item.HeadNote } else { 'original file copied' }
-              $csvIndexLines.Add(('- [{0}]({1}) | label={2} | bytes={3} | source_pattern={4} | head_policy={5}' -f $item.Name, $item.RelativePath, $item.Label, $item.SizeBytes, $item.SourcePattern, $headNote))
+              $csvIndexLines.Add("- [$($item.Name)]($($item.RelativePath)) | label=$($item.Label) | bytes=$($item.SizeBytes) | source_pattern=$($item.SourcePattern) | head_policy=$headNote")
             }
           }
 
@@ -8470,7 +8470,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Expanded search paths')
             foreach ($pat in $searchedPatterns) {
-              $csvIndexLines.Add(('- {0}' -f $pat))
+              $csvIndexLines.Add("- $pat")
             }
           }
 
@@ -8478,7 +8478,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Warnings')
             foreach ($warn in $publishWarnings) {
-              $csvIndexLines.Add(('- {0}' -f $warn))
+              $csvIndexLines.Add("- $warn")
             }
           }
 
@@ -8504,7 +8504,7 @@ jobs:
             $csvIndexLines.Add('')
             $csvIndexLines.Add('## Final warnings')
             foreach ($warn in $publishWarnings) {
-              $csvIndexLines.Add(('- {0}' -f $warn))
+              $csvIndexLines.Add("- $warn")
             }
           }
 
@@ -8532,27 +8532,27 @@ jobs:
           try { $keepLatest = [int]'${{ inputs.diag_keep_latest }}' } catch { $keepLatest = 10 }
           if ($keepLatest -lt 1) { $keepLatest = 1 }
 
-          $latestOneTapLines = New-Object System.Collections.Generic.List[string]
-          $latestOneTapLines.Add('# Latest ONE_TAP report')
-          $latestOneTapLines.Add('')
-          $latestOneTapLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestOneTapLines.Add(('- report: ./runs/{0}/ONE_TAP_ERROR_REPORT.txt' -f $runFolderName))
-          $latestOneTapLines -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
+          @(
+            '# Latest ONE_TAP report',
+            '',
+            "- folder: $runFolderName",
+            "- report: ./runs/$runFolderName/ONE_TAP_ERROR_REPORT.txt"
+          ) -join "`r`n" | Set-Content -Path $latestOneTapPath -Encoding UTF8
 
-          $latestCsvLines = New-Object System.Collections.Generic.List[string]
-          $latestCsvLines.Add('# Latest CSV index')
-          $latestCsvLines.Add('')
-          $latestCsvLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestCsvLines.Add(('- keep_latest: {0}' -f $keepLatest))
-          $latestCsvLines.Add(('- csv_index: ./runs/{0}/CSV_INDEX.md' -f $runFolderName))
-          $latestCsvLines -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
+          @(
+            '# Latest CSV index',
+            '',
+            "- folder: $runFolderName",
+            "- keep_latest: $keepLatest",
+            "- csv_index: ./runs/$runFolderName/CSV_INDEX.md"
+          ) -join "`r`n" | Set-Content -Path $latestCsvPath -Encoding UTF8
 
-          $latestReportLines = New-Object System.Collections.Generic.List[string]
-          $latestReportLines.Add('# Latest Report index')
-          $latestReportLines.Add('')
-          $latestReportLines.Add(('- folder: {0}' -f $runFolderName))
-          $latestReportLines.Add(('- report_index: ./runs/{0}/report/index.md' -f $runFolderName))
-          $latestReportLines -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
+          @(
+            '# Latest Report index',
+            '',
+            "- folder: $runFolderName",
+            "- report_index: ./runs/$runFolderName/report/index.md"
+          ) -join "`r`n" | Set-Content -Path $latestReportPath -Encoding UTF8
 
           $runFolders = Get-ChildItem -Path $runsDir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d{8}_\d{6}_run\d+_' } |
