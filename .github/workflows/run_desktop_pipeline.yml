@@ -127,6 +127,7 @@ env:
   WORK_ROOT: C:\work\apex_work\runs
   CANONICAL_OUTPUT_ROOT: C:\work\apex_work\output
   SESSION_LOG_ROOT: C:\work\apex_work\session_logs
+  WINDOWS_PYTHON_EXE: ${{ vars.WINDOWS_PYTHON_EXE }}
 
 jobs:
   run_sim:
@@ -226,6 +227,129 @@ jobs:
             )
           }
 
+      - name: Bootstrap Windows Python
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $null = New-Item -Path (Split-Path $reportPath) -ItemType Directory -Force
+
+          function Write-BootstrapLog {
+            param([string]$Message)
+            Write-Host $Message
+            Add-Content -Path $reportPath -Value $Message
+          }
+
+          function Format-CommandResult {
+            param([string]$Name)
+            try {
+              $cmd = Get-Command $Name -ErrorAction Stop
+              return ($cmd | Select-Object -First 1 -ExpandProperty Source)
+            } catch {
+              return '(not found)'
+            }
+          }
+
+          $whoamiValue = ((whoami) | Out-String).Trim()
+          $serviceContext = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $pathValue = $env:PATH
+          $candidatePaths = @(
+            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe',
+            'C:\Program Files\Python310\python.exe',
+            'C:\Python310\python.exe',
+            'C:\hostedtoolcache\windows\Python\3.10.11\x64\python.exe',
+            'C:\hostedtoolcache\windows\Python\3.10.10\x64\python.exe'
+          )
+          $resolvedPython = ''
+          $resolutionSource = ''
+          $seenCandidates = New-Object System.Collections.Generic.List[string]
+
+          Write-BootstrapLog '[STEP] bootstrap_windows_python'
+          Write-BootstrapLog ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] WINDOWS_PYTHON_EXE(input)={0}" -f $env:WINDOWS_PYTHON_EXE)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command python={0}" -f (Format-CommandResult -Name 'python'))
+          Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py'))
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE)) {
+            $seenCandidates.Add("env:WINDOWS_PYTHON_EXE=$env:WINDOWS_PYTHON_EXE") | Out-Null
+            if (Test-Path $env:WINDOWS_PYTHON_EXE) {
+              $resolvedPython = (Resolve-Path $env:WINDOWS_PYTHON_EXE).Path
+              $resolutionSource = 'env:WINDOWS_PYTHON_EXE'
+            }
+          }
+
+          if (-not $resolvedPython) {
+            try {
+              $pythonCmd = Get-Command python -ErrorAction Stop
+              $seenCandidates.Add("Get-Command python=$($pythonCmd.Source)") | Out-Null
+              if (Test-Path $pythonCmd.Source) {
+                $resolvedPython = $pythonCmd.Source
+                $resolutionSource = 'Get-Command python'
+              }
+            } catch {
+              $seenCandidates.Add('Get-Command python=(not found)') | Out-Null
+            }
+          }
+
+          if (-not $resolvedPython) {
+            try {
+              $pyLauncher = Get-Command py -ErrorAction Stop
+              $seenCandidates.Add("Get-Command py=$($pyLauncher.Source)") | Out-Null
+              $pyExec = (& py -3.10 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1).Trim()
+              if (-not [string]::IsNullOrWhiteSpace($pyExec)) {
+                $seenCandidates.Add("py -3.10 => $pyExec") | Out-Null
+                if (Test-Path $pyExec) {
+                  $resolvedPython = (Resolve-Path $pyExec).Path
+                  $resolutionSource = 'py -3.10'
+                }
+              }
+            } catch {
+              $seenCandidates.Add("py -3.10 failed=$($_.Exception.Message)") | Out-Null
+            }
+          }
+
+          if (-not $resolvedPython) {
+            foreach ($candidate in $candidatePaths) {
+              $exists = Test-Path $candidate
+              $seenCandidates.Add("candidate=$candidate exists=$exists") | Out-Null
+              if ($exists) {
+                $resolvedPython = (Resolve-Path $candidate).Path
+                $resolutionSource = 'candidate_path'
+                break
+              }
+            }
+          }
+
+          if (-not $resolvedPython) {
+            $failureLines = @(
+              '[NG] bootstrap_windows_python python_not_found',
+              ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue),
+              ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext),
+              ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue),
+              '[PY_BOOTSTRAP] inspected_candidates:'
+            ) + ($seenCandidates | ForEach-Object { "  - $_" })
+            Add-Content -Path $reportPath -Value $failureLines
+            $failureLines | ForEach-Object { Write-Error $_ }
+            throw 'Windows Python bootstrap failed before downstream steps.'
+          }
+
+          $resolvedDir = Split-Path $resolvedPython -Parent
+          $scriptsDir = Join-Path $resolvedDir 'Scripts'
+          "WINDOWS_PYTHON_EXE=$resolvedPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $resolvedDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          if (Test-Path $scriptsDir) {
+            $scriptsDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
+          Write-BootstrapLog ("[PY_BOOTSTRAP] resolved_python={0}" -f $resolvedPython)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] resolution_source={0}" -f $resolutionSource)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_path_dir={0}" -f $resolvedDir)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, (Test-Path $scriptsDir))
+          & $resolvedPython --version | ForEach-Object { Write-BootstrapLog ("[PY_BOOTSTRAP] version={0}" -f $_) }
+
       - name: GPU / CUDA diagnostics
         if: always()
         continue-on-error: true
@@ -246,7 +370,9 @@ jobs:
           ) -join [Environment]::NewLine
 
           try {
-            $torchInfo = (& python -c "import torch; print('torch',torch.__version__); print('cuda_available',torch.cuda.is_available()); print('gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')" 2>&1 | Out-String).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE) -and (Test-Path $env:WINDOWS_PYTHON_EXE)) {
+              $torchInfo = (& $env:WINDOWS_PYTHON_EXE -c "import torch; print('torch',torch.__version__); print('cuda_available',torch.cuda.is_available()); print('gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')" 2>&1 | Out-String).Trim()
+            }
           } catch {
             Write-Warning "torch diagnostics failed: $($_.Exception.Message)"
           }
@@ -343,12 +469,32 @@ jobs:
           exit /b 0
 
       - name: Debug python environment
-        shell: cmd
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          where python
-          python --version
-          echo RUNNER_TEMP=%RUNNER_TEMP%
-          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $pythonExe = $env:WINDOWS_PYTHON_EXE
+          if ([string]::IsNullOrWhiteSpace($pythonExe) -or -not (Test-Path $pythonExe)) {
+            throw "WINDOWS_PYTHON_EXE is not available: '$pythonExe'"
+          }
+          Write-Host "WINDOWS_PYTHON_EXE=$pythonExe"
+          Write-Host "whoami=$((whoami | Out-String).Trim())"
+          Write-Host "Get-Command python=$((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))"
+          Write-Host "Get-Command py=$((Get-Command py -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))"
+          Write-Host "PATH=$env:PATH"
+          & where.exe python 2>&1 | Write-Host
+          & $pythonExe --version
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] debug_python_environment',
+            ("[PY_DEBUG] WINDOWS_PYTHON_EXE={0}" -f $pythonExe),
+            ("[PY_DEBUG] whoami={0}" -f ((whoami | Out-String).Trim())),
+            ("[PY_DEBUG] Get-Command python={0}" -f ((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))),
+            ("[PY_DEBUG] Get-Command py={0}" -f ((Get-Command py -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))),
+            ("[PY_DEBUG] PATH={0}" -f $env:PATH),
+            ''
+          )
 
       - name: Verify required scripts
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -837,6 +983,15 @@ jobs:
             "[PREPARE_ENV] SYMBOLS=$env:SYMBOLS"
           )) { Add-Content $rp $line; Write-Host $line }
 
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE) -or -not (Test-Path $env:WINDOWS_PYTHON_EXE)) {
+            $ngMsg = "[NG] prepare_environment windows_python_missing WINDOWS_PYTHON_EXE='$env:WINDOWS_PYTHON_EXE' whoami=$((whoami | Out-String).Trim()) service_context=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+            Add-Content $rp $ngMsg
+            Write-Error $ngMsg
+            exit 1
+          }
+          Add-Content $rp ("[PREPARE_ENV] WINDOWS_PYTHON_EXE={0}" -f $env:WINDOWS_PYTHON_EXE)
+          Write-Host ("[PREPARE_ENV] WINDOWS_PYTHON_EXE={0}" -f $env:WINDOWS_PYTHON_EXE)
+
           # Windows パス計算（output root は reuse 判定済みの EFFECTIVE_WIN_OUTPUT を優先使用）
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
@@ -935,15 +1090,15 @@ jobs:
           # [E] pip install — 各フェーズの rc を個別に記録
           Add-Content $rp '[PREPARE_ENV] pip_install begin'; Write-Host '[PREPARE_ENV] pip_install begin'
           & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          python --version        2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE --version 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $pipBaseRc = $LASTEXITCODE
           Add-Content $rp "[PREPARE_ENV] pip_base rc=$pipBaseRc"; Write-Host "[PREPARE_ENV] pip_base rc=$pipBaseRc"
           if ($pipBaseRc -ne 0) {
             $ngMsg = "[NG] prepare_environment pip_base rc=$pipBaseRc"
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipBaseRc
           }
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $pipReqRc = $LASTEXITCODE
           Add-Content $rp "[PREPARE_ENV] pip_req rc=$pipReqRc"; Write-Host "[PREPARE_ENV] pip_req rc=$pipReqRc"
           if ($pipReqRc -ne 0) {
@@ -952,7 +1107,7 @@ jobs:
           }
 
           Add-Content $rp '[PREPARE_ENV] dependency_target_check begin'; Write-Host '[PREPARE_ENV] dependency_target_check begin'
-          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=%WINDOWS_PYTHON_EXE% -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=%WINDOWS_PYTHON_EXE% -m pip install -r requirements.txt'
           $wslPipVersionCmd = "'$env:WSL_PYTHON' -m pip --version"
           wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipVersionCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $wslPipVersionRc = $LASTEXITCODE
@@ -2412,8 +2567,8 @@ jobs:
           # python env snapshot (to compare with local)
           Add-Content $report "---- python_env ----"
           try { (& where.exe python 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
-          try { (& python --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
-          try { (& python -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& $env:WINDOWS_PYTHON_EXE --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& $env:WINDOWS_PYTHON_EXE -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
 
           # console log tail
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
@@ -3222,7 +3377,7 @@ jobs:
           $mode = '${{ env.MODE }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
-          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
+          & $env:WINDOWS_PYTHON_EXE scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
       - name: Generate metrics table
@@ -3287,7 +3442,7 @@ jobs:
           if (Test-Path 'reports/metrics_summary.md') { Remove-Item 'reports/metrics_summary.md' -Force -ErrorAction SilentlyContinue }
           if (Test-Path 'reports/metrics_summary.csv') { Remove-Item 'reports/metrics_summary.csv' -Force -ErrorAction SilentlyContinue }
 
-          python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
+          & $env:WINDOWS_PYTHON_EXE tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
       - name: Publish metrics to Job Summary
         if: always()
@@ -3365,8 +3520,8 @@ jobs:
           $reportDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $null = New-Item -Path $reportDir -ItemType Directory -Force
 
-          python -V
-          python tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
+          & $env:WINDOWS_PYTHON_EXE -V
+          & $env:WINDOWS_PYTHON_EXE tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "[WARN] make_run_csv_report failed with exit code $LASTEXITCODE"
             exit 0
@@ -3429,7 +3584,7 @@ jobs:
           $publicDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
           $errorLog = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
-          python tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
+          & $env:WINDOWS_PYTHON_EXE tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "[WARN] make_public_run_report failed with exit code $LASTEXITCODE"
             exit 0
@@ -4580,6 +4735,129 @@ jobs:
             )
           }
 
+      - name: Bootstrap Windows Python
+        if: ${{ always() && steps.prep_repo.outcome == 'success' }}
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $null = New-Item -Path (Split-Path $reportPath) -ItemType Directory -Force
+
+          function Write-BootstrapLog {
+            param([string]$Message)
+            Write-Host $Message
+            Add-Content -Path $reportPath -Value $Message
+          }
+
+          function Format-CommandResult {
+            param([string]$Name)
+            try {
+              $cmd = Get-Command $Name -ErrorAction Stop
+              return ($cmd | Select-Object -First 1 -ExpandProperty Source)
+            } catch {
+              return '(not found)'
+            }
+          }
+
+          $whoamiValue = ((whoami) | Out-String).Trim()
+          $serviceContext = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $pathValue = $env:PATH
+          $candidatePaths = @(
+            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe',
+            'C:\Program Files\Python310\python.exe',
+            'C:\Python310\python.exe',
+            'C:\hostedtoolcache\windows\Python\3.10.11\x64\python.exe',
+            'C:\hostedtoolcache\windows\Python\3.10.10\x64\python.exe'
+          )
+          $resolvedPython = ''
+          $resolutionSource = ''
+          $seenCandidates = New-Object System.Collections.Generic.List[string]
+
+          Write-BootstrapLog '[STEP] bootstrap_windows_python'
+          Write-BootstrapLog ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] WINDOWS_PYTHON_EXE(input)={0}" -f $env:WINDOWS_PYTHON_EXE)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command python={0}" -f (Format-CommandResult -Name 'python'))
+          Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py'))
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE)) {
+            $seenCandidates.Add("env:WINDOWS_PYTHON_EXE=$env:WINDOWS_PYTHON_EXE") | Out-Null
+            if (Test-Path $env:WINDOWS_PYTHON_EXE) {
+              $resolvedPython = (Resolve-Path $env:WINDOWS_PYTHON_EXE).Path
+              $resolutionSource = 'env:WINDOWS_PYTHON_EXE'
+            }
+          }
+
+          if (-not $resolvedPython) {
+            try {
+              $pythonCmd = Get-Command python -ErrorAction Stop
+              $seenCandidates.Add("Get-Command python=$($pythonCmd.Source)") | Out-Null
+              if (Test-Path $pythonCmd.Source) {
+                $resolvedPython = $pythonCmd.Source
+                $resolutionSource = 'Get-Command python'
+              }
+            } catch {
+              $seenCandidates.Add('Get-Command python=(not found)') | Out-Null
+            }
+          }
+
+          if (-not $resolvedPython) {
+            try {
+              $pyLauncher = Get-Command py -ErrorAction Stop
+              $seenCandidates.Add("Get-Command py=$($pyLauncher.Source)") | Out-Null
+              $pyExec = (& py -3.10 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1).Trim()
+              if (-not [string]::IsNullOrWhiteSpace($pyExec)) {
+                $seenCandidates.Add("py -3.10 => $pyExec") | Out-Null
+                if (Test-Path $pyExec) {
+                  $resolvedPython = (Resolve-Path $pyExec).Path
+                  $resolutionSource = 'py -3.10'
+                }
+              }
+            } catch {
+              $seenCandidates.Add("py -3.10 failed=$($_.Exception.Message)") | Out-Null
+            }
+          }
+
+          if (-not $resolvedPython) {
+            foreach ($candidate in $candidatePaths) {
+              $exists = Test-Path $candidate
+              $seenCandidates.Add("candidate=$candidate exists=$exists") | Out-Null
+              if ($exists) {
+                $resolvedPython = (Resolve-Path $candidate).Path
+                $resolutionSource = 'candidate_path'
+                break
+              }
+            }
+          }
+
+          if (-not $resolvedPython) {
+            $failureLines = @(
+              '[NG] bootstrap_windows_python python_not_found',
+              ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue),
+              ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext),
+              ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue),
+              '[PY_BOOTSTRAP] inspected_candidates:'
+            ) + ($seenCandidates | ForEach-Object { "  - $_" })
+            Add-Content -Path $reportPath -Value $failureLines
+            $failureLines | ForEach-Object { Write-Error $_ }
+            throw 'Windows Python bootstrap failed before downstream steps.'
+          }
+
+          $resolvedDir = Split-Path $resolvedPython -Parent
+          $scriptsDir = Join-Path $resolvedDir 'Scripts'
+          "WINDOWS_PYTHON_EXE=$resolvedPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $resolvedDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          if (Test-Path $scriptsDir) {
+            $scriptsDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
+          Write-BootstrapLog ("[PY_BOOTSTRAP] resolved_python={0}" -f $resolvedPython)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] resolution_source={0}" -f $resolutionSource)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_path_dir={0}" -f $resolvedDir)
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, (Test-Path $scriptsDir))
+          & $resolvedPython --version | ForEach-Object { Write-BootstrapLog ("[PY_BOOTSTRAP] version={0}" -f $_) }
+
       - name: GPU / CUDA diagnostics
         if: always()
         continue-on-error: true
@@ -4600,7 +4878,9 @@ jobs:
           ) -join [Environment]::NewLine
 
           try {
-            $torchInfo = (& python -c "import torch; print('torch',torch.__version__); print('cuda_available',torch.cuda.is_available()); print('gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')" 2>&1 | Out-String).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE) -and (Test-Path $env:WINDOWS_PYTHON_EXE)) {
+              $torchInfo = (& $env:WINDOWS_PYTHON_EXE -c "import torch; print('torch',torch.__version__); print('cuda_available',torch.cuda.is_available()); print('gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')" 2>&1 | Out-String).Trim()
+            }
           } catch {
             Write-Warning "torch diagnostics failed: $($_.Exception.Message)"
           }
@@ -4697,12 +4977,32 @@ jobs:
           exit /b 0
 
       - name: Debug python environment
-        shell: cmd
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          where python
-          python --version
-          echo RUNNER_TEMP=%RUNNER_TEMP%
-          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
+          $pythonExe = $env:WINDOWS_PYTHON_EXE
+          if ([string]::IsNullOrWhiteSpace($pythonExe) -or -not (Test-Path $pythonExe)) {
+            throw "WINDOWS_PYTHON_EXE is not available: '$pythonExe'"
+          }
+          Write-Host "WINDOWS_PYTHON_EXE=$pythonExe"
+          Write-Host "whoami=$((whoami | Out-String).Trim())"
+          Write-Host "Get-Command python=$((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))"
+          Write-Host "Get-Command py=$((Get-Command py -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))"
+          Write-Host "PATH=$env:PATH"
+          & where.exe python 2>&1 | Write-Host
+          & $pythonExe --version
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Add-Content -Path $reportPath -Value @(
+            '[STEP] debug_python_environment',
+            ("[PY_DEBUG] WINDOWS_PYTHON_EXE={0}" -f $pythonExe),
+            ("[PY_DEBUG] whoami={0}" -f ((whoami | Out-String).Trim())),
+            ("[PY_DEBUG] Get-Command python={0}" -f ((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))),
+            ("[PY_DEBUG] Get-Command py={0}" -f ((Get-Command py -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))),
+            ("[PY_DEBUG] PATH={0}" -f $env:PATH),
+            ''
+          )
 
       - name: Verify required scripts
         if: ${{ steps.prep_repo.outcome == 'success' }}
@@ -5191,6 +5491,15 @@ jobs:
             "[PREPARE_ENV] SYMBOLS=$env:SYMBOLS"
           )) { Add-Content $rp $line; Write-Host $line }
 
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE) -or -not (Test-Path $env:WINDOWS_PYTHON_EXE)) {
+            $ngMsg = "[NG] prepare_environment windows_python_missing WINDOWS_PYTHON_EXE='$env:WINDOWS_PYTHON_EXE' whoami=$((whoami | Out-String).Trim()) service_context=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+            Add-Content $rp $ngMsg
+            Write-Error $ngMsg
+            exit 1
+          }
+          Add-Content $rp ("[PREPARE_ENV] WINDOWS_PYTHON_EXE={0}" -f $env:WINDOWS_PYTHON_EXE)
+          Write-Host ("[PREPARE_ENV] WINDOWS_PYTHON_EXE={0}" -f $env:WINDOWS_PYTHON_EXE)
+
           # Windows パス計算（output root は reuse 判定済みの EFFECTIVE_WIN_OUTPUT を優先使用）
           $winRunDir    = Join-Path $env:WORK_ROOT $env:APEX_RUN_ID
           $winDataDir   = Join-Path $winRunDir 'data'
@@ -5289,15 +5598,15 @@ jobs:
           # [E] pip install — 各フェーズの rc を個別に記録
           Add-Content $rp '[PREPARE_ENV] pip_install begin'; Write-Host '[PREPARE_ENV] pip_install begin'
           & where.exe python 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          python --version        2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
-          python -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE --version 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE -m pip install -U pip setuptools wheel 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $pipBaseRc = $LASTEXITCODE
           Add-Content $rp "[PREPARE_ENV] pip_base rc=$pipBaseRc"; Write-Host "[PREPARE_ENV] pip_base rc=$pipBaseRc"
           if ($pipBaseRc -ne 0) {
             $ngMsg = "[NG] prepare_environment pip_base rc=$pipBaseRc"
             Add-Content $rp $ngMsg; Write-Error $ngMsg; exit $pipBaseRc
           }
-          python -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
+          & $env:WINDOWS_PYTHON_EXE -m pip install -r (Join-Path $env:REPO_ROOT 'requirements.txt') 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $pipReqRc = $LASTEXITCODE
           Add-Content $rp "[PREPARE_ENV] pip_req rc=$pipReqRc"; Write-Host "[PREPARE_ENV] pip_req rc=$pipReqRc"
           if ($pipReqRc -ne 0) {
@@ -5306,7 +5615,7 @@ jobs:
           }
 
           Add-Content $rp '[PREPARE_ENV] dependency_target_check begin'; Write-Host '[PREPARE_ENV] dependency_target_check begin'
-          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=python -m pip install -r requirements.txt'
+          Add-Content $rp '[PREPARE_ENV] dependency_target_check windows_install_cmd=%WINDOWS_PYTHON_EXE% -m pip install -r requirements.txt'; Write-Host '[PREPARE_ENV] dependency_target_check windows_install_cmd=%WINDOWS_PYTHON_EXE% -m pip install -r requirements.txt'
           $wslPipVersionCmd = "'$env:WSL_PYTHON' -m pip --version"
           wsl.exe -d $env:WSL_DISTRO -- bash -lc $wslPipVersionCmd 2>&1 | Tee-Object -FilePath $consoleLog -Append | Write-Host
           $wslPipVersionRc = $LASTEXITCODE
@@ -6649,8 +6958,8 @@ jobs:
           # python env snapshot (to compare with local)
           Add-Content $report "---- python_env ----"
           try { (& where.exe python 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
-          try { (& python --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
-          try { (& python -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& $env:WINDOWS_PYTHON_EXE --version 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
+          try { (& $env:WINDOWS_PYTHON_EXE -c "import sys; print(sys.executable)" 2>&1) | Add-Content $report } catch { ($_ | Out-String) | Add-Content $report }
 
           # console log tail
           $consoleLog = Join-Path $env:RUNNER_TEMP 'run_all_local_then_copy_console.log'
@@ -7358,7 +7667,7 @@ jobs:
           $mode = '${{ env.MODE }}'
           if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'sim' }
 
-          python scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
+          & $env:WINDOWS_PYTHON_EXE scripts/evaluate_run_outputs.py --output-root "$outputRoot" --mode "$mode" --symbol "$symbol" --out-md "$md" --out-json "$js" --out-summary "$summary"
           exit 0
 
       - name: Generate metrics table
@@ -7423,7 +7732,7 @@ jobs:
           if (Test-Path 'reports/metrics_summary.md') { Remove-Item 'reports/metrics_summary.md' -Force -ErrorAction SilentlyContinue }
           if (Test-Path 'reports/metrics_summary.csv') { Remove-Item 'reports/metrics_summary.csv' -Force -ErrorAction SilentlyContinue }
 
-          python tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
+          & $env:WINDOWS_PYTHON_EXE tools/report_metrics.py --output-root "$outputRoot" --mode "$env:MODE" --test-start "${{ inputs.test_start_date }}"
 
       - name: Publish metrics to Job Summary
         if: always()
@@ -7501,8 +7810,8 @@ jobs:
           $reportDir = Join-Path $env:GITHUB_WORKSPACE 'report'
           $null = New-Item -Path $reportDir -ItemType Directory -Force
 
-          python -V
-          python tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
+          & $env:WINDOWS_PYTHON_EXE -V
+          & $env:WINDOWS_PYTHON_EXE tools/make_run_csv_report.py --output-root "$outputRoot" --mode "$mode" --report-dir "$reportDir" --max-files 200 --max-cols 8
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "[WARN] make_run_csv_report failed with exit code $LASTEXITCODE"
             exit 0
@@ -7565,7 +7874,7 @@ jobs:
           $publicDir = Join-Path $env:GITHUB_WORKSPACE 'public_report'
           $errorLog = Join-Path $env:GITHUB_WORKSPACE 'temp\ONE_TAP_ERROR_REPORT.txt'
 
-          python tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
+          & $env:WINDOWS_PYTHON_EXE tools/make_public_run_report.py --output-root "$outputRoot" --mode "${{ env.MODE }}" --symbols "${{ inputs.symbols }}" --test-start "${{ inputs.test_start_date }}" --train-years "${{ inputs.train_years }}" --test-months "${{ inputs.test_months }}" --run-id "${{ github.run_id }}" --sha "${{ github.sha }}" --error-log "$errorLog" --out-dir "$publicDir"
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "[WARN] make_public_run_report failed with exit code $LASTEXITCODE"
             exit 0
