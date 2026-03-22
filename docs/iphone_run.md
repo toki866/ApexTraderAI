@@ -23,6 +23,8 @@
 
 ## 3. 完了後の成果物の見方
 
+1. **ローカル canonical output（正本）**
+   - `C:\work\apex_work\output\<mode>\<symbol>\<test_start_date>`
 1. **OneDrive（本命）**
    - `runs/export/output_YYYYMMDD_NNN.zip`
 2. **Actions Artifacts（保険）**

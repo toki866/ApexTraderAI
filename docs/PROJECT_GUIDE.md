@@ -79,7 +79,7 @@ The tree below was generated from the current repository state (depth-limited).
 |---|---|---|---|
 | `.github/workflows/run_desktop_pipeline.yml` | Manual desktop pipeline workflow on self-hosted Windows runner | GitHub Actions `workflow_dispatch` | Workflow artifact `desktop-run-<run_id or github.run_id>` with console log, run logs, and canonical logs |
 | `.github/workflows/ci.yml` | CI compile/import smoke checks on Ubuntu | GitHub push / pull_request triggers | CI job logs; no packaged runtime artifacts |
-| `scripts/run_all_local_then_copy.bat` | End-to-end local run wrapper: setup run dirs, run prep + pipeline, export canonical output ZIP to OneDrive, snapshot repo | Workflow step “Run desktop BAT”; manual cmd/powershell execution | `C:\work\apex_work\runs\<run_id>\{data,logs}` + canonical output under `C:\work\apex_work\output\...` + OneDrive `output_YYYYMMDD_NNN.zip` + `repo_<sha>_<run_id>.zip` snapshot |
+| `scripts/run_all_local_then_copy.bat` | End-to-end local run wrapper: setup run dirs, run prep + pipeline, export canonical output ZIP to OneDrive, snapshot repo | Workflow step “Run desktop BAT”; manual cmd/powershell execution | `C:\work\apex_work\runs\<run_id>\{data,logs}` + canonical output under `C:\work\apex_work\output\<mode>\<symbol>\<test_start_date>` + OneDrive `output_YYYYMMDD_NNN.zip` + `repo_<sha>_<run_id>.zip` snapshot |
 | `scripts/bat_config.bat` | Default runtime variables (symbols, windows, mode, work root, flags) | Sourced by `run_all_local_then_copy.bat` / `doctor.bat` | Env vars only (no files directly) |
 | `scripts/copy_run_to_onedrive.bat` | Re-export an existing canonical output (or run directory) to OneDrive | Manual cmd/powershell execution | OneDrive `runs\export\output_YYYYMMDD_NNN.zip` |
 | `scripts/doctor.bat` | Preflight diagnostics (git/python/torch/data files) | Manual cmd/powershell execution | `doctor_<run_id>.log` in run logs folder |
@@ -201,9 +201,9 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 ## Local disk outputs (BAT default)
 - Run root: `C:\work\apex_work\runs\<run_id>`
 - Data: `...\data`
-- Pipeline outputs: canonical output is written directly under `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>`
-- Canonical output root: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>`
-- Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>_<YYYYMMDD>_<NNN>\logs\`
+- Pipeline outputs: canonical output is written directly under `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>`
+- Canonical output root: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>`
+- Canonical output logs: `C:\work\apex_work\output\<mode>\<primarySymbol>\<test_start_date>\logs\`
   - includes copied run/console/error/step-exec/diagnostics logs plus `logs_manifest.json`
 - DPrime audit outputs now include:
   - `stepDprime_base_meta_<SYMBOL>.json`
@@ -213,6 +213,7 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
 - Logs: `...\logs\run_<run_id>.log`
 - Completion marker: `<canonical output>\DONE.txt`
 - Local ZIP archives are no longer generated; canonical output remains the only local source of truth.
+- Date/sequence-based generation management belongs only to the OneDrive export artifact name, not to the local canonical output path.
 
 ## OneDrive outputs
 Run destination resolution order:
@@ -222,7 +223,7 @@ Run destination resolution order:
 Workflow export payload (when `copy_to_onedrive=true`):
 - canonical-output ZIP only: `output_YYYYMMDD_NNN.zip`
 
-The workflow no longer mirrors the raw canonical `output/` directory to OneDrive. Instead, it scans the shared export directory for existing `output_YYYYMMDD_NNN.zip` files, assigns the next `NNN` for the local date, writes audit metadata locally (`latest_run_info.json` / `onedrive_zip_export_audit.json`), and stores only the canonical-output ZIP in OneDrive.
+The workflow no longer mirrors the raw canonical `output/` directory to OneDrive. Instead, it treats `C:\work\apex_work\output\<mode>\<symbol>\<test_start_date>` as the only local source of truth, scans the shared export directory for existing `output_YYYYMMDD_NNN.zip` files, assigns the next `NNN` for the local date, writes audit metadata locally (`latest_run_info.json` / `onedrive_zip_export_audit.json`), and stores only the canonical-output ZIP in OneDrive.
 
 Snapshot destination resolution order:
 1. `%ONE_DRIVE_SNAPSHOTS_ROOT%`
@@ -239,7 +240,7 @@ Snapshot zip naming:
 - Staged files:
   - `run_all_local_then_copy_console.log`
   - `run_<run_id>.log`
-  - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>_<YYYYMMDD>_<NNN>/logs/`
+  - `canonical_logs/` mirror from `output/<mode>/<primarySymbol>/<test_start_date>/logs/`
   - `logs_manifest.json`
 - Additional publication branch for evaluation snapshots: `output-latest`
   - stores only the latest snapshot payload (`output_latest.zip`, checksum, run metadata, and lightweight eval/index/report files)

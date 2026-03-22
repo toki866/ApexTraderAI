@@ -91,6 +91,8 @@ $assignedSequenceNumber = $null
 $outputZipName = $null
 $outputZipPath = $null
 $createdAt = (Get-Date).ToString('o')
+$exportDate = $null
+$exportSequence = $null
 $zipSizeBytes = [int64]0
 
 if ($exportRequested) {
@@ -120,9 +122,12 @@ if ($exportRequested) {
       $exportResult = 'success'
       $exportWarning = ''
       $createdAt = (Get-Date).ToString('o')
+      $exportDate = $localDateStamp
+      $exportSequence = $assignedSequenceNumber
       Write-Host ("[ZIP_EXPORT_AUDIT] source_canonical_output_path={0}" -f $resolvedOutputRoot)
-      Write-Host ("[ZIP_EXPORT_AUDIT] destination_onedrive_zip_path={0}" -f $outputZipPath)
-      Write-Host ("[ZIP_EXPORT_AUDIT] assigned_sequence_number={0}" -f $assignedSequenceNumber)
+      Write-Host ("[ZIP_EXPORT_AUDIT] destination_onedrive_output_path={0}" -f $outputZipPath)
+      Write-Host ("[ZIP_EXPORT_AUDIT] export_date={0}" -f $exportDate)
+      Write-Host ("[ZIP_EXPORT_AUDIT] export_sequence={0}" -f $exportSequence)
       Write-Host ("[ZIP_EXPORT_AUDIT] created_at={0}" -f $createdAt)
     } catch {
       $exportResult = 'warn'
@@ -153,6 +158,10 @@ $runInfo = [ordered]@{
   onedrive_zip_local_date = $localDateStamp
   onedrive_zip_sequence = $assignedSequenceNumber
   onedrive_zip_size_bytes = $zipSizeBytes
+  source_canonical_output_path = $resolvedOutputRoot
+  destination_onedrive_output_path = $outputZipPath
+  export_date = $exportDate
+  export_sequence = $exportSequence
   exported_to_onedrive = $exportedToOneDrive
   export_result = $exportResult
   export_warning = $exportWarning
@@ -164,7 +173,10 @@ $runInfo = [ordered]@{
 
 $exportAudit = [ordered]@{
   source_canonical_output_path = $resolvedOutputRoot
+  destination_onedrive_output_path = $outputZipPath
   destination_onedrive_zip_path = $outputZipPath
+  export_date = $exportDate
+  export_sequence = $exportSequence
   assigned_sequence_number = $assignedSequenceNumber
   created_at = $createdAt
   export_result = $exportResult

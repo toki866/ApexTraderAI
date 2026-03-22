@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 if "%~1"=="" (
   echo Usage: %~nx0 ^<canonical_output_dir_or_run_dir^>
-  echo Example: %~nx0 C:\work\apex_work\output\sim\SOXL\2022-01-03_20260322_001
+  echo Example: %~nx0 C:\work\apex_work\output\sim\SOXL\2022-01-03
   exit /b 2
 )
 
