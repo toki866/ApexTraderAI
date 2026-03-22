@@ -204,6 +204,12 @@ class StepFTwoStageRouter:
                 "cluster_training_performed": False,
             },
             "router_context": router_artifacts,
+            "provenance": {
+                "target_cluster_missing": bool(fit_info.get("target_cluster_missing", False)),
+                "prev_cluster_missing": bool(fit_info.get("prev_cluster_missing", False)),
+                "router_artifacts_reused": bool(router_artifacts.get("router_artifacts_reused", False)),
+                "unexpected_reaggregate": bool(router_artifacts.get("unexpected_reaggregate", False)),
+            },
             "stage0": {
                 "prev_regime_id": int(regime_dminus1),
                 "topk_candidates": [int(x) for x in topk_candidates],
@@ -309,6 +315,8 @@ class StepFTwoStageRouter:
                 "router_artifact_source": source_name,
                 "router_edge_path": str(edge_path),
                 "router_allowlist_path": str(allow_path),
+                "router_artifacts_reused": True,
+                "unexpected_reaggregate": False,
             }
 
         raise FileNotFoundError(
@@ -359,6 +367,8 @@ class StepFTwoStageRouter:
             "cluster_source": str(cluster_meta.get("assignments_source", "")),
             "cluster_model_version": str(cluster_meta.get("cluster_model_version", "")),
             "cluster_refresh_mode": str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse")),
+            "target_cluster_missing": False,
+            "prev_cluster_missing": False,
         }
         return phase2_df, dminus1, d, fit_info
 
