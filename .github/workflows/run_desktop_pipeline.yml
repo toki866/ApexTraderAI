@@ -251,19 +251,108 @@ jobs:
             }
           }
 
+          function Probe-PythonCandidate {
+            param(
+              [string]$ProbeName,
+              [string]$CandidatePath,
+              [string]$Reason
+            )
+
+            if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'empty'
+                Reason = $Reason
+                Message = 'candidate path is empty'
+                ResolvedPath = ''
+              }
+            }
+
+            try {
+              $exists = Test-Path -LiteralPath $CandidatePath -PathType Leaf -ErrorAction Stop
+              if (-not $exists) {
+                return [pscustomobject]@{
+                  ProbeName = $ProbeName
+                  CandidatePath = $CandidatePath
+                  Status = 'missing'
+                  Reason = $Reason
+                  Message = 'candidate path not found'
+                  ResolvedPath = ''
+                }
+              }
+
+              $resolvedPath = (Resolve-Path -LiteralPath $CandidatePath -ErrorAction Stop).Path
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'ok'
+                Reason = $Reason
+                Message = 'candidate accessible'
+                ResolvedPath = $resolvedPath
+              }
+            } catch [System.UnauthorizedAccessException] {
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'access_denied'
+                Reason = 'unauthorized'
+                Message = $_.Exception.Message
+                ResolvedPath = ''
+              }
+            } catch {
+              $message = $_.Exception.Message
+              $status = 'error'
+              $reasonValue = $Reason
+              if ($message -match 'Access is denied|UnauthorizedAccessException') {
+                $status = 'access_denied'
+                $reasonValue = 'unauthorized'
+              }
+
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = $status
+                Reason = $reasonValue
+                Message = $message
+                ResolvedPath = ''
+              }
+            }
+          }
+
+          function Register-ProbeResult {
+            param([object]$Result)
+
+            $summary = "candidate_probe={0}; candidate_path={1}; candidate_reason={2}; candidate_status={3}; candidate_message={4}" -f `
+              $Result.ProbeName, $Result.CandidatePath, $Result.Reason, $Result.Status, $Result.Message
+            $probedCandidates.Add($summary) | Out-Null
+            Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $summary)
+
+            if ($Result.Status -eq 'access_denied') {
+              $accessDeniedCandidates.Add($summary) | Out-Null
+              Write-Warning ("bootstrap_windows_python access denied for {0}: {1}" -f $Result.CandidatePath, $Result.Message)
+            }
+          }
+
           $whoamiValue = ((whoami) | Out-String).Trim()
           $serviceContext = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
           $pathValue = $env:PATH
-          $candidatePaths = @(
-            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe',
-            'C:\Program Files\Python310\python.exe',
+          $systemCandidatePaths = @(
             'C:\Python310\python.exe',
+            'C:\Program Files\Python310\python.exe',
+            'C:\Program Files\Python311\python.exe',
+            'C:\Program Files\Python312\python.exe',
             'C:\hostedtoolcache\windows\Python\3.10.11\x64\python.exe',
             'C:\hostedtoolcache\windows\Python\3.10.10\x64\python.exe'
           )
+          $userCandidatePaths = @(
+            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe'
+          )
           $resolvedPython = ''
           $resolutionSource = ''
-          $seenCandidates = New-Object System.Collections.Generic.List[string]
+          $probedCandidates = New-Object System.Collections.Generic.List[string]
+          $accessDeniedCandidates = New-Object System.Collections.Generic.List[string]
+          $scriptsDirExists = $false
 
           Write-BootstrapLog '[STEP] bootstrap_windows_python'
           Write-BootstrapLog ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue)
@@ -274,9 +363,10 @@ jobs:
           Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py'))
 
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE)) {
-            $seenCandidates.Add("env:WINDOWS_PYTHON_EXE=$env:WINDOWS_PYTHON_EXE") | Out-Null
-            if (Test-Path $env:WINDOWS_PYTHON_EXE) {
-              $resolvedPython = (Resolve-Path $env:WINDOWS_PYTHON_EXE).Path
+            $probeResult = Probe-PythonCandidate -ProbeName 'env:WINDOWS_PYTHON_EXE' -CandidatePath $env:WINDOWS_PYTHON_EXE -Reason 'explicit_env'
+            Register-ProbeResult -Result $probeResult
+            if ($probeResult.Status -eq 'ok') {
+              $resolvedPython = $probeResult.ResolvedPath
               $resolutionSource = 'env:WINDOWS_PYTHON_EXE'
             }
           }
@@ -284,70 +374,116 @@ jobs:
           if (-not $resolvedPython) {
             try {
               $pythonCmd = Get-Command python -ErrorAction Stop
-              $seenCandidates.Add("Get-Command python=$($pythonCmd.Source)") | Out-Null
-              if (Test-Path $pythonCmd.Source) {
-                $resolvedPython = $pythonCmd.Source
+              $probeResult = Probe-PythonCandidate -ProbeName 'Get-Command python' -CandidatePath $pythonCmd.Source -Reason 'command_python'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
                 $resolutionSource = 'Get-Command python'
               }
             } catch {
-              $seenCandidates.Add('Get-Command python=(not found)') | Out-Null
+              $notFound = 'candidate_probe=Get-Command python; candidate_path=(not found); candidate_reason=command_python; candidate_status=not_found; candidate_message=Get-Command python failed'
+              $probedCandidates.Add($notFound) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $notFound)
             }
           }
 
           if (-not $resolvedPython) {
             try {
               $pyLauncher = Get-Command py -ErrorAction Stop
-              $seenCandidates.Add("Get-Command py=$($pyLauncher.Source)") | Out-Null
+              $launcherInfo = "candidate_probe=Get-Command py; candidate_path={0}; candidate_reason=command_py_launcher; candidate_status=found; candidate_message=py launcher found" -f $pyLauncher.Source
+              $probedCandidates.Add($launcherInfo) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $launcherInfo)
+
               $pyExec = (& py -3.10 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1).Trim()
               if (-not [string]::IsNullOrWhiteSpace($pyExec)) {
-                $seenCandidates.Add("py -3.10 => $pyExec") | Out-Null
-                if (Test-Path $pyExec) {
-                  $resolvedPython = (Resolve-Path $pyExec).Path
+                $probeResult = Probe-PythonCandidate -ProbeName 'py -3.10' -CandidatePath $pyExec -Reason 'py_launcher_3_10'
+                Register-ProbeResult -Result $probeResult
+                if ($probeResult.Status -eq 'ok') {
+                  $resolvedPython = $probeResult.ResolvedPath
                   $resolutionSource = 'py -3.10'
                 }
+              } else {
+                $pyEmpty = 'candidate_probe=py -3.10; candidate_path=(empty); candidate_reason=py_launcher_3_10; candidate_status=empty; candidate_message=py launcher returned empty executable path'
+                $probedCandidates.Add($pyEmpty) | Out-Null
+                Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $pyEmpty)
               }
             } catch {
-              $seenCandidates.Add("py -3.10 failed=$($_.Exception.Message)") | Out-Null
+              $pyFailed = "candidate_probe=py -3.10; candidate_path=(launcher invocation failed); candidate_reason=py_launcher_3_10; candidate_status=error; candidate_message={0}" -f $_.Exception.Message
+              $probedCandidates.Add($pyFailed) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $pyFailed)
             }
           }
 
           if (-not $resolvedPython) {
-            foreach ($candidate in $candidatePaths) {
-              $exists = Test-Path $candidate
-              $seenCandidates.Add("candidate=$candidate exists=$exists") | Out-Null
-              if ($exists) {
-                $resolvedPython = (Resolve-Path $candidate).Path
-                $resolutionSource = 'candidate_path'
+            foreach ($candidate in $systemCandidatePaths) {
+              $probeResult = Probe-PythonCandidate -ProbeName 'system_candidate' -CandidatePath $candidate -Reason 'system_scope_candidate'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
+                $resolutionSource = 'system_candidate'
                 break
               }
             }
           }
 
           if (-not $resolvedPython) {
+            foreach ($candidate in $userCandidatePaths) {
+              $probeResult = Probe-PythonCandidate -ProbeName 'user_candidate' -CandidatePath $candidate -Reason 'user_scope_candidate'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
+                $resolutionSource = 'user_candidate'
+                break
+              }
+            }
+          }
+
+          if (-not $resolvedPython) {
+            $accessDeniedLines = @()
+            if ($accessDeniedCandidates.Count -gt 0) {
+              $accessDeniedLines = $accessDeniedCandidates | ForEach-Object { "  - $_" }
+            } else {
+              $accessDeniedLines = @('  - (none)')
+            }
+
             $failureLines = @(
-              '[NG] bootstrap_windows_python python_not_found',
+              '[NG] bootstrap_windows_python no_accessible_python',
+              ("[PY_BOOTSTRAP] final_error=No accessible Windows Python interpreter resolved for runner service context"),
               ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue),
               ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext),
               ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue),
-              '[PY_BOOTSTRAP] inspected_candidates:'
-            ) + ($seenCandidates | ForEach-Object { "  - $_" })
+              ("[PY_BOOTSTRAP] Get-Command python={0}" -f (Format-CommandResult -Name 'python')),
+              ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py')),
+              '[PY_BOOTSTRAP] probed_candidates:'
+            ) + ($probedCandidates | ForEach-Object { "  - $_" }) + @(
+              '[PY_BOOTSTRAP] access_denied_candidates:'
+            ) + $accessDeniedLines + @(
+              '[PY_BOOTSTRAP] suggestion=Run the GitHub Actions runner service as the login user that owns the Python installation, or install Python system-wide and/or set WINDOWS_PYTHON_EXE to an accessible interpreter path.'
+            )
             Add-Content -Path $reportPath -Value $failureLines
             $failureLines | ForEach-Object { Write-Error $_ }
-            throw 'Windows Python bootstrap failed before downstream steps.'
+            throw 'No accessible Windows Python interpreter resolved for runner service context'
           }
 
           $resolvedDir = Split-Path $resolvedPython -Parent
           $scriptsDir = Join-Path $resolvedDir 'Scripts'
+          try {
+            $scriptsDirExists = Test-Path -LiteralPath $scriptsDir -PathType Container -ErrorAction Stop
+          } catch [System.UnauthorizedAccessException] {
+            $scriptsDirExists = $false
+            Write-Warning ("bootstrap_windows_python scripts dir access denied: {0}" -f $scriptsDir)
+            Write-BootstrapLog ("[PY_BOOTSTRAP] scripts_dir_probe=access_denied; scripts_dir={0}" -f $scriptsDir)
+          }
           "WINDOWS_PYTHON_EXE=$resolvedPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $resolvedDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          if (Test-Path $scriptsDir) {
+          if ($scriptsDirExists) {
             $scriptsDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
 
           Write-BootstrapLog ("[PY_BOOTSTRAP] resolved_python={0}" -f $resolvedPython)
           Write-BootstrapLog ("[PY_BOOTSTRAP] resolution_source={0}" -f $resolutionSource)
           Write-BootstrapLog ("[PY_BOOTSTRAP] add_path_dir={0}" -f $resolvedDir)
-          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, (Test-Path $scriptsDir))
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, $scriptsDirExists)
           & $resolvedPython --version | ForEach-Object { Write-BootstrapLog ("[PY_BOOTSTRAP] version={0}" -f $_) }
 
       - name: GPU / CUDA diagnostics
@@ -4759,19 +4895,108 @@ jobs:
             }
           }
 
+          function Probe-PythonCandidate {
+            param(
+              [string]$ProbeName,
+              [string]$CandidatePath,
+              [string]$Reason
+            )
+
+            if ([string]::IsNullOrWhiteSpace($CandidatePath)) {
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'empty'
+                Reason = $Reason
+                Message = 'candidate path is empty'
+                ResolvedPath = ''
+              }
+            }
+
+            try {
+              $exists = Test-Path -LiteralPath $CandidatePath -PathType Leaf -ErrorAction Stop
+              if (-not $exists) {
+                return [pscustomobject]@{
+                  ProbeName = $ProbeName
+                  CandidatePath = $CandidatePath
+                  Status = 'missing'
+                  Reason = $Reason
+                  Message = 'candidate path not found'
+                  ResolvedPath = ''
+                }
+              }
+
+              $resolvedPath = (Resolve-Path -LiteralPath $CandidatePath -ErrorAction Stop).Path
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'ok'
+                Reason = $Reason
+                Message = 'candidate accessible'
+                ResolvedPath = $resolvedPath
+              }
+            } catch [System.UnauthorizedAccessException] {
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = 'access_denied'
+                Reason = 'unauthorized'
+                Message = $_.Exception.Message
+                ResolvedPath = ''
+              }
+            } catch {
+              $message = $_.Exception.Message
+              $status = 'error'
+              $reasonValue = $Reason
+              if ($message -match 'Access is denied|UnauthorizedAccessException') {
+                $status = 'access_denied'
+                $reasonValue = 'unauthorized'
+              }
+
+              return [pscustomobject]@{
+                ProbeName = $ProbeName
+                CandidatePath = $CandidatePath
+                Status = $status
+                Reason = $reasonValue
+                Message = $message
+                ResolvedPath = ''
+              }
+            }
+          }
+
+          function Register-ProbeResult {
+            param([object]$Result)
+
+            $summary = "candidate_probe={0}; candidate_path={1}; candidate_reason={2}; candidate_status={3}; candidate_message={4}" -f `
+              $Result.ProbeName, $Result.CandidatePath, $Result.Reason, $Result.Status, $Result.Message
+            $probedCandidates.Add($summary) | Out-Null
+            Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $summary)
+
+            if ($Result.Status -eq 'access_denied') {
+              $accessDeniedCandidates.Add($summary) | Out-Null
+              Write-Warning ("bootstrap_windows_python access denied for {0}: {1}" -f $Result.CandidatePath, $Result.Message)
+            }
+          }
+
           $whoamiValue = ((whoami) | Out-String).Trim()
           $serviceContext = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
           $pathValue = $env:PATH
-          $candidatePaths = @(
-            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe',
-            'C:\Program Files\Python310\python.exe',
+          $systemCandidatePaths = @(
             'C:\Python310\python.exe',
+            'C:\Program Files\Python310\python.exe',
+            'C:\Program Files\Python311\python.exe',
+            'C:\Program Files\Python312\python.exe',
             'C:\hostedtoolcache\windows\Python\3.10.11\x64\python.exe',
             'C:\hostedtoolcache\windows\Python\3.10.10\x64\python.exe'
           )
+          $userCandidatePaths = @(
+            'C:\Users\becky\AppData\Local\Programs\Python\Python310\python.exe'
+          )
           $resolvedPython = ''
           $resolutionSource = ''
-          $seenCandidates = New-Object System.Collections.Generic.List[string]
+          $probedCandidates = New-Object System.Collections.Generic.List[string]
+          $accessDeniedCandidates = New-Object System.Collections.Generic.List[string]
+          $scriptsDirExists = $false
 
           Write-BootstrapLog '[STEP] bootstrap_windows_python'
           Write-BootstrapLog ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue)
@@ -4782,9 +5007,10 @@ jobs:
           Write-BootstrapLog ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py'))
 
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PYTHON_EXE)) {
-            $seenCandidates.Add("env:WINDOWS_PYTHON_EXE=$env:WINDOWS_PYTHON_EXE") | Out-Null
-            if (Test-Path $env:WINDOWS_PYTHON_EXE) {
-              $resolvedPython = (Resolve-Path $env:WINDOWS_PYTHON_EXE).Path
+            $probeResult = Probe-PythonCandidate -ProbeName 'env:WINDOWS_PYTHON_EXE' -CandidatePath $env:WINDOWS_PYTHON_EXE -Reason 'explicit_env'
+            Register-ProbeResult -Result $probeResult
+            if ($probeResult.Status -eq 'ok') {
+              $resolvedPython = $probeResult.ResolvedPath
               $resolutionSource = 'env:WINDOWS_PYTHON_EXE'
             }
           }
@@ -4792,70 +5018,116 @@ jobs:
           if (-not $resolvedPython) {
             try {
               $pythonCmd = Get-Command python -ErrorAction Stop
-              $seenCandidates.Add("Get-Command python=$($pythonCmd.Source)") | Out-Null
-              if (Test-Path $pythonCmd.Source) {
-                $resolvedPython = $pythonCmd.Source
+              $probeResult = Probe-PythonCandidate -ProbeName 'Get-Command python' -CandidatePath $pythonCmd.Source -Reason 'command_python'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
                 $resolutionSource = 'Get-Command python'
               }
             } catch {
-              $seenCandidates.Add('Get-Command python=(not found)') | Out-Null
+              $notFound = 'candidate_probe=Get-Command python; candidate_path=(not found); candidate_reason=command_python; candidate_status=not_found; candidate_message=Get-Command python failed'
+              $probedCandidates.Add($notFound) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $notFound)
             }
           }
 
           if (-not $resolvedPython) {
             try {
               $pyLauncher = Get-Command py -ErrorAction Stop
-              $seenCandidates.Add("Get-Command py=$($pyLauncher.Source)") | Out-Null
+              $launcherInfo = "candidate_probe=Get-Command py; candidate_path={0}; candidate_reason=command_py_launcher; candidate_status=found; candidate_message=py launcher found" -f $pyLauncher.Source
+              $probedCandidates.Add($launcherInfo) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $launcherInfo)
+
               $pyExec = (& py -3.10 -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1).Trim()
               if (-not [string]::IsNullOrWhiteSpace($pyExec)) {
-                $seenCandidates.Add("py -3.10 => $pyExec") | Out-Null
-                if (Test-Path $pyExec) {
-                  $resolvedPython = (Resolve-Path $pyExec).Path
+                $probeResult = Probe-PythonCandidate -ProbeName 'py -3.10' -CandidatePath $pyExec -Reason 'py_launcher_3_10'
+                Register-ProbeResult -Result $probeResult
+                if ($probeResult.Status -eq 'ok') {
+                  $resolvedPython = $probeResult.ResolvedPath
                   $resolutionSource = 'py -3.10'
                 }
+              } else {
+                $pyEmpty = 'candidate_probe=py -3.10; candidate_path=(empty); candidate_reason=py_launcher_3_10; candidate_status=empty; candidate_message=py launcher returned empty executable path'
+                $probedCandidates.Add($pyEmpty) | Out-Null
+                Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $pyEmpty)
               }
             } catch {
-              $seenCandidates.Add("py -3.10 failed=$($_.Exception.Message)") | Out-Null
+              $pyFailed = "candidate_probe=py -3.10; candidate_path=(launcher invocation failed); candidate_reason=py_launcher_3_10; candidate_status=error; candidate_message={0}" -f $_.Exception.Message
+              $probedCandidates.Add($pyFailed) | Out-Null
+              Write-BootstrapLog ("[PY_BOOTSTRAP] {0}" -f $pyFailed)
             }
           }
 
           if (-not $resolvedPython) {
-            foreach ($candidate in $candidatePaths) {
-              $exists = Test-Path $candidate
-              $seenCandidates.Add("candidate=$candidate exists=$exists") | Out-Null
-              if ($exists) {
-                $resolvedPython = (Resolve-Path $candidate).Path
-                $resolutionSource = 'candidate_path'
+            foreach ($candidate in $systemCandidatePaths) {
+              $probeResult = Probe-PythonCandidate -ProbeName 'system_candidate' -CandidatePath $candidate -Reason 'system_scope_candidate'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
+                $resolutionSource = 'system_candidate'
                 break
               }
             }
           }
 
           if (-not $resolvedPython) {
+            foreach ($candidate in $userCandidatePaths) {
+              $probeResult = Probe-PythonCandidate -ProbeName 'user_candidate' -CandidatePath $candidate -Reason 'user_scope_candidate'
+              Register-ProbeResult -Result $probeResult
+              if ($probeResult.Status -eq 'ok') {
+                $resolvedPython = $probeResult.ResolvedPath
+                $resolutionSource = 'user_candidate'
+                break
+              }
+            }
+          }
+
+          if (-not $resolvedPython) {
+            $accessDeniedLines = @()
+            if ($accessDeniedCandidates.Count -gt 0) {
+              $accessDeniedLines = $accessDeniedCandidates | ForEach-Object { "  - $_" }
+            } else {
+              $accessDeniedLines = @('  - (none)')
+            }
+
             $failureLines = @(
-              '[NG] bootstrap_windows_python python_not_found',
+              '[NG] bootstrap_windows_python no_accessible_python',
+              ("[PY_BOOTSTRAP] final_error=No accessible Windows Python interpreter resolved for runner service context"),
               ("[PY_BOOTSTRAP] whoami={0}" -f $whoamiValue),
               ("[PY_BOOTSTRAP] service_context={0}" -f $serviceContext),
               ("[PY_BOOTSTRAP] PATH={0}" -f $pathValue),
-              '[PY_BOOTSTRAP] inspected_candidates:'
-            ) + ($seenCandidates | ForEach-Object { "  - $_" })
+              ("[PY_BOOTSTRAP] Get-Command python={0}" -f (Format-CommandResult -Name 'python')),
+              ("[PY_BOOTSTRAP] Get-Command py={0}" -f (Format-CommandResult -Name 'py')),
+              '[PY_BOOTSTRAP] probed_candidates:'
+            ) + ($probedCandidates | ForEach-Object { "  - $_" }) + @(
+              '[PY_BOOTSTRAP] access_denied_candidates:'
+            ) + $accessDeniedLines + @(
+              '[PY_BOOTSTRAP] suggestion=Run the GitHub Actions runner service as the login user that owns the Python installation, or install Python system-wide and/or set WINDOWS_PYTHON_EXE to an accessible interpreter path.'
+            )
             Add-Content -Path $reportPath -Value $failureLines
             $failureLines | ForEach-Object { Write-Error $_ }
-            throw 'Windows Python bootstrap failed before downstream steps.'
+            throw 'No accessible Windows Python interpreter resolved for runner service context'
           }
 
           $resolvedDir = Split-Path $resolvedPython -Parent
           $scriptsDir = Join-Path $resolvedDir 'Scripts'
+          try {
+            $scriptsDirExists = Test-Path -LiteralPath $scriptsDir -PathType Container -ErrorAction Stop
+          } catch [System.UnauthorizedAccessException] {
+            $scriptsDirExists = $false
+            Write-Warning ("bootstrap_windows_python scripts dir access denied: {0}" -f $scriptsDir)
+            Write-BootstrapLog ("[PY_BOOTSTRAP] scripts_dir_probe=access_denied; scripts_dir={0}" -f $scriptsDir)
+          }
           "WINDOWS_PYTHON_EXE=$resolvedPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $resolvedDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          if (Test-Path $scriptsDir) {
+          if ($scriptsDirExists) {
             $scriptsDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
 
           Write-BootstrapLog ("[PY_BOOTSTRAP] resolved_python={0}" -f $resolvedPython)
           Write-BootstrapLog ("[PY_BOOTSTRAP] resolution_source={0}" -f $resolutionSource)
           Write-BootstrapLog ("[PY_BOOTSTRAP] add_path_dir={0}" -f $resolvedDir)
-          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, (Test-Path $scriptsDir))
+          Write-BootstrapLog ("[PY_BOOTSTRAP] add_scripts_dir={0} exists={1}" -f $scriptsDir, $scriptsDirExists)
           & $resolvedPython --version | ForEach-Object { Write-BootstrapLog ("[PY_BOOTSTRAP] version={0}" -f $_) }
 
       - name: GPU / CUDA diagnostics
