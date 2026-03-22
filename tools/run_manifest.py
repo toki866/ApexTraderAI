@@ -611,6 +611,33 @@ def read_stepe_quality_status(agent: str, output_root: Path, symbol: str, mode: 
     return None
 
 
+def read_stepf_quality_status(output_root: Path, symbol: str, mode: str) -> Optional[str]:
+    """Return normalized PASS/WARN/FAIL for StepF based on persisted audit payloads."""
+    audit_root = Path(output_root) / "audit" / mode
+    mode_root = Path(output_root) / "stepF" / mode
+    statuses: List[str] = []
+    for meta_path in (
+        audit_root / f"audit_stepF_router_{symbol}.json",
+        audit_root / f"audit_stepF_marl_{symbol}.json",
+        mode_root / f"stepF_audit_router_{symbol}.json",
+        mode_root / f"stepF_summary_router_{symbol}.json",
+    ):
+        payload = _read_json_payload(meta_path)
+        for key in ("audit_status", "status"):
+            raw = str(payload.get(key, "") or "").strip().upper()
+            if raw:
+                statuses.append(raw)
+                break
+    normalized = [s for s in statuses if s in {"PASS", "WARN", "FAIL"}]
+    if not normalized:
+        return None
+    if "FAIL" in normalized:
+        return "FAIL"
+    if "WARN" in normalized:
+        return "WARN"
+    return "PASS"
+
+
 def reconcile_stepe_manifest_from_artifacts(
     requested_agents: List[str],
     *,
@@ -695,6 +722,93 @@ def reconcile_stepe_manifest_from_artifacts(
         "all_complete": all_complete,
         "final_status": "complete" if all_complete else "partial",
         "return_code": 0 if all_complete else 1,
+    }
+
+
+def reconcile_stepf_manifest_from_artifacts(
+    *,
+    output_root: Path,
+    mode: str,
+    symbol: str,
+    requested_reward_modes: Optional[List[str]] = None,
+    manifest: Optional["RunManifest"] = None,
+) -> Dict[str, Any]:
+    """Reconcile stale StepF manifest state against on-disk outputs and audits."""
+    requested = list(dict.fromkeys(str(m).strip().lower() for m in (requested_reward_modes or []) if str(m).strip()))
+    mode_root = Path(output_root) / "stepF" / mode
+    summary_path = mode_root / f"stepF_multi_mode_summary_{symbol}.json"
+    summary_payload = _read_json_payload(summary_path)
+    if not requested:
+        requested = [str(x).strip().lower() for x in summary_payload.get("reward_modes", []) if str(x).strip()]
+
+    success_modes = [str(x).strip().lower() for x in summary_payload.get("success_modes", []) if str(x).strip()]
+    failed_modes = [str(x).strip().lower() for x in summary_payload.get("failed_modes", []) if str(x).strip()]
+    reused_modes = [str(x).strip().lower() for x in summary_payload.get("reused_modes", []) if str(x).strip()]
+    publish_completed = bool(summary_payload.get("publish_completed", False))
+    artifacts_ok = check_step_artifacts("F", output_root, symbol, mode, required_stepf_reward_modes=tuple(requested))
+    audit_status = read_stepf_quality_status(output_root, symbol, mode) or ("PASS" if artifacts_ok else "FAIL")
+
+    inconsistencies: List[Dict[str, Any]] = []
+    if artifacts_ok and requested and set(requested) - set(success_modes) - set(reused_modes):
+        inconsistencies.append(
+            {
+                "kind": "structured_inconsistency",
+                "code": "stepf_reward_mode_summary_missing_success",
+                "requested_reward_modes": requested,
+                "success_modes": success_modes,
+                "reused_modes": reused_modes,
+            }
+        )
+    if artifacts_ok and summary_payload and not publish_completed:
+        inconsistencies.append(
+            {
+                "kind": "structured_inconsistency",
+                "code": "stepf_publish_incomplete_with_artifacts_present",
+                "summary_path": str(summary_path),
+            }
+        )
+    if failed_modes and artifacts_ok:
+        inconsistencies.append(
+            {
+                "kind": "structured_inconsistency",
+                "code": "stepf_failed_modes_present_but_canonical_outputs_complete",
+                "failed_modes": failed_modes,
+            }
+        )
+
+    final_status = "complete" if artifacts_ok else ("failed" if failed_modes else "pending")
+
+    if manifest is not None:
+        step_data = manifest._data.setdefault("steps", {}).setdefault("F", {})
+        step_data.update(
+            {
+                "reward_modes_requested": requested,
+                "reward_modes_completed": success_modes,
+                "reward_modes_failed": failed_modes,
+                "reward_modes_reused": reused_modes,
+                "publish_completed": publish_completed,
+                "multi_mode_summary_path": str(summary_path) if summary_path.exists() else "",
+                "structured_inconsistencies": inconsistencies,
+            }
+        )
+        if final_status == "complete":
+            manifest.mark_step_verified("F", "complete", artifacts_ok=True, audit_status=audit_status, invalid_status="pending")
+        else:
+            manifest.mark_step("F", final_status)
+            manifest.mark_step_audit("F", audit_status)
+            manifest.save()
+
+    return {
+        "requested_reward_modes": requested,
+        "success_modes": success_modes,
+        "failed_modes": failed_modes,
+        "reused_modes": reused_modes,
+        "publish_completed": publish_completed,
+        "artifacts_ok": artifacts_ok,
+        "audit_status": audit_status,
+        "final_status": final_status,
+        "structured_inconsistencies": inconsistencies,
+        "summary_path": str(summary_path) if summary_path.exists() else "",
     }
 
 

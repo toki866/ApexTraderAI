@@ -2448,9 +2448,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _run_manifest is None:
             return
         try:
-            from tools.run_manifest import read_stepe_quality_status as _read_stepe_quality_status
+            from tools.run_manifest import (
+                read_stepe_quality_status as _read_stepe_quality_status,
+                reconcile_stepf_manifest_from_artifacts as _reconcile_stepf_manifest_from_artifacts,
+            )
 
-            for _step in ("A", "B", "C", "DPRIME", "F"):
+            for _step in ("A", "B", "C", "DPRIME"):
                 _required_reward_modes = _stepf_required_reward_modes() if _step == "F" else tuple()
                 _required_dprime_profiles = tuple(_extract_stepe_agents_from_config(app_config) or list(_OFFICIAL_STEPE_AGENTS)) if _step == "DPRIME" else tuple()
                 _artifact_ok = check_step_artifacts(
@@ -2487,6 +2490,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     _run_manifest.mark_step_verified("E", "complete", artifacts_ok=False, audit_status="FAIL", invalid_status="pending")
             elif _stepe_complete and _run_manifest.step_status("E") not in ("complete", "reuse"):
                 _run_manifest.mark_step_verified("E", "complete", artifacts_ok=True, audit_status="PASS", invalid_status="pending")
+            _reconcile_stepf_manifest_from_artifacts(
+                output_root=Path(resolved_output_root),
+                mode=resolved_mode,
+                symbol=symbol,
+                requested_reward_modes=list(_stepf_required_reward_modes()),
+                manifest=_run_manifest,
+            )
         except Exception as _manifest_norm_e:
             print(f"[reuse] WARNING manifest normalization failed: {type(_manifest_norm_e).__name__}: {_manifest_norm_e}", file=sys.stderr)
 
@@ -2528,6 +2538,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for _agent in _result["missing_agents"]:
                 print(f"[STEPE_FINAL] missing_agent={_agent} missing={'|'.join(_result['missing_detail'].get(_agent, []))}")
 
+        return _result
+
+    def _evaluate_stepf_final_state() -> Dict[str, Any]:
+        from tools.run_manifest import reconcile_stepf_manifest_from_artifacts  # lazy import
+
+        _result = reconcile_stepf_manifest_from_artifacts(
+            output_root=Path(resolved_output_root),
+            mode=resolved_mode,
+            symbol=symbol,
+            requested_reward_modes=list(_stepf_required_reward_modes()),
+            manifest=_run_manifest,
+        )
+        print(f"[STEPF_FINAL] requested_reward_modes={','.join(_result['requested_reward_modes']) if _result['requested_reward_modes'] else '(none)'}")
+        print(f"[STEPF_FINAL] success_modes={','.join(_result['success_modes']) if _result['success_modes'] else '(none)'}")
+        print(f"[STEPF_FINAL] failed_modes={','.join(_result['failed_modes']) if _result['failed_modes'] else '(none)'}")
+        print(f"[STEPF_FINAL] publish_completed={str(bool(_result['publish_completed'])).lower()}")
+        print(f"[STEPF_FINAL] artifacts_ok={str(bool(_result['artifacts_ok'])).lower()}")
+        print(f"[STEPF_FINAL] audit_status={_result['audit_status']}")
+        for _issue in _result.get("structured_inconsistencies", []):
+            print(f"[STEPF_FINAL] structured_inconsistency={json.dumps(_issue, ensure_ascii=False, sort_keys=True)}")
         return _result
 
     def _run_stepe_agents_incrementally(
@@ -3527,6 +3557,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(f"[StepF] status=reuse signature={_run_sig.stable_hash()[:8] if '_run_sig' in dir() else 'n/a'}")
                     _mark_step("F", "reuse")
                     _update_stepf_manifest_fields("reuse")
+                    _evaluate_stepf_final_state()
                     timing.mark_step_reused("F")
                     timing.emit_instant(stage="stepF.total", status="skipped", meta={"skipped": True})
                     if _run_manifest is not None:
@@ -3607,8 +3638,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             try:
                                 _sf_audits = audit_stepf_now(Path(resolved_output_root), resolved_mode, symbol, _audit_root_f)
                                 if _sf_audits and not all(v.get("status") == "PASS" for v in _sf_audits.values()):
-                                    _sf_status = "WARN"
-                                    print("[StepF] WARN audit mismatch detected (non-fatal if final artifacts are complete)", file=sys.stderr)
+                                    _sf_status = "FAIL"
+                                    print("[StepF] WARN audit mismatch detected; manifest will record FAIL while preserving completed artifacts", file=sys.stderr)
                             except Exception as _sfe:
                                 _sf_status = "WARN"
                                 print(f"[StepF] WARN audit: {_sfe}", file=sys.stderr)
@@ -3627,8 +3658,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
                             _run_manifest.mark_step_audit("F", _sf_status)
                             _update_stepf_manifest_fields("complete")
+                            _stepf_final = _evaluate_stepf_final_state()
                             print(f"[StepF] audit={_sf_status}")
-                            if _sf_status == "FAIL":
+                            if _sf_status == "FAIL" or _stepf_final.get("final_status") != "complete":
                                 _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="final_artifacts_invalid")
                                 raise RuntimeError("StepF final artifacts invalid")
                         else:
@@ -3662,8 +3694,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     elif step == "E":
                         _mark_step_verified("E", "complete", invalid_status="pending")
                     elif step == "F":
-                        _mark_step_verified("F", "complete", invalid_status="pending")
                         _update_stepf_manifest_fields("complete")
+                        _stepf_final = _evaluate_stepf_final_state()
+                        if _stepf_final.get("final_status") != "complete":
+                            _emit_step_status("F", status="fail", started_at=_t0_generic_wall, ended_at=time.time(), validated=False, detail="manifest_reconciliation_incomplete")
+                            raise RuntimeError("StepF finalize/manifest reconciliation incomplete")
                     else:
                         _mark_step(step if step != "D" else "D", "complete")
                     _emit_step_status(step if step != "D" else "D", status="run", started_at=_t0_generic_wall, ended_at=time.time(), validated=True)

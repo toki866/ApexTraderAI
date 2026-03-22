@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import tools.run_manifest as rm
 import tools.run_pipeline as rp
-from tools.run_manifest import RunManifest, RunSignature, reconcile_stepe_manifest_from_artifacts
+from tools.run_manifest import (
+    RunManifest,
+    RunSignature,
+    reconcile_stepe_manifest_from_artifacts,
+    reconcile_stepf_manifest_from_artifacts,
+)
 
 
 def _build_manifest(output_root: Path, agents: list[str]) -> RunManifest:
@@ -210,3 +215,77 @@ def test_main_reuse_resume_advances_from_stepe_to_stepf(tmp_path: Path, monkeypa
     for agent in agents:
         assert data["steps"]["E"]["agents"][agent]["audit_status"] == "PASS"
         assert data["steps"]["E"]["agents"][agent]["status"] in {"complete", "reuse"}
+
+
+def test_reconcile_stepf_manifest_self_heals_complete_with_fail_audit(tmp_path: Path) -> None:
+    output_root = tmp_path / "output"
+    manifest = _build_manifest(output_root, ["agent_a"])
+    manifest.mark_step("F", "running")
+
+    stepf_root = output_root / "stepF" / "sim"
+    audit_root = output_root / "audit" / "sim"
+    reward_root = stepf_root / "reward_legacy"
+    reward_root.mkdir(parents=True, exist_ok=True)
+    audit_root.mkdir(parents=True, exist_ok=True)
+
+    csv_payload = "Date,Split,ratio,ret,cost,equity,r_soxl,r_soxs\n2024-01-02,test,1.0,0.01,0.0,1.01,0.01,-0.01\n"
+    for name in ("router", "marl"):
+        (stepf_root / f"stepF_daily_log_{name}_SOXL.csv").write_text(csv_payload, encoding="utf-8")
+        (reward_root / f"stepF_daily_log_{name}_SOXL.csv").write_text(csv_payload, encoding="utf-8")
+    (stepf_root / "stepF_equity_marl_SOXL.csv").write_text(
+        "Date,Split,ratio,ret,equity\n2024-01-02,test,1.0,0.01,1.01\n",
+        encoding="utf-8",
+    )
+    (reward_root / "stepF_equity_marl_SOXL.csv").write_text(
+        "Date,Split,ratio,ret,equity\n2024-01-02,test,1.0,0.01,1.01\n",
+        encoding="utf-8",
+    )
+    summary_payload = {
+        "mode": "sim",
+        "symbol": "SOXL",
+        "reward_mode": "legacy",
+        "equity_end": 1.01,
+        "status": "FAIL",
+        "audit_status": "FAIL",
+        "policy_compare": {},
+    }
+    (stepf_root / "stepF_summary_router_SOXL.json").write_text(json.dumps(summary_payload), encoding="utf-8")
+    (reward_root / "stepF_summary_router_SOXL.json").write_text(json.dumps(summary_payload), encoding="utf-8")
+    (stepf_root / "stepF_audit_router_SOXL.json").write_text(json.dumps(summary_payload), encoding="utf-8")
+    (reward_root / "stepF_audit_router_SOXL.json").write_text(json.dumps(summary_payload), encoding="utf-8")
+    (audit_root / "stepF_policy_compare_SOXL.json").write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    (reward_root / "stepF_policy_compare_SOXL.json").write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    (reward_root / "status.json").write_text(
+        json.dumps({"status": "complete", "required_artifacts_present": True, "publish_ready": True, "reused": False}),
+        encoding="utf-8",
+    )
+    (reward_root / "artifacts_manifest.json").write_text(json.dumps({"validation_passed": True}), encoding="utf-8")
+    (stepf_root / "stepF_multi_mode_summary_SOXL.json").write_text(
+        json.dumps(
+            {
+                "reward_modes": ["legacy"],
+                "success_modes": ["legacy"],
+                "failed_modes": [],
+                "reused_modes": [],
+                "publish_completed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (audit_root / "audit_stepF_router_SOXL.json").write_text(json.dumps({"status": "FAIL", "audit_status": "FAIL"}), encoding="utf-8")
+    (audit_root / "audit_stepF_marl_SOXL.json").write_text(json.dumps({"status": "FAIL", "audit_status": "FAIL"}), encoding="utf-8")
+
+    result = reconcile_stepf_manifest_from_artifacts(
+        output_root=output_root,
+        mode="sim",
+        symbol="SOXL",
+        requested_reward_modes=["legacy"],
+        manifest=manifest,
+    )
+
+    data = json.loads((output_root / "run_manifest.json").read_text(encoding="utf-8"))
+    assert result["final_status"] == "complete"
+    assert result["audit_status"] == "FAIL"
+    assert data["steps"]["F"]["status"] == "complete"
+    assert data["steps"]["F"]["completed_at"] is not None
+    assert data["steps"]["F"]["audit_status"] == "FAIL"
