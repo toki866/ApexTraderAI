@@ -47,50 +47,22 @@ function Resolve-LatestExistingOutput {
   }
 
   $safeTestStart = if ([string]::IsNullOrWhiteSpace($TestStart)) { 'unknown_test_start' } else { $TestStart.Trim() }
-  $candidates = @()
   $exactLegacyPath = Join-Path $CanonicalBase $safeTestStart
   if (Test-Path $exactLegacyPath) {
-    $candidates += (Get-Item -LiteralPath $exactLegacyPath)
+    return (Get-Item -LiteralPath $exactLegacyPath)
   }
 
+  # Backward-compatible fallback for legacy canonical outputs that were allocated as
+  # <test_start>_<YYYYMMDD>_<NNN>. New runs must no longer allocate these names.
   $prefix = '{0}_' -f $safeTestStart
-  $namedCandidates = Get-ChildItem -Path $CanonicalBase -Directory -ErrorAction SilentlyContinue |
+  $legacyCandidates = Get-ChildItem -Path $CanonicalBase -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -like "$prefix*" } |
     Sort-Object -Property @{ Expression = 'LastWriteTime'; Descending = $true }, @{ Expression = 'Name'; Descending = $true }
-  if ($namedCandidates) {
-    $candidates += $namedCandidates
+  if ($legacyCandidates) {
+    return ($legacyCandidates | Select-Object -First 1)
   }
 
-  return $candidates | Select-Object -First 1
-}
-
-function Resolve-NextOutputName {
-  param(
-    [string]$CanonicalBase,
-    [string]$TestStart,
-    [string]$NameDate
-  )
-
-  $safeTestStart = if ([string]::IsNullOrWhiteSpace($TestStart)) { 'unknown_test_start' } else { $TestStart.Trim() }
-  $resolvedDate = if ([string]::IsNullOrWhiteSpace($NameDate)) { (Get-Date).ToString('yyyyMMdd') } else { $NameDate.Trim() }
-  $prefix = '{0}_{1}_' -f $safeTestStart, $resolvedDate
-  $maxSeq = 0
-
-  if (Test-Path $CanonicalBase) {
-    foreach ($dir in Get-ChildItem -Path $CanonicalBase -Directory -ErrorAction SilentlyContinue) {
-      if ($dir.Name -match ('^{0}(?<seq>\d{{3}})$' -f [regex]::Escape($prefix))) {
-        $seq = [int]$Matches['seq']
-        if ($seq -gt $maxSeq) { $maxSeq = $seq }
-      }
-    }
-  }
-
-  $nextSeq = $maxSeq + 1
-  return [ordered]@{
-    output_root_name = '{0}{1}' -f $prefix, $nextSeq.ToString('000')
-    naming_date = $resolvedDate
-    naming_seq = $nextSeq.ToString('000')
-  }
+  return $null
 }
 
 $canonicalBase = Resolve-CanonicalBase -CanonicalRoot $CanonicalOutputRoot -ModeName $Mode -SymbolName $Symbol
@@ -138,11 +110,10 @@ if (-not $result.path -and -not [string]::IsNullOrWhiteSpace($RunDir)) {
 }
 
 if ($AllocateNew) {
-  $naming = Resolve-NextOutputName -CanonicalBase $canonicalBase -TestStart $safeTestStartDate -NameDate $DateStamp
-  $result.naming_date = $naming.naming_date
-  $result.naming_seq = $naming.naming_seq
-  $result.output_root_name = $naming.output_root_name
-  $result.path = Join-Path $canonicalBase $naming.output_root_name
+  $result.naming_date = ''
+  $result.naming_seq = ''
+  $result.output_root_name = $safeTestStartDate
+  $result.path = Join-Path $canonicalBase $safeTestStartDate
   $result.source = 'allocated_new'
   if ($CreateDirectory) {
     $null = New-Item -Path $result.path -ItemType Directory -Force

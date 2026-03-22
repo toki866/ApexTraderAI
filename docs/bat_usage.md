@@ -30,7 +30,7 @@ scripts\run_all_local_then_copy.bat
 
 - `C:\work\apex_work\runs\<run_id>\data`
 - `C:\work\apex_work\runs\<run_id>\logs\run_<run_id>.log`
-- `C:\work\apex_work\output\<mode>\<symbol>\<test_start>_<YYYYMMDD>_<NNN>`（canonical output 正本）
+- `C:\work\apex_work\output\<mode>\<symbol>\<test_start>`（canonical output 正本）
 - ローカル ZIP は生成しません
 
 ## OneDrive コピー先
@@ -40,7 +40,7 @@ scripts\run_all_local_then_copy.bat
 1. `%ONE_DRIVE_RUNS_ROOT%\export`
 2. `%OneDrive%\ApexTraderAI\runs\export`
 
-保存されるのは canonical output を ZIP 化した `output_YYYYMMDD_NNN.zip` のみです。同日内の連番は既存 ZIP を走査して最大番号+1で採番します。
+保存されるのは canonical output を元に作成した `output_YYYYMMDD_NNN.zip` のみです。日付と連番は OneDrive 側にのみ付き、同日内の連番は既存 ZIP を走査して最大番号+1で採番します。
 
 ## 失敗時（エラーパケット）
 
@@ -63,5 +63,5 @@ GPT/Codex へは次を貼ると再現しやすいです。
 
 ```bat
 scripts\doctor.bat
-scripts\copy_run_to_onedrive.bat C:\work\apex_work\output\sim\SOXL\2022-01-03_20260322_001
+scripts\copy_run_to_onedrive.bat C:\work\apex_work\output\sim\SOXL\2022-01-03
 ```

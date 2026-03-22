@@ -8,7 +8,7 @@ import pandas as pd
 from ai_core.services.step_a_service import StepAService
 from ai_core.utils.manifest_path_utils import resolve_output_artifact_path
 from ai_core.utils.step_contract_utils import validate_step_a
-from tools.run_manifest import validate_step_outputs
+from tools.run_manifest import build_canonical_output_root, resolve_canonical_output_root, validate_step_outputs
 from tools.stepb_daily_cache_utils import repair_stepb_daily_from_pred_path
 
 
@@ -135,3 +135,13 @@ def test_stepb_repair_resolves_relative_manifest_paths(tmp_path: Path) -> None:
     assert repaired.exists()
     repaired_df = pd.read_csv(repaired)
     assert float(repaired_df.loc[0, "Pred_Close"]) == 123.45
+
+
+def test_canonical_output_root_uses_test_start_without_generation_suffix() -> None:
+    root = build_canonical_output_root(Path("C:/work/apex_work/output"), "sim", "SOXL", "2022-01-03")
+    assert root.as_posix() == "C:/work/apex_work/output/sim/SOXL/2022-01-03"
+
+
+def test_resolve_canonical_output_root_uses_fixed_apex_work_base() -> None:
+    root = resolve_canonical_output_root("sim", "SOXL", "2022-01-03")
+    assert root.as_posix().endswith("/work/apex_work/output/sim/SOXL/2022-01-03")
