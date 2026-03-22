@@ -20,6 +20,7 @@ from ai_core.services.step_f_service import StepFRouterConfig, StepFService
 @dataclass
 class TwoStageConfig:
     stage0_topk: int = 3
+    fit_window_days: int = 504
     safe_branches: str = ",".join(DEFAULT_SAFE_BRANCHES)
     topk_branches_per_regime: int = 3
     min_samples_regime: int = 20
@@ -28,8 +29,9 @@ class TwoStageConfig:
     ema_alpha: float = 0.3
     pos_limit: float = 1.0
     eps_ir: float = 1e-8
-    refresh_stepb: bool = True
-    refresh_dprime: bool = True
+    refresh_stepb: bool = False
+    refresh_dprime: bool = False
+    dry_run: bool = False
     stepdprime_pred_k: int = 20
     stepdprime_l_past: int = 63
 
@@ -75,50 +77,25 @@ class StepFTwoStageRouter:
             symbol=symbol,
             cfg=StepFRouterConfig(output_root=str(out_root)),
         )
-        phase2_df, regime_dminus1, regime_d, fit_info = self._build_phase2_for_day(cluster_context, target_dt, cfg, cluster_meta)
+        phase2_df, regime_dminus1, regime_d, fit_info = self._prepare_cluster_context_for_day(cluster_context, target_dt, cfg, cluster_meta)
         timings["cluster_context_sec"] = time.perf_counter() - t
 
-        t = time.perf_counter()
-        price_tech = svc._load_stepa_price_tech(out_root=out_root, mode=m, symbol="SOXL")
-        price_tech_inv = svc._load_stepa_price_tech(out_root=out_root, mode=m, symbol="SOXS")
-        price_pair = (
-            price_tech[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxl"})
-            .merge(price_tech_inv[["Date", "price_exec"]].rename(columns={"price_exec": "price_soxs"}), on="Date", how="inner")
-            .sort_values("Date")
-            .reset_index(drop=True)
-        )
-        price_pair["r_soxl"] = (price_pair["price_soxl"].shift(-1) / price_pair["price_soxl"] - 1.0).fillna(0.0)
-        price_pair["r_soxs"] = (price_pair["price_soxs"].shift(-1) / price_pair["price_soxs"] - 1.0).fillna(0.0)
-        logs_map = svc._load_stepe_logs(step_e_root, symbol, agents)
-        merged_for_stats = svc._build_router_input_table(
-            cluster_context=phase2_df,
-            price_pair=price_pair,
-            logs_map=logs_map,
-            agents=agents,
-            date_range=SimpleNamespace(
-                train_start=str((target_dt - pd.Timedelta(days=365 * 3)).date()),
-                train_end=str((target_dt - pd.Timedelta(days=1)).date()),
-                test_start=str(target_dt.date()),
-                test_end=str(target_dt.date()),
-            ),
-        )
-        merged_for_stats = merged_for_stats[merged_for_stats["Date"] <= (target_dt - pd.Timedelta(days=1))].copy()
-        merged_for_stats["Split"] = "train"
-
-        fcfg = StepFRouterConfig(
-            topK=cfg.topk_branches_per_regime,
-            min_samples_regime=cfg.min_samples_regime,
-            topk_filter_ev_positive=cfg.topk_filter_ev_positive,
-            eps_ir=cfg.eps_ir,
-        )
         safe_set = [a.strip() for a in cfg.safe_branches.split(",") if a.strip() and a.strip() in agents]
         if not safe_set:
             safe_set = [a for a in DEFAULT_SAFE_BRANCHES if a in agents] or agents[: min(2, len(agents))]
 
-        svc = StepFService(app_config=None)
-        edge_table = svc._build_regime_edge_table(merged_for_stats, agents=agents, cfg=fcfg)
-        allowlist_df = svc._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=fcfg)
+        t = time.perf_counter()
+        edge_table, allowlist_df, router_artifacts = self._load_router_artifacts(
+            out_root=out_root,
+            mode=m,
+            symbol=symbol,
+            agents=agents,
+            safe_set=safe_set,
+        )
         allow_map = {int(r.regime_id): [a for a in str(r.allowed_agents).split("|") if a] for r in allowlist_df.itertuples(index=False)}
+        cached_safe = allow_map.get(-1, [])
+        if cached_safe:
+            safe_set = [a for a in cached_safe if a in agents]
         timings["edge_allowlist_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
@@ -137,16 +114,28 @@ class StepFTwoStageRouter:
         timings["stage1_select_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
-        mat = BranchMaterializer(output_root=str(out_root)).materialize(
-            symbol=symbol,
-            mode=m,
-            target_date=str(target_dt.date()),
-            branches_final=branches_final,
-            refresh_stepb=bool(cfg.refresh_stepb),
-            refresh_dprime=bool(cfg.refresh_dprime),
-            pred_k=int(cfg.stepdprime_pred_k),
-            l_past=int(cfg.stepdprime_l_past),
-        )
+        if bool(cfg.dry_run):
+            mat = BranchMaterializer(output_root=str(out_root)).materialize(
+                symbol=symbol,
+                mode=m,
+                target_date=str(target_dt.date()),
+                branches_final=branches_final,
+                refresh_stepb=False,
+                refresh_dprime=False,
+                pred_k=int(cfg.stepdprime_pred_k),
+                l_past=int(cfg.stepdprime_l_past),
+            )
+        else:
+            mat = BranchMaterializer(output_root=str(out_root)).materialize(
+                symbol=symbol,
+                mode=m,
+                target_date=str(target_dt.date()),
+                branches_final=branches_final,
+                refresh_stepb=bool(cfg.refresh_stepb),
+                refresh_dprime=bool(cfg.refresh_dprime),
+                pred_k=int(cfg.stepdprime_pred_k),
+                l_past=int(cfg.stepdprime_l_past),
+            )
         timings["branch_materialize_sec"] = time.perf_counter() - t
 
         t = time.perf_counter()
@@ -214,6 +203,13 @@ class StepFTwoStageRouter:
                 "cluster_refresh_mode": cluster_meta.get("cluster_refresh_mode", "monthly_reuse"),
                 "cluster_training_performed": False,
             },
+            "router_context": router_artifacts,
+            "provenance": {
+                "target_cluster_missing": bool(fit_info.get("target_cluster_missing", False)),
+                "prev_cluster_missing": bool(fit_info.get("prev_cluster_missing", False)),
+                "router_artifacts_reused": bool(router_artifacts.get("router_artifacts_reused", False)),
+                "unexpected_reaggregate": bool(router_artifacts.get("unexpected_reaggregate", False)),
+            },
             "stage0": {
                 "prev_regime_id": int(regime_dminus1),
                 "topk_candidates": [int(x) for x in topk_candidates],
@@ -240,6 +236,7 @@ class StepFTwoStageRouter:
                 "pos_prev": pos_prev,
                 "ema_prev": ema_prev,
             },
+            "dry_run": bool(cfg.dry_run),
             "fit_info": fit_info,
             "timing": {**timings, "total_sec": time.perf_counter() - t0},
             "timestamp_utc": pd.Timestamp.utcnow().isoformat(),
@@ -249,14 +246,15 @@ class StepFTwoStageRouter:
         dec_path.write_text(json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8")
         self._append_decision_csv(out_dir / f"decisions_{symbol}.csv", decision)
 
-        next_state = {
-            "last_ratio": ratio_final,
-            "ema_weights": {k: float(v) for k, v in w_by_agent.items()},
-            "last_regime_id": int(regime_final),
-            "last_date": str(target_dt.date()),
-            "updated_at_utc": pd.Timestamp.utcnow().isoformat(),
-        }
-        state_path.write_text(json.dumps(next_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not bool(cfg.dry_run):
+            next_state = {
+                "last_ratio": ratio_final,
+                "ema_weights": {k: float(v) for k, v in w_by_agent.items()},
+                "last_regime_id": int(regime_final),
+                "last_date": str(target_dt.date()),
+                "updated_at_utc": pd.Timestamp.utcnow().isoformat(),
+            }
+            state_path.write_text(json.dumps(next_state, ensure_ascii=False, indent=2), encoding="utf-8")
         return decision
 
     def _discover_agents(self, out_root: Path, mode: str, symbol: str) -> List[str]:
@@ -270,7 +268,63 @@ class StepFTwoStageRouter:
                 out.append(stem[len(prefix) : -len(suffix)])
         return out
 
-    def _build_phase2_for_day(
+    def _load_router_artifacts(
+        self,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+        agents: List[str],
+        safe_set: List[str],
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+        candidates: List[Tuple[str, Path]] = []
+        if mode == "live":
+            candidates.append(("live_retrain_on", out_root / "stepF" / "live" / "retrain_on" / "router"))
+            candidates.append(("sim", out_root / "stepF" / "sim" / "router"))
+        else:
+            candidates.append((mode, out_root / "stepF" / mode / "router"))
+
+        attempted: List[str] = []
+        for source_name, router_dir in candidates:
+            edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
+            allow_path = router_dir / f"router_allowlist_{symbol}.csv"
+            attempted.append(f"{source_name}:{edge_path}|{allow_path}")
+            if not edge_path.exists() or not allow_path.exists():
+                continue
+
+            edge_table = pd.read_csv(edge_path)
+            allowlist_df = pd.read_csv(allow_path)
+            edge_table = edge_table[edge_table["agent"].astype(str).isin(agents)].copy()
+            allowlist_df = allowlist_df.copy()
+            if allowlist_df.empty:
+                continue
+            allowlist_df["allowed_agents"] = allowlist_df["allowed_agents"].map(
+                lambda raw: "|".join(
+                    [agent for agent in str(raw).split("|") if agent and agent in agents]
+                )
+            )
+            if not (allowlist_df["regime_id"].astype(int) == -1).any():
+                allowlist_df = pd.concat(
+                    [
+                        allowlist_df,
+                        pd.DataFrame([{"regime_id": -1, "allowed_agents": "|".join(safe_set)}]),
+                    ],
+                    ignore_index=True,
+                )
+            return edge_table, allowlist_df, {
+                "allowlist_source": "cached_router_allowlist",
+                "router_artifact_source": source_name,
+                "router_edge_path": str(edge_path),
+                "router_allowlist_path": str(allow_path),
+                "router_artifacts_reused": True,
+                "unexpected_reaggregate": False,
+            }
+
+        raise FileNotFoundError(
+            "cached router artifacts are required for close-pre execution; "
+            f"attempted={attempted}"
+        )
+
+    def _prepare_cluster_context_for_day(
         self,
         cluster_context: pd.DataFrame,
         target_dt: pd.Timestamp,
@@ -287,14 +341,25 @@ class StepFTwoStageRouter:
         if fit_df.empty:
             raise RuntimeError(f"insufficient upstream cluster rows for phase2: {len(fit_df)}")
 
-        def _cluster_at(dt: pd.Timestamp) -> int:
+        def _cluster_at(dt: pd.Timestamp, *, required: bool) -> int:
             row = phase2_df.loc[phase2_df["Date"] == dt]
             if row.empty:
+                if required:
+                    raise RuntimeError(
+                        "missing upstream cluster assignment for "
+                        f"date={dt.date()} source={cluster_meta.get('assignments_source', '')}"
+                    )
                 return -1
-            return int(pd.to_numeric(row["regime_id"], errors="coerce").fillna(-1).iloc[-1])
+            regime_id = int(pd.to_numeric(row["regime_id"], errors="coerce").fillna(-1).iloc[-1])
+            if regime_id < 0 and required:
+                raise RuntimeError(
+                    "invalid upstream cluster assignment for "
+                    f"date={dt.date()} regime_id={regime_id} source={cluster_meta.get('assignments_source', '')}"
+                )
+            return regime_id
 
-        dminus1 = _cluster_at(fit_end)
-        d = _cluster_at(target_dt)
+        dminus1 = _cluster_at(fit_end, required=True)
+        d = _cluster_at(target_dt, required=True)
         fit_info = {
             "fit_end_date": str(fit_end.date()),
             "fit_window_days": int(cfg.fit_window_days),
@@ -302,6 +367,8 @@ class StepFTwoStageRouter:
             "cluster_source": str(cluster_meta.get("assignments_source", "")),
             "cluster_model_version": str(cluster_meta.get("cluster_model_version", "")),
             "cluster_refresh_mode": str(cluster_meta.get("cluster_refresh_mode", "monthly_reuse")),
+            "target_cluster_missing": False,
+            "prev_cluster_missing": False,
         }
         return phase2_df, dminus1, d, fit_info
 
