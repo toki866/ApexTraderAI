@@ -1,3 +1,0 @@
-﻿job.status=failure
-
-=== tail: C:\work\actions-runner\_work\_temp\diag_out\workflow_tail.txt ===

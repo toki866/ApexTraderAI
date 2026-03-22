@@ -1,9 +1,9 @@
 ﻿{
-    "run_id":  "23397393897",
+    "run_id":  "23397476864",
     "attempt":  "1",
     "sha":  "20b6afab38044a107fafc63c7dffff7f1baa5b7e",
     "status":  "failure",
-    "timestamp":  "2026-03-22T06:30:47.0116598Z",
+    "timestamp":  "2026-03-22T08:42:51.6454930Z",
     "mode":  "sim",
     "symbols":  "SOXL,SOXS"
 }
