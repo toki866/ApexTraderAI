@@ -150,31 +150,101 @@ jobs:
           GIT_TERMINAL_PROMPT: "0"
         run: |
           $ErrorActionPreference = 'Stop'
-          git config --global core.longpaths true
-
-          $repoRoot = $env:GITHUB_WORKSPACE
-          if ([string]::IsNullOrWhiteSpace($repoRoot)) {
-            throw 'GITHUB_WORKSPACE is not set.'
-          }
-
-          $repoRoot = (Resolve-Path $repoRoot).Path
-          git config --global --add safe.directory $repoRoot
+          $currentUser = ''
+          $repoRoot = ''
+          $safeDirectoryDisplay = '(unavailable)'
 
           Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
-          Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_CURRENT_USER='
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_WORKSPACE='
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_SAFE_DIRECTORIES='
 
-          Write-Host "REPO_ROOT=$repoRoot"
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
-          Write-Host "HEAD=$headShort"
+          try {
+            git config --global core.longpaths true
+
+            $currentUser = (& whoami).Trim()
+            $repoRoot = $env:GITHUB_WORKSPACE
+            if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+              throw 'GITHUB_WORKSPACE is not set.'
+            }
+
+            $repoRoot = (Resolve-Path $repoRoot).Path
+            git config --global --add safe.directory "$repoRoot"
+
+            $safeDirectories = @()
+            try {
+              $safeDirectories = @(git config --global --get-all safe.directory 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            } catch {
+              $safeDirectories = @()
+            }
+            if ($safeDirectories.Count -gt 0) {
+              $safeDirectoryDisplay = $safeDirectories -join '; '
+            } else {
+              $safeDirectoryDisplay = '(none)'
+            }
+
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_CURRENT_USER={0}" -f $currentUser)
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_WORKSPACE={0}" -f $repoRoot)
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_SAFE_DIRECTORIES={0}" -f $safeDirectoryDisplay)
+            Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+
+            Write-Host "whoami=$currentUser"
+            Write-Host "REPO_ROOT=$repoRoot"
+            Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+            Write-Host 'git config --global --get-all safe.directory'
+            git config --global --get-all safe.directory
+            Write-Host 'git config --global --list'
+            git config --global --list
+            $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
+            Write-Host "HEAD=$headShort"
+          } catch {
+            $errorMessage = $_.Exception.Message
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $errorMessage)
+            if (-not [string]::IsNullOrWhiteSpace($currentUser)) {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_CURRENT_USER={0}" -f $currentUser)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_WORKSPACE={0}" -f $repoRoot)
+              Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+            }
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_SAFE_DIRECTORIES={0}" -f $safeDirectoryDisplay)
+
+            Write-Host "[dubious-ownership-diagnostics] current_user=$currentUser"
+            Write-Host "[dubious-ownership-diagnostics] workspace=$repoRoot"
+            Write-Host 'git config --global --get-all safe.directory'
+            git config --global --get-all safe.directory
+            Write-Host 'git config --global --list'
+            git config --global --list
+            throw
+          }
 
       - name: Debug workspace context
+        if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
+          $currentUser = (& whoami).Trim()
+          $repoRoot = if ([string]::IsNullOrWhiteSpace($env:REPO_ROOT)) { $env:GITHUB_WORKSPACE } else { $env:REPO_ROOT }
+          if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+            $repoRoot = (Resolve-Path $repoRoot).Path
+          }
+
+          Write-Host "whoami=$currentUser"
           Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "REPO_ROOT=$repoRoot"
           Write-Host "PWD=$PWD"
-          git rev-parse --show-toplevel
+          Write-Host 'git config --global --get-all safe.directory'
+          git config --global --get-all safe.directory
+          Write-Host 'git config --global --list'
+          git config --global --list
+
+          if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+            try {
+              & cmd /c "git -C `"$repoRoot`" rev-parse --show-toplevel"
+            } catch {
+              Write-Warning ("git workspace probe failed: {0}" -f $_.Exception.Message)
+            }
+          }
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -202,6 +272,9 @@ jobs:
             ('[PATH] {0}' -f $reportPath),
             ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
             ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ('[INFO] current_user={0}' -f $env:PREP_REPO_CURRENT_USER),
+            ('[INFO] workspace={0}' -f $env:PREP_REPO_WORKSPACE),
+            ('[INFO] safe_directory_list={0}' -f $env:PREP_REPO_SAFE_DIRECTORIES),
             ''
           )
 
@@ -212,6 +285,9 @@ jobs:
               '[NG] repo_prepare_failed',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
               ('[INFO] PREP_REPO_ERROR={0}' -f $env:PREP_REPO_ERROR),
+              ('[INFO] current_user={0}' -f $env:PREP_REPO_CURRENT_USER),
+              ('[INFO] workspace={0}' -f $env:PREP_REPO_WORKSPACE),
+              ('[INFO] safe_directory_list={0}' -f $env:PREP_REPO_SAFE_DIRECTORIES),
               ''
             )
           } else {
@@ -4794,31 +4870,101 @@ jobs:
           GIT_TERMINAL_PROMPT: "0"
         run: |
           $ErrorActionPreference = 'Stop'
-          git config --global core.longpaths true
-
-          $repoRoot = $env:GITHUB_WORKSPACE
-          if ([string]::IsNullOrWhiteSpace($repoRoot)) {
-            throw 'GITHUB_WORKSPACE is not set.'
-          }
-
-          $repoRoot = (Resolve-Path $repoRoot).Path
-          git config --global --add safe.directory $repoRoot
+          $currentUser = ''
+          $repoRoot = ''
+          $safeDirectoryDisplay = '(unavailable)'
 
           Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_ERROR='
-          Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_CURRENT_USER='
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_WORKSPACE='
+          Add-Content -Path $env:GITHUB_ENV -Value 'PREP_REPO_SAFE_DIRECTORIES='
 
-          Write-Host "REPO_ROOT=$repoRoot"
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
-          Write-Host "HEAD=$headShort"
+          try {
+            git config --global core.longpaths true
+
+            $currentUser = (& whoami).Trim()
+            $repoRoot = $env:GITHUB_WORKSPACE
+            if ([string]::IsNullOrWhiteSpace($repoRoot)) {
+              throw 'GITHUB_WORKSPACE is not set.'
+            }
+
+            $repoRoot = (Resolve-Path $repoRoot).Path
+            git config --global --add safe.directory "$repoRoot"
+
+            $safeDirectories = @()
+            try {
+              $safeDirectories = @(git config --global --get-all safe.directory 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            } catch {
+              $safeDirectories = @()
+            }
+            if ($safeDirectories.Count -gt 0) {
+              $safeDirectoryDisplay = $safeDirectories -join '; '
+            } else {
+              $safeDirectoryDisplay = '(none)'
+            }
+
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_CURRENT_USER={0}" -f $currentUser)
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_WORKSPACE={0}" -f $repoRoot)
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_SAFE_DIRECTORIES={0}" -f $safeDirectoryDisplay)
+            Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+
+            Write-Host "whoami=$currentUser"
+            Write-Host "REPO_ROOT=$repoRoot"
+            Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+            Write-Host 'git config --global --get-all safe.directory'
+            git config --global --get-all safe.directory
+            Write-Host 'git config --global --list'
+            git config --global --list
+            $headShort = (& cmd /c "git -C `"$repoRoot`" rev-parse --short HEAD").Trim()
+            Write-Host "HEAD=$headShort"
+          } catch {
+            $errorMessage = $_.Exception.Message
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_ERROR={0}" -f $errorMessage)
+            if (-not [string]::IsNullOrWhiteSpace($currentUser)) {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_CURRENT_USER={0}" -f $currentUser)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+              Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_WORKSPACE={0}" -f $repoRoot)
+              Add-Content -Path $env:GITHUB_ENV -Value ("REPO_ROOT={0}" -f $repoRoot)
+            }
+            Add-Content -Path $env:GITHUB_ENV -Value ("PREP_REPO_SAFE_DIRECTORIES={0}" -f $safeDirectoryDisplay)
+
+            Write-Host "[dubious-ownership-diagnostics] current_user=$currentUser"
+            Write-Host "[dubious-ownership-diagnostics] workspace=$repoRoot"
+            Write-Host 'git config --global --get-all safe.directory'
+            git config --global --get-all safe.directory
+            Write-Host 'git config --global --list'
+            git config --global --list
+            throw
+          }
 
       - name: Debug workspace context
+        if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "{0}"
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
+          $currentUser = (& whoami).Trim()
+          $repoRoot = if ([string]::IsNullOrWhiteSpace($env:REPO_ROOT)) { $env:GITHUB_WORKSPACE } else { $env:REPO_ROOT }
+          if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+            $repoRoot = (Resolve-Path $repoRoot).Path
+          }
+
+          Write-Host "whoami=$currentUser"
           Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
+          Write-Host "REPO_ROOT=$repoRoot"
           Write-Host "PWD=$PWD"
-          git rev-parse --show-toplevel
+          Write-Host 'git config --global --get-all safe.directory'
+          git config --global --get-all safe.directory
+          Write-Host 'git config --global --list'
+          git config --global --list
+
+          if (-not [string]::IsNullOrWhiteSpace($repoRoot)) {
+            try {
+              & cmd /c "git -C `"$repoRoot`" rev-parse --show-toplevel"
+            } catch {
+              Write-Warning ("git workspace probe failed: {0}" -f $_.Exception.Message)
+            }
+          }
 
       - name: Initialize ONE_TAP error report
         if: always()
@@ -4846,6 +4992,9 @@ jobs:
             ('[PATH] {0}' -f $reportPath),
             ('[INFO] prep_repo_outcome=${{ steps.prep_repo.outcome }}'),
             ('[INFO] REPO_ROOT={0}' -f $env:REPO_ROOT),
+            ('[INFO] current_user={0}' -f $env:PREP_REPO_CURRENT_USER),
+            ('[INFO] workspace={0}' -f $env:PREP_REPO_WORKSPACE),
+            ('[INFO] safe_directory_list={0}' -f $env:PREP_REPO_SAFE_DIRECTORIES),
             ''
           )
 
@@ -4856,6 +5005,9 @@ jobs:
               '[NG] repo_prepare_failed',
               ('[INFO] prep_repo_outcome={0}' -f $prepRepoOutcome),
               ('[INFO] PREP_REPO_ERROR={0}' -f $env:PREP_REPO_ERROR),
+              ('[INFO] current_user={0}' -f $env:PREP_REPO_CURRENT_USER),
+              ('[INFO] workspace={0}' -f $env:PREP_REPO_WORKSPACE),
+              ('[INFO] safe_directory_list={0}' -f $env:PREP_REPO_SAFE_DIRECTORIES),
               ''
             )
           } else {
