@@ -115,8 +115,8 @@ The tree below was generated from the current repository state (depth-limited).
 
 ### Step-by-step pipeline behavior
 1. **Checkout** repo into `%GITHUB_WORKSPACE%` (`actions/checkout@v4`).
-2. **Prepare workspace repo** (PowerShell): sets `REPO_ROOT=%GITHUB_WORKSPACE%`, marks it as a git safe directory, and avoids cloning into a separate fixed path.
-3. **Debug workspace context** (PowerShell): logs `%GITHUB_WORKSPACE%`, `PWD`, and `git rev-parse --show-toplevel` so the effective execution root is visible in Actions logs.
+2. **Prepare workspace repo** (PowerShell): sets `REPO_ROOT=%GITHUB_WORKSPACE%`, records `whoami`, explicitly runs `git config --global --add safe.directory "%GITHUB_WORKSPACE%"`, prints `git config --global --get-all safe.directory` / `git config --global --list`, and avoids cloning into a separate fixed path.
+3. **Debug workspace context** (PowerShell): logs `whoami`, `%GITHUB_WORKSPACE%`, `PWD`, `REPO_ROOT`, `git config --global --get-all safe.directory`, `git config --global --list`, and `git rev-parse --show-toplevel` so the effective execution root is visible in Actions logs.
 4. **Debug shells** (cmd): confirms `powershell`, optionally `pwsh`.
    - `pwsh` missing is treated as acceptable (`pwsh_not_found (OK)`).
 5. **Run desktop BAT** in PowerShell (`-NoProfile -ExecutionPolicy Bypass`):
@@ -317,6 +317,19 @@ Treat these as generated/runtime artifacts:
 
 - Outside GitHub Actions (`GITHUB_ACTIONS != true`), BAT checks `git status --porcelain` and exits if dirty.
 - Commit or stash changes before rerunning.
+
+## 6.6 `fatal: detected dubious ownership in repository`
+**Symptom:** after `actions/checkout`, later `git` commands fail on the Windows self-hosted runner with `detected dubious ownership in repository`, often because the `_work\ApexTraderAI\ApexTraderAI` directory is still owned by an older service account such as `NETWORK SERVICE` (`S-1-5-20`) while the current runner service uses a different login such as `.\becky`.
+
+- Current workflow mitigation:
+  - immediately after checkout, log `whoami`
+  - add `%GITHUB_WORKSPACE%` to global `safe.directory`
+  - print the global `safe.directory` list and `git config --global --list`
+  - persist current user / workspace / safe.directory diagnostics into `ONE_TAP_ERROR_REPORT.txt`
+- Operational follow-up when the warning keeps recurring:
+  - after changing the runner service account, stop the runner and delete the stale `_work` repository tree once so Git can recreate it under the new owner
+  - if ownership mismatch persists, remove `C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI` and rerun checkout so the workspace is regenerated under the active service account
+  - confirm the Actions logs now show the expected current user and the workspace path in `safe.directory`
 
 ---
 

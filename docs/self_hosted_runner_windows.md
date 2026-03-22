@@ -29,9 +29,16 @@
 
 1. Actions の **Run Desktop Pipeline** を手動実行。
 2. runner がジョブを拾うことを確認。
-3. ログ先頭の debug step で `%GITHUB_WORKSPACE%` / `PWD` / `git rev-parse --show-toplevel` が期待どおり出ていることを確認。
+3. ログ先頭の debug step で `whoami` / `%GITHUB_WORKSPACE%` / `REPO_ROOT` / `git config --global --get-all safe.directory` / `git rev-parse --show-toplevel` が期待どおり出ていることを確認。
 4. 完了後、`C:\work\apex_work\runs\<run_id>` と OneDrive 側 `runs\<run_id>` を確認。
 5. 失敗時も Actions Artifacts にログ収集されることを確認。
+
+## 5. service account 変更後の注意
+
+- runner service の実行ユーザーを変更したあと（例: `NETWORK SERVICE` → `.\becky`）、`C:\work\actions-runner\_work` 配下に旧所有者の workspace が残ると、checkout 後の `git` が `fatal: detected dubious ownership in repository` で止まることがあります。
+- 現行 workflow は checkout 直後に `%GITHUB_WORKSPACE%` を `git config --global --add safe.directory ...` へ追加し、`whoami` と safe.directory 一覧を diagnostics に残します。
+- それでも ownership mismatch が続く場合は、runner を停止して該当 workspace (`C:\work\actions-runner\_work\ApexTraderAI\ApexTraderAI`) を削除し、checkout で新規生成させてください。
+- `_work` を掃除した後に rerun し、Actions ログで current user と safe.directory 一覧が新しい service account 前提で出ていることを確認してください。
 
 ## 運用・セキュリティ注意
 
