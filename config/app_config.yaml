@@ -51,7 +51,9 @@ stepF:
   # StepF is the router/consume layer; canonical cluster generation remains upstream in D'_cluster.
   stepf_compare_reward_modes: true
   stepf_reward_modes: legacy,profit_basic,profit_regret,profit_light_risk
-  enable_router_audit: true
+  # Keep router-side diagnostics opt-in because the audit/baseline/A-B bundle is heavier than the core StepF apply path.
+  # Enable this for targeted reruns when you want cluster/usage/fallback diagnostics.
+  enable_router_audit: false
   audit_config_path: configs/stepf_audit.yaml
   clusterer_type: ticc_raw20_stable
   raw20_num_clusters: 20

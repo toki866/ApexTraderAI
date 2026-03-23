@@ -1,5 +1,7 @@
 # StepF audit / comparison configuration.
 # StepF consumes D'_cluster assignments and does not fit clusterers here.
+# This file is intended for targeted diagnostic reruns; keep StepF core reruns
+# light by enabling router audit only when these artifacts are needed.
 stepf_audit:
   # stable cluster/regime is the main routing context; raw20 is auxiliary only.
   stable_primary: true

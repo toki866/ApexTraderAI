@@ -112,7 +112,7 @@ class StepFRouterConfig:
     input_mode: str = ""
     model_source_dir: str = ""
     device: str = "auto"
-    enable_router_audit: bool = True
+    enable_router_audit: bool = False
     audit_config_path: str = "configs/stepf_audit.yaml"
 
 
