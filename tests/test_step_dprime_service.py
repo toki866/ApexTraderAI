@@ -102,6 +102,85 @@ def test_dprime_rl_fills_missing_horizons_and_records_summary(tmp_path: Path):
     assert (stepd / "embeddings" / "stepDprime_dprime_all_features_h03_SOXL_embeddings_all.csv").exists()
 
 
+def test_add_rl_scalar_context_uses_volume_proxy_when_volume_missing():
+    data = pd.DataFrame(
+        {
+            "Date": pd.date_range("2024-01-01", periods=30, freq="D"),
+            "Close_anchor": np.linspace(100, 120, 30),
+            "ret_1": np.linspace(-0.02, 0.02, 30),
+            "ret_20": np.linspace(-0.05, 0.05, 30),
+            "gap_atr": 0.1,
+            "ATR_norm": 0.2,
+            "vol_log_ratio_20": np.linspace(0.1, 0.4, 30),
+        }
+    )
+
+    out, diag = sds._add_rl_scalar_context(data)
+
+    assert diag["volume_source"] == "vol_log_ratio_20"
+    assert diag["volume_proxy_used"] is True
+    assert "Volume" not in data.columns
+    assert "ctx_turnover_20" in out.columns
+    assert np.isfinite(out["ctx_turnover_20"]).all()
+
+
+def test_dprime_rl_runs_without_raw_volume_column_and_writes_scalar_context_diagnostics(tmp_path: Path):
+    n = 50
+    dates = pd.date_range("2024-01-01", periods=n, freq="D")
+    data = pd.DataFrame({"Date": dates, "Close_anchor": np.linspace(100, 125, n), "gap_atr": 0.1, "ATR_norm": 0.2})
+    for c in [
+        "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
+        "Gap", "vol_log_ratio_20", "vol_chg", "dev_z_25", "bnf_score", "RSI", "MACD_hist", "macd_hist_delta",
+        "macd_hist_cross_up", "clv", "distribution_day", "dist_count_25", "absorption_day", "cmf_20",
+    ]:
+        data[c] = np.linspace(0.01, 0.05, n)
+    data = data.drop(columns=["Volume"], errors="ignore")
+
+    cluster_daily = pd.DataFrame({"Date": dates, "cluster_id_raw20": 1, "cluster_id_stable": 1, "rare_flag_raw20": 0})
+
+    stepb = tmp_path / "stepB"
+    stepc = tmp_path / "stepC"
+    stepd = tmp_path / "stepD"
+    stepb.mkdir(); stepc.mkdir(); stepd.mkdir()
+    pd.DataFrame(
+        {
+            "Date": [d.strftime("%Y-%m-%d") for d in dates],
+            "Pred_Close_MAMBA_h01": np.linspace(100, 125, n),
+            "Pred_Close_MAMBA_h05": np.linspace(101, 126, n),
+        }
+    ).to_csv(stepb / "stepB_pred_time_all_SOXL.csv", index=False)
+
+    cfg = sds.StepDPrimeConfig(
+        symbol="SOXL",
+        pred_k=5,
+        l_past=3,
+        z_past_dim=2,
+        z_pred_dim=2,
+        profiles=("dprime_bnf_h01",),
+    )
+    split = {"train_start": "2024-01-01", "train_end": "2024-01-25", "test_start": "2024-01-26", "test_end": "2024-02-19"}
+
+    out = sds.DPrimeRLService().run(
+        cfg,
+        timing=sds.TimingLogger.disabled(),
+        data=data,
+        split=split,
+        stepb_dir=stepb,
+        stepc_dir=stepc,
+        stepd_dir=stepd,
+        cluster_daily=cluster_daily,
+    )
+
+    diag_path = stepd / "stepDprime_scalar_context_diagnostics_SOXL.json"
+    assert out["profiles"]["dprime_bnf_h01"]["test"].endswith("stepDprime_state_test_dprime_bnf_h01_SOXL.csv")
+    assert (stepd / "stepDprime_state_test_dprime_bnf_h01_SOXL.csv").exists()
+    assert (stepd / "embeddings" / "stepDprime_dprime_bnf_h01_SOXL_embeddings_all.csv").exists()
+    assert diag_path.exists()
+    diag = json.loads(diag_path.read_text(encoding="utf-8"))
+    assert diag["volume_source"] == "vol_log_ratio_20"
+    assert diag["volume_proxy_used"] is True
+
+
 def test_stepdprime_service_writes_traceback_log_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     mode = "sim"
     symbol = "SOXL"

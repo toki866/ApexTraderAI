@@ -576,12 +576,61 @@ def _apply_sequence_scaler(x: np.ndarray, mu: np.ndarray, sd: np.ndarray) -> np.
     return out.reshape(arr.shape[0], arr.shape[1], arr.shape[2])
 
 
-def _add_rl_scalar_context(data: pd.DataFrame) -> pd.DataFrame:
+_SCALAR_CONTEXT_CLOSE_CANDIDATES: Tuple[str, ...] = ("Close_anchor", "Close")
+_SCALAR_CONTEXT_VOLUME_CANDIDATES: Tuple[str, ...] = ("Volume", "vol_log_ratio_20", "vol_chg", "BNF_RVOL20", "BNF_VolZ20")
+_SCALAR_CONTEXT_REQUIRED_COLUMNS: Tuple[str, ...] = (
+    "gap_atr",
+    "ATR_norm",
+    "ret_20",
+)
+
+
+def _series_from_frame_value(
+    frame: pd.DataFrame,
+    column: str,
+    *,
+    replace_zero_with_nan: bool = False,
+) -> Optional[pd.Series]:
+    if column not in frame.columns:
+        return None
+    raw = frame[column]
+    if isinstance(raw, pd.DataFrame):
+        if raw.shape[1] == 0:
+            return None
+        raw = raw.iloc[:, 0]
+    if isinstance(raw, pd.Series):
+        out = pd.to_numeric(raw, errors="coerce")
+    else:
+        scalar = pd.to_numeric(pd.Series([raw]), errors="coerce").iloc[0]
+        out = pd.Series(scalar, index=frame.index, dtype=float)
+    if replace_zero_with_nan:
+        out = out.replace(0, np.nan)
+    return out.astype(float)
+
+
+def _pick_scalar_context_series(
+    frame: pd.DataFrame,
+    candidates: Sequence[str],
+    *,
+    replace_zero_with_nan: bool = False,
+) -> Tuple[pd.Series, str]:
+    for column in candidates:
+        series = _series_from_frame_value(frame, column, replace_zero_with_nan=replace_zero_with_nan)
+        if series is not None:
+            return series, str(column)
+    return pd.Series(np.nan, index=frame.index, dtype=float), ""
+
+
+def _add_rl_scalar_context(data: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     out = data.copy()
-    close = pd.to_numeric(out.get("Close_anchor"), errors="coerce").replace(0, np.nan)
-    volume = pd.to_numeric(out.get("Volume"), errors="coerce").replace(0, np.nan)
-    ret_1 = pd.to_numeric(out.get("ret_1"), errors="coerce")
-    if ret_1 is None or ret_1.isna().all():
+    available_columns = [str(c) for c in out.columns]
+    close, close_source = _pick_scalar_context_series(out, _SCALAR_CONTEXT_CLOSE_CANDIDATES, replace_zero_with_nan=True)
+    volume, volume_source = _pick_scalar_context_series(out, _SCALAR_CONTEXT_VOLUME_CANDIDATES)
+    if volume_source == "Volume":
+        volume = volume.replace(0, np.nan)
+    ret_1_raw = _series_from_frame_value(out, "ret_1")
+    ret_1 = ret_1_raw if ret_1_raw is not None else pd.Series(np.nan, index=out.index, dtype=float)
+    if ret_1.isna().all():
         ret_1 = close.pct_change(1)
 
     rolling_vol20 = ret_1.rolling(20, min_periods=5).std(ddof=0)
@@ -591,8 +640,9 @@ def _add_rl_scalar_context(data: pd.DataFrame) -> pd.DataFrame:
     ma63 = close.rolling(63, min_periods=10).mean()
     ma252 = close.rolling(252, min_periods=20).mean()
     rolling_max252 = close.rolling(252, min_periods=20).max()
-    vol_ma20 = volume.rolling(20, min_periods=5).mean()
-    vol_ma63 = volume.rolling(63, min_periods=10).mean()
+    volume_based_context_enabled = bool(volume_source)
+    vol_ma20 = volume.rolling(20, min_periods=5).mean() if volume_based_context_enabled else pd.Series(np.nan, index=out.index, dtype=float)
+    vol_ma63 = volume.rolling(63, min_periods=10).mean() if volume_based_context_enabled else pd.Series(np.nan, index=out.index, dtype=float)
     yearly_ret = close.pct_change(252)
     background_ret_8y = close.pct_change(252 * 8)
 
@@ -602,19 +652,54 @@ def _add_rl_scalar_context(data: pd.DataFrame) -> pd.DataFrame:
     out["ctx_trend_20"] = close / ma20 - 1.0
     out["ctx_trend_63"] = close / ma63 - 1.0
     out["ctx_trend_252"] = close / ma252 - 1.0
-    out["ctx_turnover_20"] = volume / vol_ma20 - 1.0
-    out["ctx_turnover_63"] = volume / vol_ma63 - 1.0
+    out["ctx_turnover_20"] = volume / vol_ma20 - 1.0 if volume_based_context_enabled else 0.0
+    out["ctx_turnover_63"] = volume / vol_ma63 - 1.0 if volume_based_context_enabled else 0.0
     out["ctx_drawdown_252"] = close / rolling_max252 - 1.0
     out["ctx_long_ret_252"] = yearly_ret
     out["ctx_long_ret_8y"] = background_ret_8y
     out["ctx_long_vol_252"] = rolling_vol252
-    out["ctx_gap_atr"] = pd.to_numeric(out.get("gap_atr"), errors="coerce")
-    out["ctx_atr_norm"] = pd.to_numeric(out.get("ATR_norm"), errors="coerce")
-    out["ctx_ret_20"] = pd.to_numeric(out.get("ret_20"), errors="coerce")
+    gap_atr, _ = _pick_scalar_context_series(out, ("gap_atr",))
+    atr_norm, _ = _pick_scalar_context_series(out, ("ATR_norm",))
+    ret_20, _ = _pick_scalar_context_series(out, ("ret_20",))
+    out["ctx_gap_atr"] = gap_atr
+    out["ctx_atr_norm"] = atr_norm
+    out["ctx_ret_20"] = ret_20
 
     for col in [c for c in out.columns if str(c).startswith("ctx_")]:
         out[col] = pd.to_numeric(out[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return out
+    missing_required_columns = [
+        col for col in _SCALAR_CONTEXT_REQUIRED_COLUMNS
+        if col not in out.columns
+    ]
+    warnings: List[str] = []
+    if not close_source:
+        warnings.append("missing close source; scalar trend/drawdown context will degrade to zero-filled defaults")
+    if not volume_source:
+        warnings.append("missing volume source and proxy columns; turnover context will be zero-filled")
+    elif volume_source != "Volume":
+        warnings.append(f"raw Volume unavailable; using proxy column {volume_source} for turnover context")
+    if missing_required_columns:
+        warnings.append(f"missing scalar context inputs: {', '.join(missing_required_columns)}")
+    diagnostics = {
+        "available_columns": available_columns,
+        "close_source": close_source or None,
+        "volume_source": volume_source or None,
+        "volume_proxy_candidates": list(_SCALAR_CONTEXT_VOLUME_CANDIDATES),
+        "volume_proxy_used": bool(volume_source and volume_source != "Volume"),
+        "missing_required_columns": missing_required_columns,
+        "warnings": warnings,
+        "encoder_paths_checked": ["legacy", "transformer"],
+    }
+    summary = (
+        f"[STEPDPRIME_SCALAR_CONTEXT] close_source={close_source or 'missing'} "
+        f"volume_source={volume_source or 'missing'} "
+        f"missing_required={missing_required_columns} "
+        f"columns={len(available_columns)}"
+    )
+    _log_dprime(summary)
+    for warning in warnings:
+        _log_dprime(f"[STEPDPRIME_SCALAR_CONTEXT][WARN] {warning}")
+    return out, diagnostics
 
 
 def _load_json_dict(path: Path) -> Dict[str, Any]:
@@ -796,7 +881,16 @@ class DPrimeRLService:
             data[f"pred_ret_{i:02d}"] = pd.to_numeric(data[c], errors="coerce") / data["Close_anchor"].replace(0, np.nan) - 1.0
             data[f"pred_ret_{i:02d}"] = data[f"pred_ret_{i:02d}"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-        data = _add_rl_scalar_context(data)
+        data, scalar_context_diag = _add_rl_scalar_context(data)
+        scalar_context_diag_path = stepd_dir / f"stepDprime_scalar_context_diagnostics_{cfg.symbol}.json"
+        scalar_context_diag_path.write_text(
+            json.dumps(_json_safe({
+                **scalar_context_diag,
+                "symbol": cfg.symbol,
+                "mode": str(cfg.mode),
+            }), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         encoder_type = _normalize_encoder_type(cfg.encoder_type)
         num_cols = [c for c in data.columns if c != "Date" and pd.api.types.is_numeric_dtype(data[c])]
         bnf_cols = [
@@ -835,6 +929,8 @@ class DPrimeRLService:
             "pred_available_horizons": available,
             "pred_missing_horizons_filled": missing_filled,
             "pca_diagnostics_files": [],
+            "scalar_context_diagnostics_path": str(scalar_context_diag_path),
+            "scalar_context_diagnostics": scalar_context_diag,
         }
         date_list = data["Date"].tolist()
         idx_train = [i for i, d in enumerate(date_list) if tr_s <= d <= tr_e]
@@ -1192,6 +1288,11 @@ class DPrimeRLService:
                         {"key": "pred_source_mode", "value": pred_meta.get("pred_source_mode", "")},
                         {"key": "pred_available_horizons", "value": "|".join(str(x) for x in available)},
                         {"key": "pred_missing_horizons_filled", "value": json.dumps(missing_filled, ensure_ascii=False)},
+                        {"key": "scalar_context_diagnostics_path", "value": str(scalar_context_diag_path)},
+                        {"key": "scalar_context_close_source", "value": scalar_context_diag.get("close_source", "") or ""},
+                        {"key": "scalar_context_volume_source", "value": scalar_context_diag.get("volume_source", "") or ""},
+                        {"key": "scalar_context_missing_required", "value": "|".join(str(x) for x in scalar_context_diag.get("missing_required_columns", []))},
+                        {"key": "scalar_context_warnings", "value": json.dumps(scalar_context_diag.get("warnings", []), ensure_ascii=False)},
                         {"key": "dprime_cluster_source", "value": "stepDprime_cluster_daily_assign"},
                         {"key": "dprime_cluster_status", "value": cluster_status},
                         {"key": "fit_stats", "value": f"train_only:{tr_s.date()}..{tr_e.date()}"},
@@ -1258,6 +1359,8 @@ class DPrimeRLService:
                             "effective_embedding_rows": int(effective_embedding_rows),
                             "expected_base_rows": int(expected_base_rows),
                             "diagnostics_path": str(pca_diag_path),
+                            "scalar_context_diagnostics_path": str(scalar_context_diag_path),
+                            "scalar_context": scalar_context_diag,
                         },
                         root_defaults=meta_root_defaults,
                     )
