@@ -86,7 +86,8 @@ The tree below was generated from the current repository state (depth-limited).
 | `tools/prepare_data.py` | Download + normalize OHLCV CSVs from yfinance | `run_all_local_then_copy.bat`; manual CLI | `prices_<SYMBOL>.csv` under selected `--data-dir` |
 | `tools/run_pipeline.py` | Headless Step A→F orchestrator (standard: A,B,C,DPRIME,E,F) with mode/agent flags | `run_all_local_then_copy.bat`; manual CLI | Step outputs under `--output-root` (default `output/`) |
 | `config/app_config.yaml` | Default app config roots and symbols | Loaded via `ai_core/config/app_config.py` | N/A (configuration source) |
-| `ai_core/services/step_a_service.py` ... `step_f_service.py` | Step implementations used by headless orchestration | `tools/run_pipeline.py` | Step-specific CSV/model outputs under `output/` subtree |
+| `ai_core/services/step_a_service.py` ... `step_f_service.py` | Step implementations used by headless orchestration; StepF is the router/integration layer that consumes upstream D'_cluster assignments | `tools/run_pipeline.py` | Step-specific CSV/model outputs under `output/` subtree |
+| `ai_core/services/step_f_audit_service.py` and related StepF diagnostic helpers | StepF router-side audit/comparison services for cluster-quality, cluster-usage, baseline, soft-routing, and fallback diagnostics | Called from `step_f_service.py` only when `enable_router_audit=true` | Audit CSV/JSON/MD artifacts under `output/<mode>/<symbol>/<test_start>/stepF/<mode>/audit/` or equivalent StepF audit subtree |
 | `ai_core/utils/paths.py` | Repo-root path resolution helpers | Imported by pipeline/config code | N/A (utility behavior) |
 
 ---
@@ -210,6 +211,7 @@ python tools\run_pipeline.py --symbol SOXL --steps A,B,C,DPRIME,E,F --test-start
   - `stepDprime_profile_summary_<PROFILE>_<SYMBOL>.json`
   - READY/FAILED markers under `stepDprime\<mode>\pipeline_markers\`
 - StepE summaries now retain training/runtime config such as policy kind, PPO parameters, device, seed, and DPrime embedding usage.
+- StepF audit outputs now include router-side diagnostics such as cluster quality/usage audits, focus-regime deep audits, no-cluster baselines, soft-routing A/B, and fallback A/B artifacts under the StepF audit subtree when `enable_router_audit=true`.
 - Logs: `...\logs\run_<run_id>.log`
 - Completion marker: `<canonical output>\DONE.txt`
 - Local ZIP archives are no longer generated; canonical output remains the only local source of truth.

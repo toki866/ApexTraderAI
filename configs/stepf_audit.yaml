@@ -1,0 +1,54 @@
+# StepF audit / comparison configuration.
+# StepF consumes D'_cluster assignments and does not fit clusterers here.
+# This file is intended for targeted diagnostic reruns; keep StepF core reruns
+# light by enabling router audit only when these artifacts are needed.
+stepf_audit:
+  # stable cluster/regime is the main routing context; raw20 is auxiliary only.
+  stable_primary: true
+  use_raw20_aux: true
+
+  # Boundary-day thresholds used by cluster quality / usage audits.
+  boundary_margin_threshold: 0.0015
+  boundary_confidence_threshold: 0.55
+  boundary_uncertainty_threshold: 0.45
+
+  # Focus regimes for deep audit. Replace [8] if another regime dominates.
+  focus_regimes: [8]
+
+  # no-cluster baseline kind. Currently adaptive_ewma is implemented.
+  no_cluster_baseline_kind: adaptive_ewma
+
+  # Small experiments.
+  enable_soft_routing_experiment: true
+  enable_fallback_experiment: true
+
+  # Rare / unknown / low-confidence candidate expansion.
+  rare_candidate_expansion: 2
+  fallback_penalty: 0.15
+  fallback_confidence_expansion_threshold: 0.55
+  fallback_margin_expansion_threshold: 0.0015
+  fallback_rare_only_extra_candidates: 2
+
+  # Soft routing settings.
+  soft_routing_margin_threshold: 0.0015
+  soft_routing_confidence_threshold: 0.55
+  soft_routing_top2_min_weight: 0.35
+  soft_routing_normalization: softmax
+  soft_routing_max_candidates: 2
+  soft_routing_churn_reference: 0.25
+
+  # Adaptive baseline parameters.
+  adaptive_baseline_eta: 4.0
+  adaptive_baseline_alpha: 0.35
+
+  # Output policy.
+  output_subdir: audit
+  overwrite: true
+  save_policy: overwrite
+
+  # Quality audit resampling.
+  bootstrap_samples: 20
+  bootstrap_seed: 42
+
+  # Optional free-form note for manifests / future reproducibility.
+  notes: "StepF router-side audit template; cluster generation remains in D'_cluster."
