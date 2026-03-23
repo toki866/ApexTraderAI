@@ -1,8 +1,15 @@
-"""StepF router/MARL integration layer.
+"""StepF cluster-consume router / integration layer.
 
-Role boundary note:
-- StepE generates candidate expert actions/ratios.
-- StepF performs router / MARL final selection and integration for final decisions.
+Formal responsibility:
+- D'_cluster produces cluster/regime assignments such as stable/raw20 labels.
+- StepE produces expert-level daily actions/ratios.
+- StepF consumes those upstream artifacts and applies router / allowlist /
+  safe-set / fallback rules to produce the final decision, daily log, and
+  summary artifacts.
+
+StepF is not the formal owner of PCA/HDBSCAN/TICC/HMM fitting. Any legacy
+helpers that remain in this module are compatibility shims and are not the
+canonical StepF responsibility.
 """
 
 from __future__ import annotations
@@ -29,6 +36,12 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from ai_core.clusterers.ticc_clusterer import TICCClusterer, TICCUnavailableError
+from ai_core.services.step_f_audit_service import StepFAuditService
+from ai_core.services.step_f_baseline_service import StepFBaselineService
+from ai_core.services.step_f_fallback_service import StepFFallbackService
+from ai_core.services.step_f_metrics import build_daily_winner_table
+from ai_core.services.step_f_soft_routing_service import StepFSoftRoutingService
+from ai_core.services.step_f_types import StepFAuditConfig
 from ai_core.services.step_dprime_service import _compute_base_features
 from ai_core.utils.cluster_stats import compute_cluster_stats, derive_valid_and_rare_clusters
 from ai_core.utils.metrics_utils import compute_split_metrics
@@ -99,6 +112,8 @@ class StepFRouterConfig:
     input_mode: str = ""
     model_source_dir: str = ""
     device: str = "auto"
+    enable_router_audit: bool = True
+    audit_config_path: str = "configs/stepf_audit.yaml"
 
 
 StepFConfig = StepFRouterConfig
@@ -1536,6 +1551,65 @@ class StepFService:
                 if persist_primary_outputs:
                     compare_audit_path.write_text(json.dumps(policy_compare, ensure_ascii=False, indent=2), encoding="utf-8")
 
+                if bool(getattr(cfg, "enable_router_audit", True)):
+                    audit_cfg = StepFAuditConfig.from_yaml(getattr(cfg, "audit_config_path", "configs/stepf_audit.yaml"))
+                    audit_root = out_dir / str(audit_cfg.output_subdir or "audit")
+                    audit_root.mkdir(parents=True, exist_ok=True)
+                    merged_for_audit = merged.merge(build_daily_winner_table(merged, agents), on=["Date", "Split"], how="left")
+                    daily_for_audit = daily.merge(
+                        merged_for_audit[
+                            [
+                                "Date",
+                                "Split",
+                                "winner_expert",
+                                "top1_expert",
+                                "top2_expert",
+                                "winner_ret",
+                                "top1_ret",
+                                "top2_ret",
+                                "top1_top2_margin",
+                            ]
+                        ],
+                        on=["Date", "Split"],
+                        how="left",
+                    )
+                    StepFAuditService(audit_cfg).run(
+                        merged=merged_for_audit,
+                        daily=daily_for_audit,
+                        cluster_context=cluster_context,
+                        edge_table=edge_table,
+                        allowlist=allowlist,
+                        agents=agents,
+                        output_dir=audit_root,
+                        symbol=symbol,
+                        mode=mode,
+                    )
+                    StepFBaselineService(audit_cfg).run(
+                        merged=merged_for_audit,
+                        daily=daily_for_audit,
+                        edge_table=edge_table,
+                        agents=agents,
+                        output_path=audit_root / "baseline_compare.csv",
+                    )
+                    if audit_cfg.enable_soft_routing_experiment:
+                        StepFSoftRoutingService(audit_cfg).run(
+                            merged=merged_for_audit,
+                            daily=daily_for_audit,
+                            edge_table=edge_table,
+                            allowlist=allowlist,
+                            agents=agents,
+                            output_path=audit_root / "soft_routing_ab_compare.csv",
+                        )
+                    if audit_cfg.enable_fallback_experiment:
+                        StepFFallbackService(audit_cfg).run(
+                            merged=merged_for_audit,
+                            daily=daily_for_audit,
+                            edge_table=edge_table,
+                            allowlist=allowlist,
+                            agents=agents,
+                            output_path=audit_root / "fallback_ab_compare.csv",
+                        )
+
             if cfg.verbose:
                 print(f"[StepF-router] wrote phase2={phase2_path}")
                 print(f"[StepF-router] wrote edge={edge_path}")
@@ -1917,6 +1991,13 @@ class StepFService:
         return merged
 
     def _build_phase2_state(self, cfg: StepFRouterConfig, date_range, symbol: str, mode: str, out_root: Path, price_tech: pd.DataFrame) -> pd.DataFrame:
+        """Legacy compatibility path for precomputed context generation.
+
+        Canonical StepF now consumes D'_cluster assignments via
+        `_load_cluster_context`; this helper is retained only for older debug
+        flows and should not be treated as StepF's formal cluster-generation
+        responsibility.
+        """
         tech_cols = [c for c in price_tech.columns if c.endswith("_tech")]
         tech = price_tech[["Date"] + tech_cols].copy()
         tech.columns = ["Date"] + [c.replace("_tech", "") for c in tech_cols]
@@ -2058,6 +2139,7 @@ class StepFService:
         return phase2
 
     def _cluster_phase2(self, cfg: StepFRouterConfig, x_train: np.ndarray, x_test: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
+        """Legacy fallback cluster helper kept for compatibility-only paths."""
         requested = str(getattr(cfg, "clusterer_type", "ticc_raw20_stable") or "ticc_raw20_stable").strip().lower()
         fallback = "none"
         used = requested
