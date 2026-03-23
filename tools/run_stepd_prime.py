@@ -22,7 +22,6 @@ def main() -> int:
     ap.add_argument("--z-past-dim", type=int, default=32)
     ap.add_argument("--z-pred-dim", type=int, default=32)
     ap.add_argument("--z-state-dim", type=int, default=64)
-    ap.add_argument("--encoder-type", choices=["legacy", "transformer"], default="legacy")
     ap.add_argument("--transformer-d-model", type=int, default=64)
     ap.add_argument("--transformer-nhead", type=int, default=4)
     ap.add_argument("--transformer-num-layers", type=int, default=2)
@@ -50,7 +49,6 @@ def main() -> int:
         z_past_dim=args.z_past_dim,
         z_pred_dim=args.z_pred_dim,
         z_state_dim=args.z_state_dim,
-        encoder_type=args.encoder_type,
         transformer_d_model=args.transformer_d_model,
         transformer_nhead=args.transformer_nhead,
         transformer_num_layers=args.transformer_num_layers,

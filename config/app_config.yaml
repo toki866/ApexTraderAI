@@ -27,8 +27,8 @@ cluster_regime:
   cluster_rare_flag_enabled: true
 
 stepDPrime:
-  # A/B compare: keep legacy default, opt-in transformer for D'_rl only.
-  encoder_type: legacy
+  # D'_rl is transformer-only. legacy encoder / PCA compare path was removed.
+  encoder_type: transformer
   l_past: 63
   pred_k: 20
   z_past_dim: 32

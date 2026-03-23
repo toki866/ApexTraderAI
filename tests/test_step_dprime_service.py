@@ -465,7 +465,7 @@ def test_dprime_rl_duplicate_dates_are_handled(tmp_path: Path):
     assert (stepd / "stepDprime_state_test_dprime_all_features_h03_SOXL.csv").exists()
 
 
-def test_fit_scaler_and_pca_handle_nonfinite_inputs():
+def test_fit_scaler_handles_nonfinite_inputs():
     x = np.array(
         [
             [1.0, np.nan, np.inf, -np.inf],
@@ -478,43 +478,12 @@ def test_fit_scaler_and_pca_handle_nonfinite_inputs():
     assert np.isfinite(mu).all()
     assert np.isfinite(sd).all()
 
-    x_norm = (np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0) - mu) / sd
-    comp, d, diag = sds._fit_pca(x_norm, dim=3)
-    assert d > 0
-    assert comp.shape == (x.shape[1], d)
-    assert diag["pca_method_used"] in {"numpy_svd", "randomized_svd"}
+def test_stepdprime_config_rejects_legacy_encoder_type():
+    with pytest.raises(ValueError, match="legacy"):
+        sds.StepDPrimeConfig(symbol="SOXL", encoder_type="legacy")
 
 
-def test_fit_pca_handles_many_zero_variance_columns():
-    x = np.column_stack(
-        [
-            np.linspace(0, 1, 20),
-            np.ones(20),
-            np.ones(20) * 5,
-            np.linspace(2, 3, 20),
-        ]
-    )
-    comp, d, diag = sds._fit_pca(x, dim=4)
-    assert d >= 1
-    assert comp.shape == (4, d)
-    assert diag["zero_var_cols_dropped"] >= 1
-
-
-def test_fit_pca_fallback_when_numpy_svd_fails(monkeypatch: pytest.MonkeyPatch):
-    x = np.random.default_rng(7).normal(size=(30, 8))
-
-    def _boom(*args, **kwargs):
-        raise np.linalg.LinAlgError("SVD did not converge")
-
-    monkeypatch.setattr(sds.np.linalg, "svd", _boom)
-    comp, d, diag = sds._fit_pca(x, dim=4)
-    assert d == 4
-    assert comp.shape == (8, 4)
-    assert diag["fallback_used"] is True
-    assert diag["pca_method_used"] == "randomized_svd"
-
-
-def test_dprime_rl_writes_pca_diagnostics_json(tmp_path: Path):
+def test_dprime_rl_writes_encoder_diagnostics_json(tmp_path: Path):
     n = 42
     dates = pd.date_range("2024-01-01", periods=n, freq="D")
     data = pd.DataFrame({"Date": dates, "Close_anchor": np.linspace(100, 120, n), "gap_atr": 0.1, "ATR_norm": 0.2})
@@ -555,9 +524,10 @@ def test_dprime_rl_writes_pca_diagnostics_json(tmp_path: Path):
         cluster_daily=cluster_daily,
     )
 
-    diag_path = stepd / "stepDprime_pca_diagnostics_dprime_all_features_h01_SOXL.json"
+    diag_path = stepd / "stepDprime_encoder_diagnostics_dprime_all_features_h01_SOXL.json"
     assert diag_path.exists()
     diag = json.loads(diag_path.read_text(encoding="utf-8"))
     assert diag["profile"] == "dprime_all_features_h01"
-    assert "Xp_tr_shape" in diag
-    assert "pca_method_used" in diag
+    assert diag["encoder_type"] == "transformer"
+    assert "past_seq_shape" in diag
+    assert "epoch_losses" in diag
