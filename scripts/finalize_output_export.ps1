@@ -80,6 +80,11 @@ try {
     $OutputRootSource
   }
   $copyEffective = if ($CopyToOneDrive -eq '1') { '1' } else { '0' }
+  $effectiveNamingDate = if ([string]::IsNullOrWhiteSpace($NamingDate)) {
+    Get-Date -Format 'yyyyMMdd'
+  } else {
+    $NamingDate
+  }
 
   $doneLines = New-StringList
   $doneLines.Add(('run_id={0}' -f $env:APEX_RUN_ID))
@@ -114,9 +119,8 @@ try {
   $outputLogLines.Add(('[OUTPUT_ROOT] test_start_date={0}' -f $TestStartDate))
   $outputLogLines.Add(('[OUTPUT_ROOT] reuse_match_found={0}' -f $ReuseMatchFound))
   $outputLogLines.Add(('[OUTPUT_ROOT] copy_to_onedrive_effective={0}' -f $copyEffective))
-  if (-not [string]::IsNullOrWhiteSpace($NamingDate)) {
-    $outputLogLines.Add(('[OUTPUT_ROOT] naming_date={0}' -f $NamingDate))
-  }
+  $outputLogLines.Add(('[OUTPUT_ROOT] naming_date={0}' -f $effectiveNamingDate))
+  $outputLogLines.Add(('[OUTPUT_ROOT] naming_date_source={0}' -f $(if ([string]::IsNullOrWhiteSpace($NamingDate)) { 'default_current_date' } else { 'argument' })))
   if (-not [string]::IsNullOrWhiteSpace($NamingSeq)) {
     $outputLogLines.Add(('[OUTPUT_ROOT] naming_seq={0}' -f $NamingSeq))
   }
@@ -189,6 +193,8 @@ try {
     output_root = $resolvedOutputRoot
     output_root_name = $effectiveOutputRootName
     output_root_source = $effectiveOutputRootSource
+    naming_date = $effectiveNamingDate
+    naming_date_source = if ([string]::IsNullOrWhiteSpace($NamingDate)) { 'default_current_date' } else { 'argument' }
     mode = $effectiveMode
     symbol = $primarySymbol
     test_start_date = $TestStartDate
