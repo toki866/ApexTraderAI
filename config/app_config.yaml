@@ -26,6 +26,26 @@ cluster_regime:
   # raw20 rare監視フラグ（small/rare membership）
   cluster_rare_flag_enabled: true
 
+stepDPrime:
+  # A/B compare: keep legacy default, opt-in transformer for D'_rl only.
+  encoder_type: legacy
+  l_past: 63
+  pred_k: 20
+  z_past_dim: 32
+  z_pred_dim: 32
+  z_state_dim: 64
+  transformer_d_model: 64
+  transformer_nhead: 4
+  transformer_num_layers: 2
+  transformer_ff_dim: 128
+  transformer_dropout: 0.1
+  transformer_epochs: 4
+  transformer_batch_size: 64
+  transformer_lr: 0.001
+  transformer_mask_ratio: 0.15
+  feature_version: stepdprime_rl_v2
+  cluster_source_version: stepA_only_cluster_v1
+
 stepF:
   # Compare entrypoint: run all reward modes by default for StepF comparison.
   stepf_compare_reward_modes: true

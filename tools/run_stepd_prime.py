@@ -21,6 +21,17 @@ def main() -> int:
     ap.add_argument("--pred-k", type=int, default=20)
     ap.add_argument("--z-past-dim", type=int, default=32)
     ap.add_argument("--z-pred-dim", type=int, default=32)
+    ap.add_argument("--z-state-dim", type=int, default=64)
+    ap.add_argument("--encoder-type", choices=["legacy", "transformer"], default="legacy")
+    ap.add_argument("--transformer-d-model", type=int, default=64)
+    ap.add_argument("--transformer-nhead", type=int, default=4)
+    ap.add_argument("--transformer-num-layers", type=int, default=2)
+    ap.add_argument("--transformer-ff-dim", type=int, default=128)
+    ap.add_argument("--transformer-dropout", type=float, default=0.1)
+    ap.add_argument("--transformer-epochs", type=int, default=4)
+    ap.add_argument("--transformer-batch-size", type=int, default=64)
+    ap.add_argument("--transformer-lr", type=float, default=1e-3)
+    ap.add_argument("--transformer-mask-ratio", type=float, default=0.15)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -38,6 +49,17 @@ def main() -> int:
         pred_k=args.pred_k,
         z_past_dim=args.z_past_dim,
         z_pred_dim=args.z_pred_dim,
+        z_state_dim=args.z_state_dim,
+        encoder_type=args.encoder_type,
+        transformer_d_model=args.transformer_d_model,
+        transformer_nhead=args.transformer_nhead,
+        transformer_num_layers=args.transformer_num_layers,
+        transformer_ff_dim=args.transformer_ff_dim,
+        transformer_dropout=args.transformer_dropout,
+        transformer_epochs=args.transformer_epochs,
+        transformer_batch_size=args.transformer_batch_size,
+        transformer_lr=args.transformer_lr,
+        transformer_mask_ratio=args.transformer_mask_ratio,
         verbose=not args.quiet,
     )
     StepDPrimeService().run(cfg)
