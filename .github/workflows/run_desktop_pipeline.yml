@@ -2634,11 +2634,6 @@ jobs:
             '-OutputRoot', $outRoot,
             '-ReportPath', $rp,
             '-CopyToOneDrive', $env:COPY_TO_ONEDRIVE,
-            '-OutputRootName', $env:OUTPUT_ROOT_NAME,
-            '-OutputRootSource', $env:OUTPUT_ROOT_SOURCE,
-            '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
-            '-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE,
-            '-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ,
             '-Mode', $env:MODE,
             '-Symbols', '${{ inputs.symbols }}',
             '-TestStartDate', '${{ inputs.test_start_date }}',
@@ -2646,6 +2641,22 @@ jobs:
             '-TestMonths', '${{ inputs.test_months }}',
             '-EmitJson'
           )
+
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAME)) {
+            $finalizeArgs += @('-OutputRootName', $env:OUTPUT_ROOT_NAME)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_SOURCE)) {
+            $finalizeArgs += @('-OutputRootSource', $env:OUTPUT_ROOT_SOURCE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:REUSE_MATCH_FOUND)) {
+            $finalizeArgs += @('-ReuseMatchFound', $env:REUSE_MATCH_FOUND)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAMING_DATE)) {
+            $finalizeArgs += @('-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAMING_SEQ)) {
+            $finalizeArgs += @('-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ)
+          }
           $finalizeJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $finalizeScript @finalizeArgs | Select-Object -Last 1
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
@@ -7156,11 +7167,6 @@ jobs:
             '-OutputRoot', $outRoot,
             '-ReportPath', $rp,
             '-CopyToOneDrive', $env:COPY_TO_ONEDRIVE,
-            '-OutputRootName', $env:OUTPUT_ROOT_NAME,
-            '-OutputRootSource', $env:OUTPUT_ROOT_SOURCE,
-            '-ReuseMatchFound', $env:REUSE_MATCH_FOUND,
-            '-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE,
-            '-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ,
             '-Mode', $env:MODE,
             '-Symbols', '${{ inputs.symbols }}',
             '-TestStartDate', '${{ inputs.test_start_date }}',
@@ -7168,6 +7174,22 @@ jobs:
             '-TestMonths', '${{ inputs.test_months }}',
             '-EmitJson'
           )
+
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAME)) {
+            $finalizeArgs += @('-OutputRootName', $env:OUTPUT_ROOT_NAME)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_SOURCE)) {
+            $finalizeArgs += @('-OutputRootSource', $env:OUTPUT_ROOT_SOURCE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:REUSE_MATCH_FOUND)) {
+            $finalizeArgs += @('-ReuseMatchFound', $env:REUSE_MATCH_FOUND)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAMING_DATE)) {
+            $finalizeArgs += @('-NamingDate', $env:OUTPUT_ROOT_NAMING_DATE)
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:OUTPUT_ROOT_NAMING_SEQ)) {
+            $finalizeArgs += @('-NamingSeq', $env:OUTPUT_ROOT_NAMING_SEQ)
+          }
           $finalizeJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $finalizeScript @finalizeArgs | Select-Object -Last 1
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
