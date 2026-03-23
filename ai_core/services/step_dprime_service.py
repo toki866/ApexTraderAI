@@ -15,7 +15,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.utils.extmath import randomized_svd
 
 from ai_core.utils.manifest_path_utils import normalize_output_artifact_path
 from ai_core.utils.timing_logger import TimingLogger
@@ -75,7 +74,7 @@ class StepDPrimeConfig:
     z_pred_dim: int = 32
     z_state_dim: int = 64
     verbose: bool = True
-    encoder_type: str = "legacy"
+    encoder_type: str = "transformer"
     transformer_d_model: int = 64
     transformer_nhead: int = 4
     transformer_num_layers: int = 2
@@ -104,6 +103,11 @@ class StepDPrimeConfig:
     cluster_enable_8y_context: bool = True
     cluster_rare_flag_enabled: bool = True
     timing_logger: Optional[TimingLogger] = None
+
+    def __post_init__(self) -> None:
+        self.mode = _normalize_mode(self.mode)
+        self.encoder_type = _normalize_encoder_type(self.encoder_type)
+        self.profiles = tuple(str(profile) for profile in self.profiles)
 
 
 def _normalize_mode(mode: str) -> str:
@@ -341,97 +345,6 @@ def _fit_scaler(train: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return mu, sd
 
 
-def _fit_pca(train: np.ndarray, dim: int) -> Tuple[np.ndarray, int, Dict[str, Any]]:
-    train_san, train_diag = _sanitize_matrix(train, name="fit_pca.train", clip_abs=1e6)
-    if train_san.ndim != 2 or train_san.shape[0] < 2:
-        raise ValueError("too few train rows for PCA fit")
-
-    x = train_san - train_san.mean(axis=0, keepdims=True)
-    var = np.var(x, axis=0)
-    keep = var >= 1e-12
-    keep_count = int(np.count_nonzero(keep))
-    if keep_count <= 0:
-        d = int(min(dim, max(1, min(train_san.shape[0] - 1, train_san.shape[1]))))
-        comp = np.zeros((train_san.shape[1], d), dtype=float)
-        if train_san.shape[1] > 0:
-            for j in range(d):
-                comp[j % train_san.shape[1], j] = 1.0
-        diag = {
-            "train": train_diag,
-            "pca_method_used": "degenerate_identity",
-            "fallback_used": True,
-            "rankable_dim": 0,
-            "dim_requested": int(dim),
-            "dim_used": int(d),
-            "zero_var_cols_dropped": int(train_san.shape[1]),
-        }
-        return comp, d, diag
-
-    x_reduced = x[:, keep]
-    rankable_dim = min(x_reduced.shape[0] - 1, x_reduced.shape[1])
-    d = int(min(dim, rankable_dim))
-    if d <= 0:
-        d = 1
-
-    method = "numpy_svd"
-    fallback_used = False
-    try:
-        use_cuda = _cuda_available() and int(x_reduced.size) >= 200_000
-        if use_cuda:
-            _log_dprime("[DPRIME][DEVICE] pca_device=cuda")
-            xt = torch.as_tensor(x_reduced, dtype=torch.float64, device="cuda")
-            _, _, vt = torch.linalg.svd(xt, full_matrices=False)
-            comp_reduced = vt[:d, :].transpose(0, 1).detach().cpu().numpy().astype(float)
-            method = "torch_cuda_svd"
-        else:
-            _, _, vt = np.linalg.svd(x_reduced, full_matrices=False)
-            comp_reduced = vt[:d].T.astype(float)
-    except Exception as exc:
-        fallback_used = True
-        method = "randomized_svd"
-        _log_dprime(f"[DPRIME][DEVICE] PCA fallback to CPU randomized_svd reason={type(exc).__name__}: {exc}")
-        _, _, vt = randomized_svd(x_reduced, n_components=d, random_state=42)
-        comp_reduced = vt.T.astype(float)
-
-    comp = np.zeros((train_san.shape[1], d), dtype=float)
-    comp[keep, :] = comp_reduced
-    comp, _ = _sanitize_matrix(comp, name="fit_pca.comp", clip_abs=1e6)
-    diag = {
-        "train": train_diag,
-        "pca_method_used": method,
-        "fallback_used": bool(fallback_used),
-        "rankable_dim": int(rankable_dim),
-        "dim_requested": int(dim),
-        "dim_used": int(d),
-        "zero_var_cols_dropped": int(train_san.shape[1] - keep_count),
-    }
-    return comp, d, diag
-
-
-def _project(x: np.ndarray, mu: np.ndarray, sd: np.ndarray, comp: np.ndarray) -> np.ndarray:
-    x_san, _ = _sanitize_matrix(x, name="project.x", clip_abs=1e6)
-    mu_san = np.nan_to_num(np.asarray(mu, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
-    sd_san = np.nan_to_num(np.asarray(sd, dtype=float), nan=1.0, posinf=1.0, neginf=1.0)
-    sd_san = np.where(sd_san < 1e-8, 1.0, sd_san)
-    comp_san, _ = _sanitize_matrix(comp, name="project.comp", clip_abs=1e6)
-    xn = (x_san - mu_san) / sd_san
-    xn, _ = _sanitize_matrix(xn, name="project.xn", clip_abs=1e6)
-    use_cuda = _cuda_available() and int(xn.size + comp_san.size) >= 200_000
-    if use_cuda:
-        try:
-            _log_dprime("[DPRIME][DEVICE] projection_device=cuda")
-            xn_t = torch.as_tensor(xn, dtype=torch.float64, device="cuda")
-            comp_t = torch.as_tensor(comp_san, dtype=torch.float64, device="cuda")
-            out = (xn_t @ comp_t).detach().cpu().numpy()
-        except Exception as exc:
-            _log_dprime(f"[DPRIME][DEVICE] projection fallback to CPU reason={type(exc).__name__}: {exc}")
-            out = xn @ comp_san
-    else:
-        out = xn @ comp_san
-    out, _ = _sanitize_matrix(out, name="project.out", clip_abs=1e6)
-    return out
-
-
 def _collect_horizon_cols(df: pd.DataFrame) -> Dict[int, str]:
     out: Dict[int, str] = {}
     for c in df.columns:
@@ -552,10 +465,17 @@ def _infer_family(profile: str) -> str:
 
 
 def _normalize_encoder_type(value: str) -> str:
-    token = str(value or "legacy").strip().lower()
-    if token not in {"legacy", "transformer"}:
-        raise ValueError(f"unsupported StepDPrime encoder_type={value!r}. expected legacy|transformer")
-    return token
+    token = str(value or "transformer").strip().lower()
+    if token == "legacy":
+        raise ValueError(
+            "StepDPrime encoder_type='legacy' is no longer supported. "
+            "D'_rl uses the transformer encoder path only."
+        )
+    if token != "transformer":
+        raise ValueError(
+            f"unsupported StepDPrime encoder_type={value!r}. expected 'transformer' only"
+        )
+    return "transformer"
 
 
 def _fit_sequence_scaler(train: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -688,7 +608,7 @@ def _add_rl_scalar_context(data: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, 
         "volume_proxy_used": bool(volume_source and volume_source != "Volume"),
         "missing_required_columns": missing_required_columns,
         "warnings": warnings,
-        "encoder_paths_checked": ["legacy", "transformer"],
+        "encoder_paths_checked": ["transformer"],
     }
     summary = (
         f"[STEPDPRIME_SCALAR_CONTEXT] close_source={close_source or 'missing'} "
@@ -891,7 +811,7 @@ class DPrimeRLService:
             }), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        encoder_type = _normalize_encoder_type(cfg.encoder_type)
+        encoder_type = cfg.encoder_type
         num_cols = [c for c in data.columns if c != "Date" and pd.api.types.is_numeric_dtype(data[c])]
         bnf_cols = [
             "ret_1", "ret_5", "ret_20", "range_atr", "body_ratio", "body_atr", "upper_wick_ratio", "lower_wick_ratio",
@@ -928,7 +848,7 @@ class DPrimeRLService:
             "pred_source_mode": pred_meta.get("pred_source_mode", ""),
             "pred_available_horizons": available,
             "pred_missing_horizons_filled": missing_filled,
-            "pca_diagnostics_files": [],
+            "encoder_diagnostics_files": [],
             "scalar_context_diagnostics_path": str(scalar_context_diag_path),
             "scalar_context_diagnostics": scalar_context_diag,
         }
@@ -1036,131 +956,84 @@ class DPrimeRLService:
                     Yaux_tr = np.nan_to_num(Yaux_tr, nan=0.0, posinf=0.0, neginf=0.0)
                     Yaux_te = np.nan_to_num(Yaux_te, nan=0.0, posinf=0.0, neginf=0.0)
 
-                    if encoder_type == "legacy":
-                        Xp_tr = Xp_tr_seq.reshape(Xp_tr_seq.shape[0], -1)
-                        Xp_te = Xp_te_seq.reshape(Xp_te_seq.shape[0], -1)
-                        Xf_tr = Xf_tr_seq.reshape(Xf_tr_seq.shape[0], -1)
-                        Xf_te = Xf_te_seq.reshape(Xf_te_seq.shape[0], -1)
-                        Xp_tr, xp_tr_diag = _sanitize_matrix(Xp_tr, name=f"{profile}.Xp_tr", clip_abs=1e6)
-                        Xf_tr, xf_tr_diag = _sanitize_matrix(Xf_tr, name=f"{profile}.Xf_tr", clip_abs=1e6)
-                        Xp_te, _ = _sanitize_matrix(Xp_te, name=f"{profile}.Xp_te", clip_abs=1e6)
-                        Xf_te, _ = _sanitize_matrix(Xf_te, name=f"{profile}.Xf_te", clip_abs=1e6)
+                    t_transformer = time.perf_counter()
+                    mu_p, sd_p = _fit_sequence_scaler(Xp_tr_seq)
+                    mu_f, sd_f = _fit_sequence_scaler(Xf_tr_seq)
+                    mu_s, sd_s = _fit_scaler(Xs_tr)
+                    Xp_tr_n = _apply_sequence_scaler(Xp_tr_seq, mu_p, sd_p)
+                    Xp_te_n = _apply_sequence_scaler(Xp_te_seq, mu_p, sd_p)
+                    Xf_tr_n = _apply_sequence_scaler(Xf_tr_seq, mu_f, sd_f)
+                    Xf_te_n = _apply_sequence_scaler(Xf_te_seq, mu_f, sd_f)
+                    Xs_tr_n, _ = _sanitize_matrix((Xs_tr - mu_s) / sd_s, name=f"{profile}.Xs_tr_norm", clip_abs=1e6)
+                    Xs_te_n, _ = _sanitize_matrix((Xs_te - mu_s) / sd_s, name=f"{profile}.Xs_te_norm", clip_abs=1e6)
+                    device = torch.device("cuda" if _cuda_available() else "cpu")
+                    torch.manual_seed(int(cfg.transformer_seed))
+                    if device.type == "cuda":
+                        torch.cuda.manual_seed_all(int(cfg.transformer_seed))
+                    model = _DPrimeTwoTowerTransformer(
+                        past_dim=int(Xp_tr_n.shape[2]),
+                        pred_dim=int(Xf_tr_n.shape[2]),
+                        past_len=int(Xp_tr_n.shape[1]),
+                        pred_len=int(Xf_tr_n.shape[1]),
+                        cluster_dim=int(Xc_tr.shape[1]),
+                        scalar_dim=int(Xs_tr_n.shape[1]),
+                        d_model=int(cfg.transformer_d_model),
+                        nhead=int(cfg.transformer_nhead),
+                        num_layers=int(cfg.transformer_num_layers),
+                        ff_dim=int(cfg.transformer_ff_dim),
+                        dropout=float(cfg.transformer_dropout),
+                        z_past_dim=int(cfg.z_past_dim),
+                        z_pred_dim=int(cfg.z_pred_dim),
+                        z_state_dim=int(cfg.z_state_dim),
+                        next_feature_dim=int(Ynext_tr.shape[1]),
+                    ).to(device)
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.transformer_lr))
+                    batch_size = max(8, int(cfg.transformer_batch_size))
+                    mask_ratio = float(cfg.transformer_mask_ratio)
+                    n_train = int(Xp_tr_n.shape[0])
+                    epoch_losses: List[float] = []
 
-                        mu_p, sd_p = _fit_scaler(Xp_tr)
-                        mu_f, sd_f = _fit_scaler(Xf_tr)
+                    past_tr_t = torch.tensor(Xp_tr_n, dtype=torch.float32, device=device)
+                    pred_tr_t = torch.tensor(Xf_tr_n, dtype=torch.float32, device=device)
+                    cluster_tr_t = torch.tensor(Xc_tr, dtype=torch.float32, device=device)
+                    scalar_tr_t = torch.tensor(Xs_tr_n, dtype=torch.float32, device=device)
+                    next_tr_t = torch.tensor(Ynext_tr, dtype=torch.float32, device=device)
+                    ret_tr_t = torch.tensor(Yaux_tr[:, 0], dtype=torch.float32, device=device)
+                    sign_tr_t = torch.tensor(Yaux_tr[:, 1], dtype=torch.float32, device=device)
+                    vol_tr_t = torch.tensor(Yaux_tr[:, 2], dtype=torch.float32, device=device)
 
-                        Xp_tr_n, _ = _sanitize_matrix((Xp_tr - mu_p) / sd_p, name=f"{profile}.Xp_tr_norm", clip_abs=1e6)
-                        Xf_tr_n, _ = _sanitize_matrix((Xf_tr - mu_f) / sd_f, name=f"{profile}.Xf_tr_norm", clip_abs=1e6)
-
-                        t_pca_fit = time.perf_counter()
-                        comp_p, d_p, pca_p_diag = _fit_pca(Xp_tr_n, cfg.z_past_dim)
-                        pred_dim = cfg.z_pred_dim * 3 if pred_type == "3scale" else cfg.z_pred_dim
-                        comp_f, d_f, pca_f_diag = _fit_pca(Xf_tr_n, pred_dim)
-                        _log_timing(f"profile_{profile}.pca_fit", t_pca_fit)
-
-                        t_proj = time.perf_counter()
-                        Zp_tr, Zp_te = _project(Xp_tr, mu_p, sd_p, comp_p), _project(Xp_te, mu_p, sd_p, comp_p)
-                        Zf_tr, Zf_te = _project(Xf_tr, mu_f, sd_f, comp_f), _project(Xf_te, mu_f, sd_f, comp_f)
-                        Zs_tr = np.concatenate([Zp_tr, Zf_tr], axis=1)
-                        Zs_te = np.concatenate([Zp_te, Zf_te], axis=1)
-                        _log_timing(f"profile_{profile}.projection", t_proj)
-                        model_diag: Dict[str, Any] = {
-                            "profile": profile,
-                            "Xp_tr_shape": [int(v) for v in Xp_tr.shape],
-                            "Xf_tr_shape": [int(v) for v in Xf_tr.shape],
-                            "Xp_tr_nonfinite_count_before": int(Xp_tr_before),
-                            "Xp_tr_nonfinite_count_after": int(xp_tr_diag["nonfinite_count_after"]),
-                            "Xp_tr_zero_var_cols": int(xp_tr_diag["zero_var_cols"]),
-                            "pca_method_used": str(pca_p_diag["pca_method_used"]),
-                            "fallback_used": bool(pca_p_diag["fallback_used"]),
-                            "z_past_dim_requested": int(cfg.z_past_dim),
-                            "z_past_dim_used": int(d_p),
-                            "z_pred_dim_requested": int(pred_dim),
-                            "z_pred_dim_used": int(d_f),
-                            "pred_pca_method_used": str(pca_f_diag["pca_method_used"]),
-                            "pred_fallback_used": bool(pca_f_diag["fallback_used"]),
-                            "Xf_tr_nonfinite_count_after": int(xf_tr_diag["nonfinite_count_after"]),
-                            "encoder_type": "legacy",
-                        }
-                    else:
-                        t_transformer = time.perf_counter()
-                        mu_p, sd_p = _fit_sequence_scaler(Xp_tr_seq)
-                        mu_f, sd_f = _fit_sequence_scaler(Xf_tr_seq)
-                        mu_s, sd_s = _fit_scaler(Xs_tr)
-                        Xp_tr_n = _apply_sequence_scaler(Xp_tr_seq, mu_p, sd_p)
-                        Xp_te_n = _apply_sequence_scaler(Xp_te_seq, mu_p, sd_p)
-                        Xf_tr_n = _apply_sequence_scaler(Xf_tr_seq, mu_f, sd_f)
-                        Xf_te_n = _apply_sequence_scaler(Xf_te_seq, mu_f, sd_f)
-                        Xs_tr_n, _ = _sanitize_matrix((Xs_tr - mu_s) / sd_s, name=f"{profile}.Xs_tr_norm", clip_abs=1e6)
-                        Xs_te_n, _ = _sanitize_matrix((Xs_te - mu_s) / sd_s, name=f"{profile}.Xs_te_norm", clip_abs=1e6)
-                        device = torch.device("cuda" if _cuda_available() else "cpu")
-                        torch.manual_seed(int(cfg.transformer_seed))
-                        if device.type == "cuda":
-                            torch.cuda.manual_seed_all(int(cfg.transformer_seed))
-                        model = _DPrimeTwoTowerTransformer(
-                            past_dim=int(Xp_tr_n.shape[2]),
-                            pred_dim=int(Xf_tr_n.shape[2]),
-                            past_len=int(Xp_tr_n.shape[1]),
-                            pred_len=int(Xf_tr_n.shape[1]),
-                            cluster_dim=int(Xc_tr.shape[1]),
-                            scalar_dim=int(Xs_tr_n.shape[1]),
-                            d_model=int(cfg.transformer_d_model),
-                            nhead=int(cfg.transformer_nhead),
-                            num_layers=int(cfg.transformer_num_layers),
-                            ff_dim=int(cfg.transformer_ff_dim),
-                            dropout=float(cfg.transformer_dropout),
-                            z_past_dim=int(cfg.z_past_dim),
-                            z_pred_dim=int(cfg.z_pred_dim),
-                            z_state_dim=int(cfg.z_state_dim),
-                            next_feature_dim=int(Ynext_tr.shape[1]),
-                        ).to(device)
-                        optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.transformer_lr))
-                        batch_size = max(8, int(cfg.transformer_batch_size))
-                        mask_ratio = float(cfg.transformer_mask_ratio)
-                        n_train = int(Xp_tr_n.shape[0])
-                        epoch_losses: List[float] = []
-
-                        past_tr_t = torch.tensor(Xp_tr_n, dtype=torch.float32, device=device)
-                        pred_tr_t = torch.tensor(Xf_tr_n, dtype=torch.float32, device=device)
-                        cluster_tr_t = torch.tensor(Xc_tr, dtype=torch.float32, device=device)
-                        scalar_tr_t = torch.tensor(Xs_tr_n, dtype=torch.float32, device=device)
-                        next_tr_t = torch.tensor(Ynext_tr, dtype=torch.float32, device=device)
-                        ret_tr_t = torch.tensor(Yaux_tr[:, 0], dtype=torch.float32, device=device)
-                        sign_tr_t = torch.tensor(Yaux_tr[:, 1], dtype=torch.float32, device=device)
-                        vol_tr_t = torch.tensor(Yaux_tr[:, 2], dtype=torch.float32, device=device)
-
-                        for _epoch in range(max(1, int(cfg.transformer_epochs))):
-                            perm = torch.randperm(n_train, device=device)
-                            batch_losses: List[float] = []
-                            model.train()
-                            for start in range(0, n_train, batch_size):
-                                idx = perm[start : start + batch_size]
-                                past_batch = past_tr_t[idx]
-                                pred_batch = pred_tr_t[idx]
-                                cluster_batch = cluster_tr_t[idx]
-                                scalar_batch = scalar_tr_t[idx]
-                                next_batch = next_tr_t[idx]
-                                ret_batch = ret_tr_t[idx]
-                                sign_batch = sign_tr_t[idx]
-                                vol_batch = vol_tr_t[idx]
-                                past_mask = (torch.rand_like(past_batch[..., :1]) < mask_ratio).expand_as(past_batch)
-                                pred_mask = (torch.rand_like(pred_batch[..., :1]) < mask_ratio).expand_as(pred_batch)
-                                past_in = past_batch.masked_fill(past_mask, 0.0)
-                                pred_in = pred_batch.masked_fill(pred_mask, 0.0)
-                                out = model(past_in, pred_in, cluster_batch, scalar_batch)
-                                recon_loss = F.mse_loss(out["past_recon"][past_mask], past_batch[past_mask]) if bool(past_mask.any().item()) else torch.tensor(0.0, device=device)
-                                pred_recon_loss = F.mse_loss(out["pred_recon"][pred_mask], pred_batch[pred_mask]) if bool(pred_mask.any().item()) else torch.tensor(0.0, device=device)
-                                next_loss = F.mse_loss(out["next_features"], next_batch)
-                                ret_loss = F.mse_loss(out["future_return"], ret_batch)
-                                sign_loss = F.binary_cross_entropy_with_logits(out["future_sign_logits"], sign_batch)
-                                vol_loss = F.mse_loss(out["future_vol"], vol_batch)
-                                loss = recon_loss + pred_recon_loss + 0.5 * next_loss + 0.25 * ret_loss + 0.1 * sign_loss + 0.25 * vol_loss
-                                optimizer.zero_grad(set_to_none=True)
-                                loss.backward()
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                                optimizer.step()
-                                batch_losses.append(float(loss.detach().cpu().item()))
-                            epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
+                    for _epoch in range(max(1, int(cfg.transformer_epochs))):
+                        perm = torch.randperm(n_train, device=device)
+                        batch_losses: List[float] = []
+                        model.train()
+                        for start in range(0, n_train, batch_size):
+                            idx = perm[start : start + batch_size]
+                            past_batch = past_tr_t[idx]
+                            pred_batch = pred_tr_t[idx]
+                            cluster_batch = cluster_tr_t[idx]
+                            scalar_batch = scalar_tr_t[idx]
+                            next_batch = next_tr_t[idx]
+                            ret_batch = ret_tr_t[idx]
+                            sign_batch = sign_tr_t[idx]
+                            vol_batch = vol_tr_t[idx]
+                            past_mask = (torch.rand_like(past_batch[..., :1]) < mask_ratio).expand_as(past_batch)
+                            pred_mask = (torch.rand_like(pred_batch[..., :1]) < mask_ratio).expand_as(pred_batch)
+                            past_in = past_batch.masked_fill(past_mask, 0.0)
+                            pred_in = pred_batch.masked_fill(pred_mask, 0.0)
+                            out = model(past_in, pred_in, cluster_batch, scalar_batch)
+                            recon_loss = F.mse_loss(out["past_recon"][past_mask], past_batch[past_mask]) if bool(past_mask.any().item()) else torch.tensor(0.0, device=device)
+                            pred_recon_loss = F.mse_loss(out["pred_recon"][pred_mask], pred_batch[pred_mask]) if bool(pred_mask.any().item()) else torch.tensor(0.0, device=device)
+                            next_loss = F.mse_loss(out["next_features"], next_batch)
+                            ret_loss = F.mse_loss(out["future_return"], ret_batch)
+                            sign_loss = F.binary_cross_entropy_with_logits(out["future_sign_logits"], sign_batch)
+                            vol_loss = F.mse_loss(out["future_vol"], vol_batch)
+                            loss = recon_loss + pred_recon_loss + 0.5 * next_loss + 0.25 * ret_loss + 0.1 * sign_loss + 0.25 * vol_loss
+                            optimizer.zero_grad(set_to_none=True)
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                            optimizer.step()
+                            batch_losses.append(float(loss.detach().cpu().item()))
+                        epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
 
                         @torch.no_grad()
                         def _encode_arrays(
@@ -1182,33 +1055,34 @@ class DPrimeRLService:
                                 out["z_state"].detach().cpu().numpy().astype(float),
                             )
 
-                        Zp_tr, Zf_tr, Zs_tr = _encode_arrays(Xp_tr_n, Xf_tr_n, Xc_tr, Xs_tr_n)
-                        Zp_te, Zf_te, Zs_te = _encode_arrays(Xp_te_n, Xf_te_n, Xc_te, Xs_te_n)
-                        d_p = int(Zp_tr.shape[1])
-                        d_f = int(Zf_tr.shape[1])
-                        model_diag = {
-                            "profile": profile,
-                            "encoder_type": "transformer",
-                            "device": device.type,
-                            "past_seq_shape": [int(v) for v in Xp_tr_seq.shape],
-                            "pred_seq_shape": [int(v) for v in Xf_tr_seq.shape],
-                            "cluster_shape": [int(v) for v in Xc_tr.shape],
-                            "scalar_shape": [int(v) for v in Xs_tr.shape],
-                            "masked_reconstruction": "enabled",
-                            "next_step_feature_prediction": "enabled",
-                            "aux_targets": ["future_return", "future_sign", "future_volatility"],
-                            "transformer_epochs": int(cfg.transformer_epochs),
-                            "epoch_losses": epoch_losses,
-                            "z_past_dim_used": d_p,
-                            "z_pred_dim_used": d_f,
-                            "z_state_dim_used": int(Zs_tr.shape[1]),
-                        }
-                        _log_timing(f"profile_{profile}.transformer_fit", t_transformer)
-                        print(f"[STEPDPRIME_XFMR] profile={profile} device={device.type} epochs={cfg.transformer_epochs} z_state_dim={Zs_tr.shape[1]}")
+                    Zp_tr, Zf_tr, Zs_tr = _encode_arrays(Xp_tr_n, Xf_tr_n, Xc_tr, Xs_tr_n)
+                    Zp_te, Zf_te, Zs_te = _encode_arrays(Xp_te_n, Xf_te_n, Xc_te, Xs_te_n)
+                    d_p = int(Zp_tr.shape[1])
+                    d_f = int(Zf_tr.shape[1])
+                    model_diag = {
+                        "profile": profile,
+                        "encoder_type": "transformer",
+                        "device": device.type,
+                        "past_seq_shape": [int(v) for v in Xp_tr_seq.shape],
+                        "pred_seq_shape": [int(v) for v in Xf_tr_seq.shape],
+                        "cluster_shape": [int(v) for v in Xc_tr.shape],
+                        "scalar_shape": [int(v) for v in Xs_tr.shape],
+                        "input_blocks": ["past_context", "prediction_context", "cluster_context", "scalar_context"],
+                        "masked_reconstruction": "enabled",
+                        "next_step_feature_prediction": "enabled",
+                        "aux_targets": ["future_return", "future_sign", "future_volatility"],
+                        "transformer_epochs": int(cfg.transformer_epochs),
+                        "epoch_losses": epoch_losses,
+                        "z_past_dim_used": d_p,
+                        "z_pred_dim_used": d_f,
+                        "z_state_dim_used": int(Zs_tr.shape[1]),
+                    }
+                    _log_timing(f"profile_{profile}.transformer_fit", t_transformer)
+                    print(f"[STEPDPRIME_XFMR] profile={profile} device={device.type} epochs={cfg.transformer_epochs} z_state_dim={Zs_tr.shape[1]}")
 
-                    pca_diag_path = stepd_dir / f"stepDprime_pca_diagnostics_{profile}_{cfg.symbol}.json"
-                    pca_diag_path.write_text(json.dumps(_json_safe(model_diag), indent=2, ensure_ascii=False), encoding="utf-8")
-                    results["pca_diagnostics_files"].append(str(pca_diag_path))
+                    encoder_diag_path = stepd_dir / f"stepDprime_encoder_diagnostics_{profile}_{cfg.symbol}.json"
+                    encoder_diag_path.write_text(json.dumps(_json_safe(model_diag), indent=2, ensure_ascii=False), encoding="utf-8")
+                    results["encoder_diagnostics_files"].append(str(encoder_diag_path))
                     print(f"[STEPDPRIME_MODEL] profile={profile} encoder_type={encoder_type} z_past_dim_used={d_p} z_pred_dim_used={d_f}")
 
                     t_groupby = time.perf_counter()
@@ -1358,7 +1232,7 @@ class DPrimeRLService:
                             "nonzero_ratio": nonzero_ratio,
                             "effective_embedding_rows": int(effective_embedding_rows),
                             "expected_base_rows": int(expected_base_rows),
-                            "diagnostics_path": str(pca_diag_path),
+                            "diagnostics_path": str(encoder_diag_path),
                             "scalar_context_diagnostics_path": str(scalar_context_diag_path),
                             "scalar_context": scalar_context_diag,
                         },
@@ -1395,9 +1269,9 @@ class DPrimeRLService:
                         "unexpected_missing_rows": int(unexpected_missing_rows),
                     }
 
-        pca_all_path = stepd_dir / f"stepDprime_pca_diagnostics_{cfg.symbol}.json"
-        pca_all_path.write_text(json.dumps(_json_safe({"profiles": results.get("pca_diagnostics_files", [])}), indent=2, ensure_ascii=False), encoding="utf-8")
-        results["pca_diagnostics_index"] = str(pca_all_path)
+        encoder_all_path = stepd_dir / f"stepDprime_encoder_diagnostics_{cfg.symbol}.json"
+        encoder_all_path.write_text(json.dumps(_json_safe({"profiles": results.get("encoder_diagnostics_files", [])}), indent=2, ensure_ascii=False), encoding="utf-8")
+        results["encoder_diagnostics_index"] = str(encoder_all_path)
         results["last_profile"] = last_profile
         return results
 
@@ -1698,7 +1572,7 @@ class StepDPrimeService:
                 "symbol": cfg.symbol,
                 "mode": str(cfg.mode),
                 "profile": profile,
-                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
+                "encoder_type": cfg.encoder_type,
                 "family": family,
                 "pred_type": pred_type,
                 "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
@@ -1748,7 +1622,7 @@ class StepDPrimeService:
                 "symbol": cfg.symbol,
                 "mode": str(cfg.mode),
                 "profile": profile,
-                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
+                "encoder_type": cfg.encoder_type,
                 "family": family,
                 "pred_type": pred_type,
                 "pred_source_selected": _normalize_output_path(split_meta.get("pred_source_file", ""), output_root=output_root),
@@ -1801,7 +1675,7 @@ class StepDPrimeService:
             out = {
                 "mode": cfg.mode,
                 "symbol": cfg.symbol,
-                "encoder_type": _normalize_encoder_type(cfg.encoder_type),
+                "encoder_type": cfg.encoder_type,
                 "profiles": profile_results,
                 "output_dir": _normalize_output_path(stepd_dir, output_root=Path(cfg.output_root)),
                 "embedding_meta": _normalize_output_path(stepd_dir / "stepDprime_embedding_meta.json", output_root=Path(cfg.output_root)),
