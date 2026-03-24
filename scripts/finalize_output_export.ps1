@@ -48,6 +48,43 @@ function Add-SummaryLines {
   Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $Lines.ToArray()
 }
 
+function Get-ExceptionMessage {
+  param($ErrorRecord)
+
+  if ($null -eq $ErrorRecord) {
+    return 'unknown_error_record'
+  }
+  if ($null -ne $ErrorRecord.Exception -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.Exception.Message)) {
+    return $ErrorRecord.Exception.Message
+  }
+  return ('{0}' -f $ErrorRecord)
+}
+
+function New-ZipExportFallbackResult {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ResolvedOutputRoot,
+    [Parameter(Mandatory = $true)]
+    [string]$ExportWarning
+  )
+
+  return [pscustomobject]@{
+    local_canonical_output_path = $ResolvedOutputRoot
+    output_zip_path = ''
+    output_zip_name = ''
+    zip_size_bytes = 0
+    onedrive_destination_dir = ''
+    export_requested = $false
+    export_result = 'warn'
+    export_warning = $ExportWarning
+    exported_to_onedrive = $false
+    latest_run_info_path = ''
+    export_audit_path = ''
+    output_zip_sequence = ''
+    output_zip_local_date = ''
+  }
+}
+
 try {
   $resolvedOutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
   if (-not (Test-Path -LiteralPath $resolvedOutputRoot)) {
@@ -85,9 +122,10 @@ try {
   } else {
     $NamingDate
   }
+  $effectiveRunId = if ([string]::IsNullOrWhiteSpace($env:APEX_RUN_ID)) { 'unknown' } else { $env:APEX_RUN_ID }
 
   $doneLines = New-StringList
-  $doneLines.Add(('run_id={0}' -f $env:APEX_RUN_ID))
+  $doneLines.Add(('run_id={0}' -f $effectiveRunId))
   $doneLines.Add(('finished_at={0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')))
   $doneLines.Add(('commit={0}' -f $env:GITHUB_SHA))
   $doneLines.Add(('mode={0}' -f $effectiveMode))
@@ -143,9 +181,21 @@ try {
     '-TestMonths', $TestMonths,
     '-EmitJson'
   )
-  $zipExportJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs | Select-Object -Last 1
-  $zipExportResult = $zipExportJson | ConvertFrom-Json
-  $zipExportStatus = '{0}' -f $zipExportResult.export_result
+  $zipExportOutput = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $zipExportScript @zipExportArgs)
+  $zipExportJson = $zipExportOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+  $zipExportResult = $null
+  if (-not [string]::IsNullOrWhiteSpace($zipExportJson)) {
+    try {
+      $zipExportResult = $zipExportJson | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+      $zipExportResult = New-ZipExportFallbackResult -ResolvedOutputRoot $resolvedOutputRoot -ExportWarning ('export_json_parse_failed: {0}' -f (Get-ExceptionMessage $_))
+    }
+  }
+  if ($null -eq $zipExportResult) {
+    $zipExportResult = New-ZipExportFallbackResult -ResolvedOutputRoot $resolvedOutputRoot -ExportWarning 'export_json_missing'
+  }
+
+  $zipExportStatus = if ([string]::IsNullOrWhiteSpace(('{0}' -f $zipExportResult.export_result))) { 'warn' } else { '{0}' -f $zipExportResult.export_result }
   $zipExportWarning = '{0}' -f $zipExportResult.export_warning
   $oneDriveExportName = '{0}' -f $zipExportResult.output_zip_name
   $oneDriveExportPath = '{0}' -f $zipExportResult.output_zip_path
@@ -218,9 +268,26 @@ try {
     Write-Output $resolvedOutputRoot
   }
 } catch {
-  $errorMessage = $_.Exception.Message
+  $errorMessage = Get-ExceptionMessage $_
+  $diagLines = @(
+    ('[FINALIZE][DIAG] run_id={0}' -f $(if ([string]::IsNullOrWhiteSpace($env:APEX_RUN_ID)) { '<null_or_empty>' } else { $env:APEX_RUN_ID })),
+    ('[FINALIZE][DIAG] output_root={0}' -f $(if ([string]::IsNullOrWhiteSpace($OutputRoot)) { '<null_or_empty>' } else { $OutputRoot })),
+    ('[FINALIZE][DIAG] output_root_name={0}' -f $(if ([string]::IsNullOrWhiteSpace($OutputRootName)) { '<null_or_empty>' } else { $OutputRootName })),
+    ('[FINALIZE][DIAG] export_path={0}' -f $(if ([string]::IsNullOrWhiteSpace($oneDriveExportPath)) { '<null_or_empty>' } else { $oneDriveExportPath })),
+    ('[FINALIZE][DIAG] naming_date={0}' -f $(if ([string]::IsNullOrWhiteSpace($NamingDate)) { '<null_or_empty>' } else { $NamingDate })),
+    ('[FINALIZE][DIAG] local_canonical_output_exists={0}' -f $(if (($resolvedOutputRoot) -and (Test-Path -LiteralPath $resolvedOutputRoot)) { 'true' } else { 'false' })),
+    ('[FINALIZE][DIAG] finalize_exception={0}' -f $errorMessage)
+  )
+  foreach ($diag in $diagLines) {
+    Write-Warning $diag
+  }
   Write-Error ('finalize failed: {0}' -f $errorMessage)
   if (Test-Path -LiteralPath $ReportPath) {
+    Add-Content -Path $ReportPath -Value '[FINALIZE] stage=postprocess_finalize_export'
+    foreach ($diag in $diagLines) {
+      Add-Content -Path $ReportPath -Value $diag
+    }
+    Add-Content -Path $ReportPath -Value '[FINALIZE] note=core_pipeline_outputs_may_already_exist_rerun_finalize_only_possible'
     Add-Content -Path $ReportPath -Value ('[NG] finalize exception={0}' -f $errorMessage)
     Add-Content -Path $ReportPath -Value '[FINALIZE] zip_export_result=fail'
     Add-Content -Path $ReportPath -Value '[FINALIZE] finalize_step_result=fail'

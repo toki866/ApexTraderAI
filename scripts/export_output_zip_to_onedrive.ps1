@@ -69,17 +69,34 @@ function Write-JsonFile {
   $Value | ConvertTo-Json -Depth $Depth | Set-Content -Path $Path -Encoding UTF8
 }
 
+function Get-SymbolList {
+  param([string]$SymbolsRaw)
+
+  if ([string]::IsNullOrWhiteSpace($SymbolsRaw)) {
+    return @()
+  }
+
+  $list = New-Object System.Collections.Generic.List[string]
+  foreach ($part in ($SymbolsRaw -split ',')) {
+    if ($null -eq $part) {
+      continue
+    }
+    $normalized = ('{0}' -f $part).Trim().ToUpperInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+      $list.Add($normalized)
+    }
+  }
+  return $list.ToArray()
+}
+
 $resolvedOutputRoot = (Resolve-Path $OutputRoot).Path
 if (-not (Test-Path $resolvedOutputRoot)) {
   throw "output_root_missing path='$OutputRoot'"
 }
 
 $outputRootName = Split-Path -Leaf $resolvedOutputRoot
-$primarySymbol = 'SOXL'
-if (-not [string]::IsNullOrWhiteSpace($Symbols)) {
-  $primarySymbol = (($Symbols -split ',')[0]).Trim().ToUpperInvariant()
-  if ([string]::IsNullOrWhiteSpace($primarySymbol)) { $primarySymbol = 'SOXL' }
-}
+$normalizedSymbols = @(Get-SymbolList -SymbolsRaw $Symbols)
+$primarySymbol = if ($normalizedSymbols.Count -gt 0) { $normalizedSymbols[0] } else { 'SOXL' }
 
 $exportRequested = ($CopyToOneDrive -eq '1')
 $exportedToOneDrive = $false
@@ -142,7 +159,7 @@ $exportAuditPath = Join-Path $resolvedOutputRoot 'onedrive_zip_export_audit.json
 $runInfo = [ordered]@{
   run_id = $env:APEX_RUN_ID
   mode = $Mode
-  symbols = @($Symbols -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+  symbols = $normalizedSymbols
   primary_symbol = $primarySymbol
   test_start_date = $TestStartDate
   train_years = $TrainYears
