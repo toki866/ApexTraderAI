@@ -92,9 +92,9 @@ class StepFRouterConfig:
     min_samples_regime: int = 10
     fallback_set: str = "all"
     topk_filter_ev_positive: bool = True
-    shrink_k: int = 30
+    shrink_k: int = 15
     softmax_beta: float = 5.0
-    ema_alpha: float = 0.5
+    ema_alpha: float = 0.3
     pos_limit: float = 1.0
     trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
