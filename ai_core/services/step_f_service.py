@@ -2479,12 +2479,32 @@ class StepFService:
         emb_cols = [c for c in df.columns if c.startswith("emb_")]
         return df[["Date"] + emb_cols].copy()
 
+    def _mode_adjust_ret(self, ret: pd.Series, df_ctx: pd.DataFrame, reward_mode: str, cfg: StepFRouterConfig) -> pd.Series:
+        """Apply reward-mode-specific penalty to per-agent daily returns for edge_table scoring."""
+        if reward_mode == "profit_regret":
+            best_ret = df_ctx.get("_best_ret", pd.Series(0.0, index=ret.index)).reindex(ret.index).fillna(0.0)
+            regret = (best_ret - ret).clip(lower=0.0)
+            return ret - float(cfg.lambda_regret) * regret
+        if reward_mode == "profit_light_risk":
+            eq = (1.0 + ret).cumprod()
+            peak = eq.cummax()
+            dd_daily = (eq / peak.clip(lower=1e-12) - 1.0).clip(upper=0.0).abs()
+            return ret - float(cfg.lambda_dd) * dd_daily
+        return ret
+
     def _build_regime_edge_table(self, merged: pd.DataFrame, agents: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
         rows = []
         train_df = merged[merged["Split"].astype(str).str.lower() == "train"].copy()
+        reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
+
+        if reward_mode == "profit_regret":
+            ret_cols = [f"ret_{a}" for a in agents if f"ret_{a}" in train_df.columns]
+            train_df["_best_ret"] = train_df[ret_cols].apply(pd.to_numeric, errors="coerce").max(axis=1).fillna(0.0) if ret_cols else 0.0
+
         global_stats: Dict[str, Dict[str, float]] = {}
         for agent in agents:
-            sub_g = pd.to_numeric(train_df.get(f"ret_{agent}"), errors="coerce").dropna().astype(float)
+            raw_g = pd.to_numeric(train_df.get(f"ret_{agent}"), errors="coerce").dropna().astype(float)
+            sub_g = self._mode_adjust_ret(raw_g, train_df.loc[raw_g.index], reward_mode, cfg)
             if len(sub_g) == 0:
                 global_stats[agent] = {"n_global": 0, "EV_global": float("nan"), "IR_global": float("nan")}
                 continue
@@ -2497,11 +2517,14 @@ class StepFService:
             }
 
         for rid in sorted(train_df["regime_id"].dropna().astype(int).unique().tolist()):
+            regime_mask = train_df["regime_id"].astype(int) == rid
+            regime_ctx = train_df.loc[regime_mask]
             for agent in agents:
                 col = f"ret_{agent}"
-                sub = train_df[train_df["regime_id"].astype(int) == rid][col].astype(float)
-                if len(sub) == 0:
+                raw_sub = regime_ctx[col].astype(float)
+                if len(raw_sub) == 0:
                     continue
+                sub = self._mode_adjust_ret(raw_sub, regime_ctx, reward_mode, cfg)
                 ev = float(sub.mean())
                 sd = float(sub.std(ddof=0))
                 ir = float(ev / (sd + float(cfg.eps_ir)))
