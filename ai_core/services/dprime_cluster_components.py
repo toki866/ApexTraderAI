@@ -134,7 +134,7 @@ class ClusterMonthlyTrainer:
             num_clusters=raw_k,
             window_size=5,
             lambda_parameter=0.11,
-            beta=600.0,
+            beta=100.0,
             max_iter=100,
             threshold=2e-5,
         )
@@ -170,7 +170,7 @@ class ClusterMonthlyTrainer:
             num_clusters=k_eff,
             window_size=5,
             lambda_parameter=0.11,
-            beta=600.0,
+            beta=100.0,
             max_iter=100,
             threshold=2e-5,
         )
