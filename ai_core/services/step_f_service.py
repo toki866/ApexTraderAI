@@ -2680,7 +2680,6 @@ class StepFService:
         peak_eq = 1.0
         reward_mode = str(getattr(cfg, "reward_mode", "legacy") or "legacy").strip().lower()
         compute_device = torch.device(device_name if str(device_name).startswith("cuda") and torch.cuda.is_available() else "cpu")
-        context_cols = [c for c in merged.columns if c.startswith("state_")]
         for row in merged.itertuples(index=False):
             rid = int(getattr(row, "regime_id"))
             cid = int(getattr(row, "cluster_id_stable", getattr(row, "regime_id", 0)) or 0)
@@ -2692,15 +2691,6 @@ class StepFService:
                 allowed = list(safe_set or agents)
 
             scores = np.array([ir_map.get((rid, a), np.nan) for a in allowed], dtype=float)
-            context_bonus = []
-            for a in allowed:
-                profile = context_profiles.get((rid, cid, a), {})
-                if profile and context_cols:
-                    deltas = [abs(float(getattr(row, c, 0.0) or 0.0) - float(profile.get(c, 0.0))) for c in context_cols]
-                    context_bonus.append(float(np.exp(-np.mean(deltas))))
-                else:
-                    context_bonus.append(0.0)
-            scores = scores + np.asarray(context_bonus, dtype=float)
             if np.any(np.isnan(scores)):
                 w_raw_allowed = np.ones(len(allowed), dtype=float) / max(1, len(allowed))
             else:
