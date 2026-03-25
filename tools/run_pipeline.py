@@ -2861,8 +2861,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     safe_set=",".join(safe_defaults),
                     use_z_pred=False,
                     trade_cost_bps=15.0,
-                    ema_alpha=0.5,
-                    softmax_beta=1.0,
                 )
 
                 if isinstance(app_config, dict):
