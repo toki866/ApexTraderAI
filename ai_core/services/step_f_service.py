@@ -87,9 +87,9 @@ class StepFRouterConfig:
     ticc_threshold: float = 2e-5
     past_window_days: int = 63
     past_resample_len: int = 20
-    safe_set: str = "dprime_bnf_h01,dprime_all_features_h01"
-    topK: int = 3
-    min_samples_regime: int = 20
+    safe_set: str = "dprime_all_features_h01,dprime_mix_3scale"
+    topK: int = 4
+    min_samples_regime: int = 10
     fallback_set: str = "all"
     topk_filter_ev_positive: bool = True
     shrink_k: int = 30
