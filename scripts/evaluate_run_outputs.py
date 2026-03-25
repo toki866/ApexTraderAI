@@ -146,6 +146,17 @@ def _write_eval_tables(report: dict[str, Any], out_dir: str) -> None:
         os.path.join(out_dir, "EVAL_TABLE_stepF_compare_cluster.csv"), index=False
     )
 
+    stepb_rows = report.get("stepB", {}).get("rows", []) if isinstance(report.get("stepB", {}), dict) else []
+    pd.DataFrame(stepb_rows if stepb_rows else [{"status": report.get("stepB", {}).get("status", "SKIP"), "summary": report.get("stepB", {}).get("summary", "NA")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepB.csv"), index=False
+    )
+
+    stepc = report.get("stepC", {}) if isinstance(report.get("stepC", {}), dict) else {}
+    stepc_rows = stepc.get("rows", [])
+    pd.DataFrame(stepc_rows if stepc_rows else [{"status": stepc.get("status", "SKIP"), "summary": stepc.get("summary", "NA")}]).to_csv(
+        os.path.join(out_dir, "EVAL_TABLE_stepC.csv"), index=False
+    )
+
     dprime = report.get("dprime", {}) if isinstance(report.get("dprime", {}), dict) else {}
     ddet = dprime.get("details", {}) if isinstance(dprime.get("details", {}), dict) else {}
     pd.DataFrame(
@@ -1231,6 +1242,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "stepA": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepB": {"status": "SKIP", "summary": "not evaluated", "rows": []},
+        "stepC": {"status": "SKIP", "summary": "not evaluated", "rows": [], "details": {}},
         "dprime": {"status": "SKIP", "summary": "not evaluated", "details": {}},
         "stepE": {"status": "SKIP", "summary": "not evaluated", "rows": []},
         "stepF": {"status": "SKIP", "summary": "not evaluated", "rows": []},
@@ -1382,6 +1394,70 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     except Exception as exc:
         report["stepB"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": []}
 
+    # StepC
+    try:
+        stepc_path: str | None = None
+        for _root in _canonical_eval_roots(output_root, mode, symbol):
+            _hits = sorted(glob.glob(os.path.join(_root, "stepC", mode, f"stepC_pred_time_all_{symbol}.csv")))
+            if _hits:
+                stepc_path = _hits[0]
+                break
+        if not stepc_path:
+            _fallback = sorted(glob.glob(os.path.join(output_root, "stepC", "*", f"stepC_pred_time_all_{symbol}.csv")))
+            if _fallback:
+                stepc_path = _fallback[0]
+        if not stepc_path:
+            report["stepC"] = {
+                "status": "SKIP",
+                "summary": "stepC_pred_time_all missing",
+                "rows": [],
+                "details": {"missing_path": os.path.join(output_root, "stepC", mode, f"stepC_pred_time_all_{symbol}.csv")},
+            }
+        else:
+            df_c = _read_csv(stepc_path)
+            date_col_c = _pick_col(df_c, ["Date", "date"])
+            close_col_c = _pick_col(df_c, ["Close", "close"])
+            pred_scaled_cols = [c for c in df_c.columns if str(c).startswith("Pred_Close_scaled_")]
+            pred_raw_cols = [c for c in df_c.columns if str(c).startswith("Pred_Close_") and not str(c).startswith("Pred_Close_scaled_")]
+            stepc_rows = []
+            for col in pred_scaled_cols + pred_raw_cols:
+                pred_s = pd.to_numeric(df_c[col], errors="coerce") if col in df_c.columns else pd.Series(dtype=float)
+                close_s = pd.to_numeric(df_c[close_col_c], errors="coerce") if close_col_c else pd.Series(dtype=float)
+                nn_ratio = float(pred_s.notna().mean()) if len(pred_s) > 0 else 0.0
+                aligned = pd.concat([pred_s.rename("pred"), close_s.rename("close")], axis=1).dropna()
+                mae_c = float((aligned["pred"] - aligned["close"]).abs().mean()) if len(aligned) > 0 else None
+                corr_c = float(aligned["pred"].corr(aligned["close"])) if len(aligned) > 1 else None
+                stepc_rows.append({
+                    "file": os.path.basename(stepc_path),
+                    "pred_col": col,
+                    "col_type": "scaled" if col in pred_scaled_cols else "raw",
+                    "non_null_ratio": round(nn_ratio, 4),
+                    "mae": round(mae_c, 4) if mae_c is not None else None,
+                    "corr": round(corr_c, 4) if corr_c is not None else None,
+                    "status": "OK" if nn_ratio > 0.5 else "WARN",
+                })
+            total_rows_c = len(df_c)
+            date_start_c = str(df_c[date_col_c].iloc[0]) if date_col_c and total_rows_c > 0 else None
+            date_end_c = str(df_c[date_col_c].iloc[-1]) if date_col_c and total_rows_c > 0 else None
+            stepc_status = "OK" if total_rows_c > 0 and any(r.get("status") == "OK" for r in stepc_rows) else ("WARN" if total_rows_c > 0 else "SKIP")
+            report["stepC"] = {
+                "status": stepc_status,
+                "summary": f"stepC_pred_time_all evaluated rows={total_rows_c}",
+                "rows": stepc_rows,
+                "details": {
+                    "path": stepc_path,
+                    "total_rows": total_rows_c,
+                    "date_start": date_start_c,
+                    "date_end": date_end_c,
+                    "pred_scaled_cols": pred_scaled_cols,
+                    "pred_raw_cols": pred_raw_cols,
+                    "close_col_found": close_col_c is not None,
+                    "date_col_found": date_col_c is not None,
+                },
+            }
+    except Exception as exc:
+        report["stepC"] = {"status": "SKIP", "summary": f"exception: {exc}", "rows": [], "details": {}}
+
     # D' (StepD prime artifacts only)
     try:
         report["dprime"] = _collect_dprime_artifacts(output_root=output_root, mode=mode, symbol=symbol)
@@ -1510,6 +1586,7 @@ def evaluate(output_root: str, mode: str, symbol: str) -> dict[str, Any]:
     statuses = [
         report["stepA"]["status"],
         report["stepB"]["status"],
+        report["stepC"]["status"],
         report["dprime"]["status"],
         report["stepE"]["status"],
         report["stepF"]["status"],
@@ -1577,6 +1654,30 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append(f"- SKIP: {report.get('stepB', {}).get('summary')}")
+
+    stepc = report.get("stepC", {})
+    stepc_d = stepc.get("details", {}) if isinstance(stepc, dict) else {}
+    stepc_rows = stepc.get("rows", [])
+    lines.extend([
+        "",
+        "## StepC table",
+        f"- status: **{stepc.get('status', 'SKIP')}**",
+        f"- summary: {stepc.get('summary', 'NA')}",
+        f"- total_rows: {_fmt(stepc_d.get('total_rows'))}",
+        f"- date_start: {_fmt(stepc_d.get('date_start'))}  date_end: {_fmt(stepc_d.get('date_end'))}",
+        f"- pred_scaled_cols: {stepc_d.get('pred_scaled_cols', [])}",
+        f"- pred_raw_cols: {stepc_d.get('pred_raw_cols', [])}",
+    ])
+    if stepc_rows:
+        lines.extend([
+            "",
+            "| pred_col | col_type | non_null_ratio | mae | corr | status |",
+            "|---|---|---:|---:|---:|---|",
+        ])
+        for r in stepc_rows:
+            lines.append(
+                f"| {r.get('pred_col', 'NA')} | {r.get('col_type', 'NA')} | {_fmt(r.get('non_null_ratio'))} | {_fmt(r.get('mae'))} | {_fmt(r.get('corr'))} | {r.get('status', 'NA')} |"
+            )
 
     lines.extend([
         "",
@@ -1734,6 +1835,19 @@ def render_summary(report: dict[str, Any]) -> str:
                 + f"{r.get('file')}::{r.get('pred_col')} nn_ratio={_fmt(r.get('non_null_ratio'))} "
                 + f"first_valid_date={_fmt(r.get('first_valid_date'))} coverage_ratio_over_test={_fmt(r.get('coverage_ratio_over_test'))} "
                 + f"mae={_fmt(r.get('mae'))} corr={_fmt(r.get('corr'))}"
+            )
+
+    stepc = report.get("stepC", {})
+    stepc_d = stepc.get("details", {}) if isinstance(stepc, dict) else {}
+    lines.append("StepC:")
+    if stepc.get("status") == "SKIP":
+        lines.append(f"  SKIP: {stepc.get('summary')}")
+    else:
+        lines.append(f"  total_rows={_fmt(stepc_d.get('total_rows'))} date_start={_fmt(stepc_d.get('date_start'))} date_end={_fmt(stepc_d.get('date_end'))}")
+        lines.append(f"  pred_scaled_cols={stepc_d.get('pred_scaled_cols', [])} pred_raw_cols={stepc_d.get('pred_raw_cols', [])}")
+        for r in stepc.get("rows", [])[:MAX_LIST_ITEMS]:
+            lines.append(
+                f"  {r.get('pred_col')} col_type={r.get('col_type')} nn_ratio={_fmt(r.get('non_null_ratio'))} mae={_fmt(r.get('mae'))} corr={_fmt(r.get('corr'))} status={r.get('status')}"
             )
 
     dprime = report.get("dprime", {})
