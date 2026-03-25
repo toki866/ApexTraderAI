@@ -2715,15 +2715,16 @@ class StepFService:
             ret_selected = pos_plus * r_soxl + pos_minus * r_soxs
             ret_best_expert = max([float(getattr(row, f"ret_{a}", np.nan)) for a in agents if np.isfinite(float(getattr(row, f"ret_{a}", np.nan)))] or [ret_selected])
 
+            eq = eq * (1.0 + ret_selected - cost - penalty)
+            peak_eq = max(peak_eq, eq)
+
             if reward_mode == "profit_basic":
                 reward = ret_selected - cost - penalty - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_churn) * churn_cost
             elif reward_mode == "profit_regret":
                 regret = max(0.0, ret_best_expert - ret_selected)
                 reward = ret_selected - cost - penalty - float(cfg.lambda_regret) * regret - float(cfg.lambda_switch) * switch_cost
             elif reward_mode == "profit_light_risk":
-                eq_tmp = eq * (1.0 + ret_selected - cost - penalty)
-                peak_next = max(peak_eq, eq_tmp)
-                dd_penalty = max(0.0, 1.0 - eq_tmp / max(1e-12, peak_next))
+                dd_penalty = max(0.0, 1.0 - eq / max(1e-12, peak_eq))
                 reward = ret_selected - cost - penalty - float(cfg.lambda_switch) * switch_cost - float(cfg.lambda_dd) * dd_penalty
             else:
                 reward = ret_selected - cost - penalty
