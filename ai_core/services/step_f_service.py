@@ -93,7 +93,7 @@ class StepFRouterConfig:
     fallback_set: str = "all"
     topk_filter_ev_positive: bool = True
     shrink_k: int = 30
-    softmax_beta: float = 1.0
+    softmax_beta: float = 5.0
     ema_alpha: float = 0.5
     pos_limit: float = 1.0
     trade_cost_bps: float = 15.0
@@ -2625,10 +2625,15 @@ class StepFService:
             if {"regime_id", "cluster_id_stable", "ratio", "reward"}.issubset(daily.columns)
             else []
         )
+        test_eq = daily.loc[daily["Split"].astype(str).str.lower() == "test", "equity"] if not daily.empty else pd.Series([], dtype=float)
+        _eq_vals = pd.to_numeric(test_eq, errors="coerce").dropna().to_numpy(dtype=float)
+        _eq_start = float(_eq_vals[0]) if len(_eq_vals) >= 2 else 1.0
+        _eq_end = float(_eq_vals[-1]) if len(_eq_vals) >= 1 else 1.0
+        current_policy_equity_ratio = _eq_end / _eq_start if _eq_start != 0.0 else 1.0
         return {
             "summary": {
                 "fixed_best_agent": fixed_best,
-                "current_policy_test_equity_end": float(daily.loc[daily["Split"].astype(str).str.lower() == "test", "equity"].iloc[-1]) if not daily.empty else 1.0,
+                "current_policy_test_equity_end": current_policy_equity_ratio,
                 "fixed_best_test_equity_end": float(np.cumprod(1.0 + np.asarray(fixed_reward, dtype=float))[-1]) if fixed_reward else 1.0,
                 "oracle_test_equity_end": float(np.cumprod(1.0 + np.asarray(oracle_reward, dtype=float))[-1]) if oracle_reward else 1.0,
             },
