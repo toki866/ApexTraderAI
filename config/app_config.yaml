@@ -67,6 +67,11 @@ stepF:
   ticc_beta: 600.0
   ticc_max_iter: 100
   ticc_threshold: 0.00002
+  # Router tuning parameters (PR #353/#357/#358)
+  softmax_beta: 5.0
+  ema_alpha: 0.3
+  shrink_k: 15
+  ratio_smooth_alpha: 0.7
 
 
 timing:
