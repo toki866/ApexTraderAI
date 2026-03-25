@@ -95,6 +95,7 @@ class StepFRouterConfig:
     shrink_k: int = 15
     softmax_beta: float = 5.0
     ema_alpha: float = 0.3
+    ratio_smooth_alpha: float = 0.7
     pos_limit: float = 1.0
     trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
@@ -2720,6 +2721,7 @@ class StepFService:
             for a in agents:
                 ratio += w_full[a] * float(getattr(row, f"ratio_{a}", 0.0) or 0.0)
             ratio = float(np.clip(ratio, -float(cfg.pos_limit), float(cfg.pos_limit)))
+            ratio = float(cfg.ratio_smooth_alpha) * ratio + (1.0 - float(cfg.ratio_smooth_alpha)) * ratio_prev
 
             cost = float(cfg.trade_cost_bps) * 1e-4 * abs(ratio - ratio_prev)
             turnover = float(abs(ratio - ratio_prev))
