@@ -1272,21 +1272,13 @@ class StepFService:
                     context_profiles_src = out_root / "stepF" / "sim" / "router" / f"router_context_profiles_{symbol}.json"
                 edge_table = pd.read_csv(edge_path_src)
                 allowlist = pd.read_csv(allow_path_src)
-                if context_profiles_src.exists():
-                    raw_profiles = json.loads(context_profiles_src.read_text(encoding="utf-8"))
-                    context_profiles = {
-                        (int(k.split("|", 2)[0]), int(k.split("|", 2)[1]), k.split("|", 2)[2]): {str(fk): float(fv) for fk, fv in v.items()}
-                        for k, v in raw_profiles.items()
-                    }
-                else:
-                    context_profiles = self._build_context_profiles(merged=merged, agents=agents)
+                context_profiles: Dict[Tuple[int, int, str], Dict[str, float]] = {}
             else:
                 with timing.stage("stepF.build_edge_table"):
                     edge_table = self._build_regime_edge_table(merged, agents, cfg)
                 with timing.stage("stepF.allowlist"):
                     allowlist = self._build_allowlist(edge_table=edge_table, agents=agents, safe_set=safe_set, cfg=cfg)
-                with timing.stage("stepF.aggregate_router_context"):
-                    context_profiles = self._build_context_profiles(merged=merged, agents=agents)
+                context_profiles: Dict[Tuple[int, int, str], Dict[str, float]] = {}
             perf_marks["aggregate"] = time.perf_counter() - perf_t0 - perf_marks.get("load", 0.0) - perf_marks.get("join", 0.0)
             edge_path = router_dir / f"regime_edge_table_{symbol}.csv"
             edge_table.to_csv(edge_path, index=False)
@@ -1295,18 +1287,6 @@ class StepFService:
 
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
-            context_profiles_path = router_dir / f"router_context_profiles_{symbol}.json"
-            context_profiles_path.write_text(
-                json.dumps(
-                    {
-                        f"{rid}|{cid}|{agent}": {str(k): float(v) for k, v in profile.items()}
-                        for (rid, cid, agent), profile in context_profiles.items()
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
             actual_device_name, device_warnings = self._resolve_device(getattr(cfg, "device", "auto"))
             with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}) :
                 daily = self._run_router_sim(
