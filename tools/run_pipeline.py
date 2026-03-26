@@ -679,10 +679,10 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.policy_kind = "ppo"
-        cfg.ppo_total_timesteps = 80000
+        cfg.ppo_total_timesteps = 160000
         cfg.ppo_n_steps = 2048
         cfg.ppo_batch_size = 512
-        cfg.ppo_n_epochs = 2
+        cfg.ppo_n_epochs = 4
         cfg.ppo_gamma = 0.99
         cfg.ppo_gae_lambda = 0.95
         cfg.ppo_ent_coef = 0.0
@@ -725,11 +725,11 @@ def _apply_headless_stepe_overrides(app_config: Any, args: Any) -> None:
         if override_ppo_total_timesteps is not None:
             setattr(cfg, "ppo_total_timesteps", int(override_ppo_total_timesteps))
         elif getattr(cfg, "ppo_total_timesteps", None) is None:
-            setattr(cfg, "ppo_total_timesteps", 80000)
+            setattr(cfg, "ppo_total_timesteps", 160000)
         if override_ppo_n_epochs is not None:
             setattr(cfg, "ppo_n_epochs", int(override_ppo_n_epochs))
         elif getattr(cfg, "ppo_n_epochs", None) is None:
-            setattr(cfg, "ppo_n_epochs", 2)
+            setattr(cfg, "ppo_n_epochs", 4)
         if getattr(cfg, "ppo_batch_size", None) is None:
             setattr(cfg, "ppo_batch_size", 512)
         if getattr(cfg, "ppo_n_steps", None) is None:
