@@ -32,7 +32,7 @@ on:
       test_months:
         description: "Test months"
         required: true
-        default: "3"
+        default: "1"
         type: string
       copy_to_onedrive:
         description: "Export canonical output to OneDrive as output_YYYYMMDD_NNN.zip (1=true, 0=false)"

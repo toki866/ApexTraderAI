@@ -88,6 +88,7 @@ class StepFRouterConfig:
     past_window_days: int = 63
     past_resample_len: int = 20
     safe_set: str = "dprime_all_features_h01,dprime_mix_3scale"
+    exclude_agents: str = ""
     topK: int = 4
     min_samples_regime: int = 10
     fallback_set: str = "all"
@@ -96,6 +97,8 @@ class StepFRouterConfig:
     softmax_beta: float = 5.0
     ema_alpha: float = 0.3
     ratio_smooth_alpha: float = 0.7
+    max_agent_mixture_weight: float = 1.0
+    ticc_seed: int = -1
     pos_limit: float = 1.0
     trade_cost_bps: float = 15.0
     pos_l2_lambda: float = 0.0
@@ -115,6 +118,16 @@ class StepFRouterConfig:
     device: str = "auto"
     enable_router_audit: bool = False
     audit_config_path: str = "configs/stepf_audit.yaml"
+    # Meta-Router PPO オプション（use_meta_router=True で edge_table+EMA を置き換え）
+    use_meta_router: bool = False
+    meta_router_lookback: int = 10      # 状態に含める直近日数
+    meta_router_timesteps: int = 50_000  # PPO 学習ステップ数
+    meta_router_n_regimes: int = 20     # regime_id の最大値 + 1（one-hot 次元）
+    meta_router_lambda_regret: float = 1.0  # profit_regret ペナルティ係数
+    # Cluster-specific expert retraining (B-3)
+    enable_cluster_retrain: bool = False
+    cluster_retrain_min_rows: int = 30
+    cluster_retrain_steps: int = 20_000
 
 
 StepFConfig = StepFRouterConfig
@@ -428,6 +441,47 @@ class StepFService:
                 raise terminal_exc
             if compare_enabled and not bool(multi_summary["publish_completed"]):
                 raise RuntimeError("StepF compare reward mode execution incomplete; canonical publish not completed")
+
+            # --- Cluster-specific expert retraining (B-3) ---
+            if bool(getattr(cfg, "enable_cluster_retrain", False)):
+                try:
+                    from ai_core.services.step_f_cluster_retrain_service import (
+                        retrain_cluster_experts,
+                        apply_cluster_retrained_routing,
+                    )
+                    retrain_result = retrain_cluster_experts(
+                        out_root=out_root,
+                        mode=resolved_mode,
+                        symbol=symbol,
+                        cfg=cfg,
+                        date_range=date_range,
+                    )
+                    # apply フェーズ: retrained models をテスト期間に適用する
+                    apply_result = apply_cluster_retrained_routing(
+                        out_root=out_root,
+                        mode=resolved_mode,
+                        symbol=symbol,
+                        date_range=date_range,
+                    )
+                    # multi_summary に apply 結果を追記する
+                    multi_summary["cluster_retrain_result"] = {
+                        "status": retrain_result.get("status", ""),
+                        "clusters_retrained": len(retrain_result.get("clusters_retrained", [])),
+                        "clusters_skipped": len(retrain_result.get("clusters_skipped", {})),
+                    }
+                    multi_summary["cluster_retrain_apply"] = {
+                        "apply_connected": bool(apply_result.get("apply_connected", False)),
+                        "n_applied": apply_result.get("n_applied", 0),
+                        "n_fallback": apply_result.get("n_fallback", 0),
+                        "daily_log_path": apply_result.get("daily_log_path", ""),
+                        "status": apply_result.get("status", ""),
+                    }
+                    multi_summary_path.write_text(
+                        json.dumps(multi_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                except Exception as _retrain_exc:
+                    print(f"[ClusterRetrain] non-fatal error during cluster retraining: {type(_retrain_exc).__name__}: {_retrain_exc}")
+
             return primary_result
         except Exception as exc:
             tb_text = traceback.format_exc()
@@ -828,9 +882,34 @@ class StepFService:
     ) -> Dict[str, Any]:
         canonical_dir = out_root / "stepF" / mode
         canonical_dir.mkdir(parents=True, exist_ok=True)
-        reward_dir = canonical_dir / f"reward_{primary_reward_mode}"
         audit_dir = out_root / "audit" / mode
         audit_dir.mkdir(parents=True, exist_ok=True)
+
+        # best_reward_mode をコピー前に確定する（primary_reward_mode 固定を避ける）
+        compare_rows: List[Dict[str, Any]] = []
+        best_mode = primary_reward_mode
+        best_equity = float("-inf")
+        for reward_mode in reward_modes:
+            summary_path = canonical_dir / f"reward_{reward_mode}" / f"stepF_summary_router_{symbol}.json"
+            if not summary_path.exists():
+                continue
+            try:
+                payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            row = {
+                "reward_mode": reward_mode,
+                "equity_end": float(payload.get("equity_end", float("nan"))),
+                "test_return_pct": float(payload.get("test_return_pct", float("nan"))),
+                "test_sharpe": float(payload.get("test_sharpe", float("nan"))),
+            }
+            compare_rows.append(row)
+            if np.isfinite(row["equity_end"]) and row["equity_end"] > best_equity:
+                best_equity = row["equity_end"]
+                best_mode = reward_mode
+
+        # canonical files は best_mode から publish する
+        reward_dir = canonical_dir / f"reward_{best_mode}"
         copy_map = {
             reward_dir / f"stepF_daily_log_router_{symbol}.csv": canonical_dir / f"stepF_daily_log_router_{symbol}.csv",
             reward_dir / f"stepF_daily_log_marl_{symbol}.csv": canonical_dir / f"stepF_daily_log_marl_{symbol}.csv",
@@ -847,28 +926,11 @@ class StepFService:
             shutil.copyfile(src, dst)
             published_files.append(str(dst))
 
-        compare_rows: List[Dict[str, Any]] = []
-        best_mode = primary_reward_mode
-        best_equity = float("-inf")
-        for reward_mode in reward_modes:
-            summary_path = canonical_dir / f"reward_{reward_mode}" / f"stepF_summary_router_{symbol}.json"
-            if not summary_path.exists():
-                continue
-            payload = json.loads(summary_path.read_text(encoding="utf-8"))
-            row = {
-                "reward_mode": reward_mode,
-                "equity_end": float(payload.get("equity_end", float("nan"))),
-                "test_return_pct": float(payload.get("test_return_pct", float("nan"))),
-                "test_sharpe": float(payload.get("test_sharpe", float("nan"))),
-            }
-            compare_rows.append(row)
-            if np.isfinite(row["equity_end"]) and row["equity_end"] > best_equity:
-                best_equity = row["equity_end"]
-                best_mode = reward_mode
         compare_payload = {
             "published_at": cls._utcnow_iso(),
             "primary_reward_mode": primary_reward_mode,
             "best_reward_mode": best_mode,
+            "published_from_reward_mode": best_mode,
             "reward_modes": reward_modes,
             "rows": compare_rows,
         }
@@ -881,6 +943,7 @@ class StepFService:
             "published": True,
             "primary_reward_mode": primary_reward_mode,
             "best_reward_mode": best_mode,
+            "published_from_reward_mode": best_mode,
             "published_files": published_files,
             "compare_path": str(compare_path),
             "best_mode_path": str(best_mode_path),
@@ -1287,6 +1350,23 @@ class StepFService:
 
             allow_path = router_dir / f"router_allowlist_{symbol}.csv"
             allowlist.to_csv(allow_path, index=False)
+
+            # --- Meta-Router PPO（use_meta_router=True のとき edge_table+EMA を置き換え）---
+            _use_meta_router = bool(getattr(cfg, "use_meta_router", False))
+            if _use_meta_router:
+                print("[StepF] use_meta_router=True: PPO Meta-Router で学習・推論します")
+                with timing.stage("stepF.meta_router_train"):
+                    _meta_model_path = self._train_meta_router(
+                        merged=merged, agents=agents, cfg=cfg,
+                        out_root=out_root, mode=mode, symbol=symbol,
+                    )
+                with timing.stage("stepF.meta_router_infer"):
+                    merged = self._route_with_meta_router(
+                        merged=merged, agents=agents, cfg=cfg,
+                        model_path=_meta_model_path, out_root=out_root, mode=mode, symbol=symbol,
+                    )
+                print(f"[StepF] Meta-Router 推論完了 model={_meta_model_path}")
+
             actual_device_name, device_warnings = self._resolve_device(getattr(cfg, "device", "auto"))
             with timing.stage("stepF.router_sim", agent_id=str(reward_mode), meta={"reward_mode": str(reward_mode), "compare_mode": str(mode), "agent_kind": "reward_mode", "fallback_used": bool((getattr(self, "_last_cluster_diag", {}) or {}).get("fallback_used", False))}) :
                 daily = self._run_router_sim(
@@ -1950,11 +2030,11 @@ class StepFService:
         merged = cluster_context.merge(price_pair[["Date", "r_soxl", "r_soxs"]], on="Date", how="inner")
         merged = merged.merge(expert_wide, on="Date", how="left")
         merged = merged.merge(split_df, on="Date", how="left")
-        if "Split" not in merged.columns:
-            merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
-        else:
-            missing_split = merged["Split"].isna() | (merged["Split"].astype(str).str.strip() == "")
-            merged.loc[missing_split, "Split"] = self._assign_split_by_date(merged.loc[missing_split, "Date"], date_range)
+        # Split は常に date_range から再割り当てする。
+        # StepE の daily log には同一日付に train/test が混在するため、
+        # drop_duplicates(keep="last") で継承すると不定になる。
+        # date_range の test_start/test_end に基づいて上書きすることで StepE との整合を保証する。
+        merged["Split"] = self._assign_split_by_date(merged["Date"], date_range)
 
         required_agent_cols = []
         for agent in agents:
@@ -2336,6 +2416,9 @@ class StepFService:
             print(f"[STEPF_CLUSTER] backend_resolved={self._last_ticc_backend_name}")
         if self._last_ticc_backend_predict_methods:
             print(f"[STEPF_CLUSTER] backend_predict_methods={','.join(self._last_ticc_backend_predict_methods)}")
+        _ticc_seed = int(getattr(cfg, "ticc_seed", -1) or -1)
+        if _ticc_seed >= 0:
+            np.random.seed(_ticc_seed)
         train_labels = clusterer.fit_predict_train(x_train)
         diag = clusterer.get_diagnostics() if hasattr(clusterer, "get_diagnostics") else {}
         self._last_ticc_backend_name = str(diag.get("backend_resolved_name", "") or self._last_ticc_backend_name)
@@ -2543,40 +2626,232 @@ class StepFService:
                 )
         return pd.DataFrame(rows)
 
+    # ----------------------------------------------------------
+    # Meta-Router PPO: 学習・推論
+    # ----------------------------------------------------------
+
+    def _train_meta_router(
+        self,
+        merged: pd.DataFrame,
+        agents: List[str],
+        cfg: StepFRouterConfig,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+    ) -> Path:
+        """
+        Meta-Router PPO を学習して model zip を返す。
+
+        学習データ: merged の train split のみ使用。
+        保存先: {out_root}/stepF/{mode}/meta_router_{symbol}.zip
+        """
+        from stable_baselines3 import PPO
+        from ai_core.rl.meta_router_env import MetaRouterEnv
+
+        model_dir = out_root / "stepF" / mode
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_path = model_dir / f"meta_router_{symbol}.zip"
+        meta_path = model_dir / f"meta_router_meta_{symbol}.json"
+
+        n_regimes = int(getattr(cfg, "meta_router_n_regimes", 20))
+        lookback = int(getattr(cfg, "meta_router_lookback", 10))
+        timesteps = int(getattr(cfg, "meta_router_timesteps", 50_000))
+        lambda_regret = float(getattr(cfg, "meta_router_lambda_regret", 1.0))
+
+        env = MetaRouterEnv(
+            daily_df=merged,
+            agents=agents,
+            n_regimes=n_regimes,
+            lookback=lookback,
+            lambda_regret=lambda_regret,
+            trade_cost_bps=float(cfg.trade_cost_bps),
+            pos_limit=float(cfg.pos_limit),
+            split="train",
+        )
+
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=0,
+            n_steps=512,
+            batch_size=64,
+            n_epochs=4,
+            learning_rate=3e-4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            ent_coef=0.01,
+            clip_range=0.2,
+            device="cpu",
+        )
+        print(f"[MetaRouter] 学習開始 timesteps={timesteps} agents={len(agents)} lookback={lookback}")
+        model.learn(total_timesteps=timesteps)
+        model.save(str(model_path))
+        print(f"[MetaRouter] モデル保存: {model_path}")
+
+        # メタ情報保存（推論時に構造を復元するため）
+        import json as _json
+        meta = {
+            "agents": agents,
+            "n_regimes": n_regimes,
+            "lookback": lookback,
+            "lambda_regret": lambda_regret,
+            "symbol": symbol,
+        }
+        meta_path.write_text(_json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        return model_path
+
+    def _route_with_meta_router(
+        self,
+        merged: pd.DataFrame,
+        agents: List[str],
+        cfg: StepFRouterConfig,
+        model_path: Path,
+        out_root: Path,
+        mode: str,
+        symbol: str,
+    ) -> pd.DataFrame:
+        """
+        学習済み Meta-Router で全 split の重みを計算し、ルーティング結果を返す。
+
+        Returns
+        -------
+        pd.DataFrame
+            merged に以下の列を追加したもの:
+            - mixture_weight_{agent} for each agent
+            - ratio (加重 ratio)
+            - meta_router_used = True
+        """
+        from stable_baselines3 import PPO
+        from ai_core.rl.meta_router_env import MetaRouterEnv
+        import json as _json
+
+        # メタ情報ロード
+        meta_path = model_path.parent / f"meta_router_meta_{symbol}.json"
+        if meta_path.exists():
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            n_regimes = int(meta.get("n_regimes", 20))
+            lookback = int(meta.get("lookback", 10))
+            lambda_regret = float(meta.get("lambda_regret", 1.0))
+        else:
+            n_regimes = int(getattr(cfg, "meta_router_n_regimes", 20))
+            lookback = int(getattr(cfg, "meta_router_lookback", 10))
+            lambda_regret = float(getattr(cfg, "meta_router_lambda_regret", 1.0))
+
+        model = PPO.load(str(model_path), device="cpu")
+
+        # 全データ（train + test）で推論するため split="train" は使わず全行を対象にする
+        env = MetaRouterEnv(
+            daily_df=merged,
+            agents=agents,
+            n_regimes=n_regimes,
+            lookback=lookback,
+            lambda_regret=lambda_regret,
+            trade_cost_bps=float(cfg.trade_cost_bps),
+            pos_limit=float(cfg.pos_limit),
+            split="train",  # 内部的には全行を使うため後で上書き
+        )
+        # 全行を対象にするため _df を差し替え
+        env._df = merged.sort_values("Date").reset_index(drop=True)
+        env._T = len(env._df)
+        # 差し替えたサイズに合わせて内部配列を再構築
+        env._ret = np.zeros((len(env._df), len(agents)), dtype=np.float32)
+        env._ratio = np.zeros((len(env._df), len(agents)), dtype=np.float32)
+        env._regime = np.zeros(len(env._df), dtype=np.int32)
+        env._r_soxl = np.zeros(len(env._df), dtype=np.float32)
+        env._r_soxs = np.zeros(len(env._df), dtype=np.float32)
+        for j, agent in enumerate(agents):
+            if f"ret_{agent}" in env._df.columns:
+                env._ret[:, j] = pd.to_numeric(env._df[f"ret_{agent}"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+            if f"ratio_{agent}" in env._df.columns:
+                env._ratio[:, j] = pd.to_numeric(env._df[f"ratio_{agent}"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+        if "regime_id" in env._df.columns:
+            env._regime = pd.to_numeric(env._df["regime_id"], errors="coerce").fillna(0).astype(int).to_numpy()
+        if "r_soxl" in env._df.columns:
+            env._r_soxl = pd.to_numeric(env._df["r_soxl"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+        if "r_soxs" in env._df.columns:
+            env._r_soxs = pd.to_numeric(env._df["r_soxs"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+        env._T = len(env._df)
+
+        obs, _ = env.reset()
+        rows_out = []
+        ratio_prev = 0.0
+        eq = 1.0
+
+        for t in range(env._T):
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, _, info = env.step(action)
+
+            weights = info.get("weights", [1.0 / len(agents)] * len(agents))
+            ratio = info.get("ratio", 0.0)
+            ret_selected = info.get("ret_selected", 0.0)
+            eq = eq * (1.0 + ret_selected)
+
+            row = {
+                "meta_router_used": True,
+                "ratio": ratio,
+                "equity": eq,
+            }
+            for j, agent in enumerate(agents):
+                row[f"mixture_weight_{agent}"] = float(weights[j]) if j < len(weights) else 0.0
+            rows_out.append(row)
+
+            if done:
+                break
+
+        result_df = pd.DataFrame(rows_out)
+        out_merged = merged.sort_values("Date").reset_index(drop=True).copy()
+        for col in result_df.columns:
+            out_merged[col] = result_df[col].values if len(result_df) == len(out_merged) else result_df.reindex(range(len(out_merged)))[col].values
+        return out_merged
+
     def _build_allowlist(self, edge_table: pd.DataFrame, agents: List[str], safe_set: List[str], cfg: StepFRouterConfig) -> pd.DataFrame:
-        topk_global = self._topk_global_agents(edge_table=edge_table, topk=max(1, int(cfg.topK)))
+        excluded = [a.strip() for a in str(getattr(cfg, "exclude_agents", "") or "").replace(",", " ").split() if a.strip()]
+        effective_safe = [a for a in safe_set if a not in excluded]
+        topk_global = self._topk_global_agents(edge_table=edge_table, topk=max(1, int(cfg.topK)), exclude=excluded)
         if edge_table.empty:
-            base = list(dict.fromkeys(safe_set + topk_global))
+            base = list(dict.fromkeys(effective_safe + topk_global))
             return pd.DataFrame([{"regime_id": -1, "allowed_agents": "|".join(base)}])
-        out_rows = [{"regime_id": -1, "allowed_agents": "|".join(list(dict.fromkeys(safe_set + topk_global)))}]
+        out_rows = [{"regime_id": -1, "allowed_agents": "|".join(list(dict.fromkeys(effective_safe + topk_global)))}]
         for rid, df_r in edge_table.groupby("regime_id"):
             rid = int(rid)
             if rid == -1:
                 continue
             if int(df_r["n_days"].max()) < int(cfg.min_samples_regime):
-                allowed = list(dict.fromkeys(safe_set + topk_global))
+                allowed = list(dict.fromkeys(effective_safe + topk_global))
             else:
-                cands = df_r.copy()
+                cands = df_r[~df_r["agent"].isin(excluded)].copy()
                 if cfg.topk_filter_ev_positive:
                     ev_col = "EV_shrink" if "EV_shrink" in cands.columns else "EV"
                     pos = cands[cands[ev_col] > 0].copy()
                     if not pos.empty:
                         cands = pos
+                # EV 下位 25% を除外する（候補が 4 件以上ある場合のみ適用）。
+                # safe_set エージェントは除外対象から守るため、除外後も effective_safe は必ず allowlist に残る。
+                if len(cands) >= 4:
+                    _ev_col = "EV_shrink" if "EV_shrink" in cands.columns else "EV"
+                    _ev_threshold = cands[_ev_col].quantile(0.25)
+                    _filtered = cands[cands[_ev_col] >= _ev_threshold].copy()
+                    if len(_filtered) >= 2:
+                        cands = _filtered
                 ir_col = "IR_shrink" if "IR_shrink" in cands.columns else "IR"
                 ev_col = "EV_shrink" if "EV_shrink" in cands.columns else "EV"
                 cands = cands.sort_values([ir_col, ev_col, "dd_proxy", "n_days"], ascending=[False, False, True, False])
                 picked = cands["agent"].tolist()[: int(cfg.topK)]
-                allowed = list(dict.fromkeys(safe_set + picked))
+                allowed = list(dict.fromkeys(effective_safe + picked))
             out_rows.append({"regime_id": rid, "allowed_agents": "|".join(allowed)})
         return pd.DataFrame(out_rows)
 
-    def _topk_global_agents(self, edge_table: pd.DataFrame, topk: int) -> List[str]:
+    def _topk_global_agents(self, edge_table: pd.DataFrame, topk: int, exclude: Optional[List[str]] = None) -> List[str]:
         if edge_table.empty:
             return []
         cols = [c for c in ["IR_global", "EV_global", "n_global"] if c in edge_table.columns]
         if len(cols) < 3:
             return []
         gdf = edge_table[["agent", "IR_global", "EV_global", "n_global"]].drop_duplicates(subset=["agent"])
+        if exclude:
+            gdf = gdf[~gdf["agent"].isin(exclude)]
+        # IR_global が NaN のエージェントは topK から除外する（データ不足エージェントの誤選出を防ぐ）。
+        gdf = gdf.dropna(subset=["IR_global"])
         gdf = gdf.sort_values(["IR_global", "EV_global", "n_global"], ascending=[False, False, False])
         return gdf["agent"].tolist()[: max(1, int(topk))]
 
@@ -2648,12 +2923,17 @@ class StepFService:
         }
 
     def _run_router_sim(self, merged: pd.DataFrame, agents: List[str], edge_table: pd.DataFrame, allowlist: pd.DataFrame, safe_set: List[str], cfg: StepFRouterConfig, context_profiles: Dict[Tuple[int, int, str], Dict[str, float]], device_name: str) -> pd.DataFrame:
-        allow_map = {int(r.regime_id): [a for a in str(r.allowed_agents).split("|") if a] for r in allowlist.itertuples(index=False)}
+        excluded_set = set(a.strip() for a in str(getattr(cfg, "exclude_agents", "") or "").replace(",", " ").split() if a.strip())
+        allow_map = {int(r.regime_id): [a for a in str(r.allowed_agents).split("|") if a and a not in excluded_set] for r in allowlist.itertuples(index=False)}
         ir_map: Dict[Tuple[int, str], float] = {}
         score_col = "IR_shrink" if "IR_shrink" in edge_table.columns else "IR"
         for r in edge_table.itertuples(index=False):
             ir_map[(int(r.regime_id), str(r.agent))] = float(getattr(r, score_col, np.nan))
 
+        _ir_vals_global = [v for v in ir_map.values() if np.isfinite(v)]
+        _ir_std_global = float(np.std(_ir_vals_global)) if len(_ir_vals_global) > 1 else 1.0
+
+        effective_safe = [a for a in safe_set if a not in excluded_set]
         w_prev = {a: 0.0 for a in agents}
         out = []
         ratio_prev = 0.0
@@ -2664,18 +2944,26 @@ class StepFService:
         for row in merged.itertuples(index=False):
             rid = int(getattr(row, "regime_id"))
             cid = int(getattr(row, "cluster_id_stable", getattr(row, "regime_id", 0)) or 0)
-            allowed = allow_map.get(rid, safe_set if rid == -1 else agents)
+            allowed = allow_map.get(rid, effective_safe if rid == -1 else [a for a in agents if a not in excluded_set])
             if rid == -1:
-                allowed = list(safe_set)
-            allowed = [a for a in allowed if a in agents]
+                allowed = list(effective_safe)
+                _allowed_source = "regime_unknown"
+            else:
+                _allowed_source = "regime_topk"
+            allowed = [a for a in allowed if a in agents and a not in excluded_set]
             if not allowed:
-                allowed = list(safe_set or agents)
+                allowed = list(effective_safe or [a for a in agents if a not in excluded_set])
+                _allowed_source = "fallback_safe_set"
 
             scores = np.array([ir_map.get((rid, a), np.nan) for a in allowed], dtype=float)
             if np.any(np.isnan(scores)):
                 w_raw_allowed = np.ones(len(allowed), dtype=float) / max(1, len(allowed))
             else:
-                z = torch.tensor(float(cfg.softmax_beta) * scores, dtype=torch.float32, device=compute_device)
+                _scores_finite = scores[np.isfinite(scores)]
+                _ir_std_regime = float(np.std(_scores_finite)) if len(_scores_finite) > 1 else _ir_std_global
+                _adaptive_beta = float(cfg.softmax_beta) / (1.0 + _ir_std_regime / max(_ir_std_global, 1e-9))
+                _adaptive_beta = float(np.clip(_adaptive_beta, float(cfg.softmax_beta) * 0.5, float(cfg.softmax_beta) * 2.0))
+                z = torch.tensor(_adaptive_beta * scores, dtype=torch.float32, device=compute_device)
                 z = z - torch.max(z)
                 e = torch.softmax(z, dim=0)
                 w_raw_allowed = e.detach().cpu().numpy().astype(float)
@@ -2696,6 +2984,28 @@ class StepFService:
             else:
                 for a in agents:
                     w_full[a] /= s
+
+            max_w = float(getattr(cfg, "max_agent_mixture_weight", 1.0) or 1.0)
+            if max_w < 1.0:
+                n_active = max(1, sum(1 for w in w_full.values() if w > 1e-9))
+                effective_max_w = max(max_w, 1.0 / n_active)
+                for _ in range(n_active + 1):
+                    w_full = {a: min(w, effective_max_w) for a, w in w_full.items()}
+                    s2 = sum(w_full.values())
+                    if s2 <= 0:
+                        break
+                    w_full = {a: w / s2 for a, w in w_full.items()}
+                    if all(v <= effective_max_w + 1e-9 for v in w_full.values()):
+                        break
+
+            # Meta-Router 事前計算済み weights で上書きする（use_meta_router=True のとき）
+            _meta_used = bool(getattr(row, "meta_router_used", False))
+            if _meta_used:
+                _w_meta = {a: float(getattr(row, f"mixture_weight_{a}", 0.0) or 0.0) for a in agents}
+                _s_meta = sum(_w_meta.values())
+                if _s_meta > 0:
+                    w_full = {a: w / _s_meta for a, w in _w_meta.items()}
+                    _allowed_source = "meta_router"
 
             ratio = 0.0
             for a in agents:
@@ -2757,6 +3067,7 @@ class StepFService:
                 "selected_expert_weight": float(w_full.get(selected_expert, 0.0)),
                 "mixture_weights_json": json.dumps({a: float(w_full[a]) for a in agents}, ensure_ascii=False),
                 "allowed_agents": "|".join(allowed),
+                "allowed_agents_source": _allowed_source,
                 "r_soxl": r_soxl,
                 "r_soxs": r_soxs,
                 "source_device": str(compute_device),

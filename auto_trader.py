@@ -1,410 +1,317 @@
+"""
+auto_trader.py
+
+ApexTraderAI live 自動売買エントリーポイント。
+
+引け10分前（NY時間 15:50）に Windows Task Scheduler から起動される。
+config/live_config.yaml を読み込んで LiveClosePreRunner を実行する。
+
+使用例:
+    python auto_trader.py
+    python auto_trader.py --date 2026-03-27
+    python auto_trader.py --dry-run
+    python auto_trader.py --config config/live_config.yaml
+"""
 from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date, datetime, time, timedelta
+import sys
+import time
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
-from ai_core.utils.paths import resolve_repo_path
-from typing import Dict, Tuple, Optional
+import yaml
 
-from zoneinfo import ZoneInfo  # Python 3.11 なら標準ライブラリ
+from ai_core.live.gateway_state import (
+    GatewayState,
+    GATEWAY_STATE_FILENAME,
+    clear_flag,
+    detect_state,
+    read_flag,
+    write_flag,
+)
+from engine.broker_client import IBKRBrokerClient, IBKRSettings
+from engine.discord_notifier import build_notifier
+from engine.live_close_pre_runner import LiveClosePreConfig, LiveClosePreRunner
+from engine.pnl_calculator import PnLCalculator
+from engine.trade_logger import TradeLogger, TradeLoggerConfig
 
-from engine.live_policy_runner import LivePolicyConfig, LivePolicyRunner
-from engine.daily_trading_orchestrator import DailyTradingOrchestrator
-
-# 以下は「実装済み前提」のクラス
-# ユーザー側で engine/state_builder.py, engine/broker_client.py などとして用意してください。
-from engine.state_builder import StateBuilder           # StateBuilderProtocol 実装クラス
-from engine.broker_client import BrokerClient           # BrokerClientProtocol 実装クラス
-from engine.pnl_calculator import PnLCalculator         # PnLCalculatorProtocol 実装クラス
-from engine.trade_logger import TradeLogger             # TradeLoggerProtocol 実装クラス
-
+MARKET_TZ = ZoneInfo("America/New_York")
 
 logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# 市場時間・タイムゾーン関連（サマータイム吸収）
+# 設定ファイル読み込み
 # =========================================================
 
-MARKET_TZ = ZoneInfo("America/New_York")
+def load_live_config(config_path: Path) -> Dict[str, Any]:
+    """config/live_config.yaml を読み込んで dict を返す。"""
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"live_config.yaml が見つかりません: {config_path}\n"
+            "config/live_config.yaml を確認してください。"
+        )
+    with config_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
-# 市場の標準的なオープン / クローズ（NY時間）
-MARKET_OPEN_TIME = time(9, 30)
-MARKET_CLOSE_TIME = time(16, 0)
 
-# 各フローの実行ウィンドウ幅（分）
-MORNING_WINDOW_MINUTES = 30    # 9:30〜10:00
-CLOSE_WINDOW_MINUTES = 30      # 15:30〜16:00
+def build_runner_config(cfg: Dict[str, Any], dry_run_override: bool = False) -> LiveClosePreConfig:
+    """yaml dict から LiveClosePreConfig を生成する。"""
+    trading = cfg.get("trading", {})
+    paths = cfg.get("paths", {})
+    execution = cfg.get("execution", {})
 
-# 実行フラグ保存先
-FLAGS_FILE_PATH = resolve_repo_path("output") / "auto_trader_flags.txt"
+    dry_run = dry_run_override or bool(execution.get("dry_run", False))
+
+    return LiveClosePreConfig(
+        symbol_long=str(trading.get("symbol_long", "SOXL")),
+        symbol_inverse=str(trading.get("symbol_inverse", "SOXS")),
+        sim_output_root=str(paths.get("sim_output_root", "output/sim")),
+        live_output_root=str(paths.get("live_output_root", "output/live")),
+        neutral_threshold=float(trading.get("neutral_threshold", 0.05)),
+        max_position_shares=int(trading.get("max_position_shares", 100)),
+        order_type=str(trading.get("order_type", "SAFE_LIMIT")),
+        safe_band_entry_pct=float(trading.get("safe_band_entry_pct", 0.01)),
+        safe_band_exit_pct=float(trading.get("safe_band_exit_pct", 0.01)),
+        audit_log_path=str(paths.get("audit_log", "output/live/live_audit.jsonl")),
+        flags_path=str(paths.get("flags_file", "output/live/live_flags.txt")),
+        dry_run=dry_run,
+        order_wait_sec=int(execution.get("order_wait_sec", 5)),
+    )
+
+
+def build_ibkr_broker(cfg: Dict[str, Any]) -> IBKRBrokerClient:
+    """yaml dict から IBKRBrokerClient を生成する。"""
+    ibkr = cfg.get("ibkr", {})
+    account_id = str(ibkr.get("account_id", ""))
+    if not account_id:
+        raise ValueError(
+            "config/live_config.yaml の ibkr.account_id が未設定です。"
+            "DU****** (paper) または U****** (real) を設定してください。"
+        )
+    settings = IBKRSettings(
+        host=str(ibkr.get("host", "127.0.0.1")),
+        port=int(ibkr.get("port", 7497)),
+        client_id=int(ibkr.get("client_id", 10)),
+        account_id=account_id,
+        exchange=str(ibkr.get("exchange", "SMART")),
+        currency=str(ibkr.get("currency", "USD")),
+    )
+    return IBKRBrokerClient(settings=settings, logger=logger)
 
 
 # =========================================================
-# ユーティリティ
+# Gateway プリフライトチェック
 # =========================================================
 
-def parse_date(value: str) -> date:
-    """
-    YYYY-MM-DD 形式の文字列を datetime.date に変換する。
-    """
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(f"Invalid date format (expected YYYY-MM-DD): {value}") from e
+_GATEWAY_WAIT_INTERVAL_SEC = 30  # 再チェック間隔
 
 
-def parse_policy_map(value: str) -> Dict[str, Path]:
+def check_gateway_preflight(
+    cfg: Dict[str, Any],
+    trading_date: "date",
+    notifier: Any,
+) -> bool:
     """
-    "mamba=path/to/mamba.npz" のような文字列を
-    { "mamba": Path(...) } 辞書に変換する。
-    """
-    result: Dict[str, Path] = {}
-    if not value:
-        return result
+    取引実行前に IBKR Gateway の接続状態を確認する。
 
-    entries = value.split(";")
-    for entry in entries:
-        entry = entry.strip()
-        if not entry:
-            continue
-        if "=" not in entry:
-            raise argparse.ArgumentTypeError(
-                f"Invalid policy-map entry (expected name=path): {entry}"
+    - CONNECTED     : フラグクリア → True（取引続行）
+    - LOGIN_WAIT    : IBGateway 起動中だがポート未開放。
+                      gateway_login_wait_timeout_sec 秒まで待機してから再判定。
+    - GATEWAY_DOWN  : IBGateway プロセスなし → 即スキップ
+    - NETWORK_ERROR : 接続異常 → 即スキップ
+
+    アラート送信の失敗は WARNING ログに留め、スキップ判定には影響しない。
+    """
+    ibkr = cfg.get("ibkr", {})
+    paths = cfg.get("paths", {})
+    execution = cfg.get("execution", {})
+    host = str(ibkr.get("host", "127.0.0.1"))
+    port = int(ibkr.get("port", 7497))
+    live_output_root = Path(str(paths.get("live_output_root", "output/live")))
+    state_file = live_output_root / GATEWAY_STATE_FILENAME
+    login_wait_timeout_sec = int(
+        execution.get("gateway_login_wait_timeout_sec", 0)
+    )
+
+    # 前回フラグをログ出力（診断用、処理には影響しない）
+    prev_flag = read_flag(state_file)
+    if prev_flag:
+        logger.info("[GatewayPreflight] previous flag: %s", prev_flag)
+
+    state = detect_state(host, port)
+    logger.info("[GatewayPreflight] current state: %s", state.value)
+
+    # LOGIN_WAIT のとき、設定秒数まで待機ループ
+    if state == GatewayState.LOGIN_WAIT and login_wait_timeout_sec > 0:
+        logger.info(
+            "[GatewayPreflight] LOGIN_WAIT detected. Waiting up to %d sec for gateway "
+            "(interval=%ds) ...",
+            login_wait_timeout_sec,
+            _GATEWAY_WAIT_INTERVAL_SEC,
+        )
+        wait_start = time.time()
+        while True:
+            elapsed = time.time() - wait_start
+            remaining = login_wait_timeout_sec - elapsed
+            if remaining <= 0:
+                logger.warning(
+                    "[GatewayPreflight] login wait timeout (%ds). Giving up.",
+                    login_wait_timeout_sec,
+                )
+                break
+            sleep_sec = min(_GATEWAY_WAIT_INTERVAL_SEC, remaining)
+            logger.info(
+                "[GatewayPreflight] waiting... elapsed=%.0fs remaining=%.0fs",
+                elapsed,
+                remaining,
             )
-        name, path_str = entry.split("=", 1)
-        name = name.strip()
-        path = Path(path_str.strip()).resolve()
-        if not name:
-            raise argparse.ArgumentTypeError(f"Invalid agent name in policy-map: {entry}")
-        result[name] = path
-    if not result:
-        raise argparse.ArgumentTypeError("policy-map is empty.")
-    return result
+            time.sleep(sleep_sec)
+            state = detect_state(host, port)
+            logger.info("[GatewayPreflight] re-check state: %s", state.value)
+            if state != GatewayState.LOGIN_WAIT:
+                # CONNECTED / GATEWAY_DOWN / NETWORK_ERROR のどれかに変化
+                break
 
+    if state == GatewayState.CONNECTED:
+        clear_flag(state_file)
+        return True
 
-def parse_weights_map(value: str) -> Dict[str, float]:
-    """
-    "mamba=1.0" のような文字列を
-    { "mamba": 1.0 } に変換する。
-    """
-    result: Dict[str, float] = {}
-    if not value:
-        return result
+    # CONNECTED 以外 → 取引スキップ
+    write_flag(state_file, state)
+    logger.warning(
+        "[GatewayPreflight] trading SKIPPED: state=%s host=%s:%d",
+        state.value, host, port,
+    )
 
-    entries = value.split(";")
-    for entry in entries:
-        entry = entry.strip()
-        if not entry:
-            continue
-        if "=" not in entry:
-            raise argparse.ArgumentTypeError(
-                f"Invalid marl-weights entry (expected name=weight): {entry}"
-            )
-        name, weight_str = entry.split("=", 1)
-        name = name.strip()
+    if notifier is not None:
         try:
-            w = float(weight_str.strip())
-        except ValueError as e:
-            raise argparse.ArgumentTypeError(
-                f"Invalid float weight in marl-weights: {entry}"
-            ) from e
-        result[name] = w
-    if not result:
-        raise argparse.ArgumentTypeError("marl-weights is empty.")
-    return result
+            notifier.notify_gateway_alert(
+                state=state.value,
+                trading_date=trading_date,
+                host=host,
+                port=port,
+            )
+        except Exception as e:
+            logger.warning("[GatewayPreflight] alert send failed: %s", e)
+
+    return False
 
 
 # =========================================================
-# 引数パーサ
+# ロギング設定
+# =========================================================
+
+def setup_logging(cfg: Dict[str, Any], trading_date: date) -> None:
+    """ファイル + コンソール のロギングを設定する。"""
+    log_cfg = cfg.get("logging", {})
+    level_str = str(log_cfg.get("level", "INFO")).upper()
+    level = getattr(logging, level_str, logging.INFO)
+
+    log_dir_str = log_cfg.get("log_dir", "output/live/logs")
+    log_dir = Path(log_dir_str)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"live_close_pre_{trading_date.isoformat()}.log"
+
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(str(log_file), encoding="utf-8"),
+    ]
+    logging.basicConfig(level=level, format=fmt, handlers=handlers, force=True)
+    logger.info("Log file: %s", log_file)
+
+
+# =========================================================
+# 取引日決定
+# =========================================================
+
+class MarketClosedError(Exception):
+    """NYSE 休場日（祝日・土日）に実行された場合に raise する。"""
+    pass
+
+
+def _is_nyse_trading_day(d: date) -> bool:
+    """pandas_market_calendars で NYSE の取引日かどうかを判定する。"""
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(
+            start_date=d.isoformat(),
+            end_date=d.isoformat(),
+        )
+        return not schedule.empty
+    except Exception as e:
+        logger.warning("NYSE calendar check failed (%s). Assuming trading day.", e)
+        return True  # チェック失敗時は実行を止めない
+
+
+def decide_trading_date(
+    date_arg: Optional[date],
+    skip_market_check: bool,
+) -> date:
+    """
+    取引日を決定する。
+
+    - date_arg が指定されていればそれを使う（テスト・手動実行用）
+    - 指定がなければ NY 時間の現在日付を使う
+    - 土日・NYSE 祝日で skip_market_check=False なら MarketClosedError
+    """
+    now_ny = datetime.now(MARKET_TZ)
+
+    if date_arg is not None:
+        trading_date = date_arg
+    else:
+        trading_date = now_ny.date()
+
+    if not skip_market_check:
+        if not _is_nyse_trading_day(trading_date):
+            raise MarketClosedError(
+                f"{trading_date} は NYSE 休場日です（祝日または土日）。"
+                "スキップします。"
+            )
+
+    return trading_date
+
+
+# =========================================================
+# CLI 引数パーサ
 # =========================================================
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Live auto-trading launcher (auto / morning / close / full_day)."
+        description=(
+            "ApexTraderAI live 自動売買 — 引け10分前に1回実行する。\n"
+            "config/live_config.yaml に IBKR 接続情報を設定してから使用すること。"
+        )
     )
-
     parser.add_argument(
-        "--mode",
-        choices=["auto", "morning", "close", "full_day"],
-        default="auto",
-        help=(
-            "Which flow to run: "
-            "auto (NY時間から自動判定), morning (open), close (pre-close), or full_day (both). "
-            "Default: auto."
-        ),
+        "--config",
+        type=Path,
+        default=Path("config/live_config.yaml"),
+        help="設定ファイルのパス（デフォルト: config/live_config.yaml）",
     )
     parser.add_argument(
         "--date",
-        type=parse_date,
+        type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(),
         default=None,
-        help=(
-            "Trading date in YYYY-MM-DD. "
-            "If omitted in auto mode, NY時間の現在日付を使用。"
-        ),
-    )
-
-    # LivePolicyRunner / RL 関連
-    parser.add_argument(
-        "--symbol",
-        type=str,
-        default="SOXL",
-        help="Base symbol for the RL policy (default: SOXL).",
+        help="取引日（YYYY-MM-DD）。省略時は NY 時間の今日。",
     )
     parser.add_argument(
-        "--mode-rl",
-        choices=["single", "marl"],
-        default="single",
-        help="RL mode: single or marl (default: single).",
-    )
-    parser.add_argument(
-        "--policy",
-        type=Path,
-        default=None,
-        help=(
-            "Policy file path for single mode (.npz or .zip). "
-            "If --mode-rl=single and --policy-map is not given, this is required."
-        ),
-    )
-    parser.add_argument(
-        "--agent-name",
-        type=str,
-        default="mamba",
-        help="Agent name used in single mode (default: mamba).",
-    )
-    parser.add_argument(
-        "--policy-map",
-        type=parse_policy_map,
-        default=None,
-        help=(
-            "Policy map for MARL or advanced usage in single mode. "
-            'Format: "mamba=path/to/mamba.npz"'
-        ),
-    )
-    parser.add_argument(
-        "--marl-weights",
-        type=parse_weights_map,
-        default=None,
-        help=(
-            "Weights for MARL mode. "
-            'Format: "mamba=1.0". '
-            "If omitted in marl mode, equal weights will be used."
-        ),
-    )
-    parser.add_argument(
-        "--obs-dim",
-        type=int,
-        default=24,
-        help="Dimension of observation vector for RL agent (default: 24).",
-    )
-    parser.add_argument(
-        "--log-decisions",
+        "--dry-run",
         action="store_true",
-        help="If set, LivePolicyRunner will log decisions to CSV.",
+        help="発注をスキップして動作確認のみ行う（config の dry_run を上書き）。",
     )
     parser.add_argument(
-        "--decisions-log-path",
-        type=Path,
-        default=resolve_repo_path("output/live_decisions.csv"),
-        help="Path to log RL decisions if --log-decisions is set.",
+        "--skip-market-check",
+        action="store_true",
+        help="土日・時間外でも強制実行する（テスト用）。",
     )
-
-    # トレード運用パラメータ
-    parser.add_argument(
-        "--max-leverage",
-        type=float,
-        default=1.0,
-        help="Max leverage used when ratio=±1.0 (default: 1.0 = 100% of equity).",
-    )
-
-    # ログ設定
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="INFO",
-        help="Logging level (DEBUG, INFO, WARNING, ERROR). Default: INFO",
-    )
-
     return parser
-
-
-# =========================================================
-# ログ・フラグ関連
-# =========================================================
-
-def setup_logging(level: str) -> None:
-    """
-    ロギング設定を簡単に行う。
-    """
-    numeric_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=numeric_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
-
-def _load_flags(path: Path) -> Dict[str, str]:
-    """
-    実行済みフラグを "key=value" 形式のテキストから読み込む。
-    key: "YYYY-MM-DD_morning" / "YYYY-MM-DD_close" など
-    value: "done"
-    """
-    flags: Dict[str, str] = {}
-    if not path.exists():
-        return flags
-
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        flags[key.strip()] = value.strip()
-    return flags
-
-
-def _save_flags(path: Path, flags: Dict[str, str]) -> None:
-    """
-    実行済みフラグ辞書をテキストファイルに保存する。
-    """
-    lines = [f"{k}={v}" for k, v in flags.items()]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def mark_flow_done(trading_date: date, flow: str) -> None:
-    """
-    指定日の指定フロー(morning/close)を実行済みとしてフラグ保存。
-    """
-    key = f"{trading_date.isoformat()}_{flow}"
-    flags = _load_flags(FLAGS_FILE_PATH)
-    flags[key] = "done"
-    _save_flags(FLAGS_FILE_PATH, flags)
-
-
-def is_flow_done(trading_date: date, flow: str) -> bool:
-    """
-    指定日の指定フロー(morning/close)が実行済みかどうか。
-    """
-    key = f"{trading_date.isoformat()}_{flow}"
-    flags = _load_flags(FLAGS_FILE_PATH)
-    return flags.get(key) == "done"
-
-
-# =========================================================
-# auto モード用: NY時間からどのフローを走らせるか判定
-# =========================================================
-
-def _build_time_range(base: datetime, center_time: time, window_minutes: int) -> Tuple[datetime, datetime]:
-    """
-    base（NY時間の現在日時）を元に、当日の center_time を中心とした
-    [center - window/2, center + window/2] の時間帯を作る。
-    """
-    center = base.replace(
-        hour=center_time.hour,
-        minute=center_time.minute,
-        second=center_time.second,
-        microsecond=center_time.microsecond,
-    )
-    half = timedelta(minutes=window_minutes / 2)
-    return center - half, center + half
-
-
-def decide_auto_flow(now_ny: datetime) -> Tuple[Optional[str], date]:
-    """
-    現在の NY 時間から、どのフローを実行すべきかを判定する。
-    戻り値:
-        (flow, trading_date)
-        flow: "morning" / "close" / None
-        trading_date: そのフローに対する取引日
-    """
-    trading_date = now_ny.date()
-
-    # 土日なら何もしない
-    if now_ny.weekday() >= 5:  # 5=土, 6=日
-        logger.info("NY weekday=%d (weekend). No trading.", now_ny.weekday())
-        return None, trading_date
-
-    # 9:30 周辺 = 朝フロー
-    morning_start, morning_end = _build_time_range(
-        now_ny, MARKET_OPEN_TIME, MORNING_WINDOW_MINUTES
-    )
-    # 16:00 周辺 = 引け前フロー
-    close_start, close_end = _build_time_range(
-        now_ny, MARKET_CLOSE_TIME, CLOSE_WINDOW_MINUTES
-    )
-
-    if morning_start <= now_ny <= morning_end:
-        return "morning", trading_date
-    if close_start <= now_ny <= close_end:
-        return "close", trading_date
-
-    return None, trading_date
-
-
-# =========================================================
-# LivePolicyConfig 構築
-# =========================================================
-
-def build_live_policy_config_from_args(args: argparse.Namespace) -> LivePolicyConfig:
-    """
-    CLI引数から LivePolicyConfig を構築する。
-    """
-    # mode-rl = single / marl
-    mode_rl = args.mode_rl
-
-    if mode_rl == "single":
-        # single の場合:
-        # 1. policy-map が指定されていれば、それをそのまま使う（agent_names/paths）
-        # 2. 無ければ --policy と --agent-name の組を使う
-        if args.policy_map:
-            policy_paths = args.policy_map
-            agent_names = list(policy_paths.keys())
-        else:
-            if args.policy is None:
-                raise ValueError(
-                    "--mode-rl=single の場合、--policy または --policy-map のどちらかは必須です。"
-                )
-            policy_paths = {args.agent_name: args.policy.resolve()}
-            agent_names = [args.agent_name]
-
-        live_cfg = LivePolicyConfig(
-            symbol=args.symbol,
-            mode="single",
-            policy_paths=policy_paths,
-            agent_names=agent_names,
-            marl_weights=None,  # single では未使用
-            action_type="ratio",  # v1 は ratio を前提
-            obs_dim=args.obs_dim,
-            device="cpu",
-            log_decisions=args.log_decisions,
-            decisions_log_path=args.decisions_log_path if args.log_decisions else None,
-        )
-        return live_cfg
-
-    # mode_rl == "marl"
-    if not args.policy_map:
-        raise ValueError(
-            "--mode-rl=marl の場合、--policy-map は必須です。"
-        )
-    policy_paths = args.policy_map
-    agent_names = list(policy_paths.keys())
-    marl_weights = args.marl_weights or None
-
-    live_cfg = LivePolicyConfig(
-        symbol=args.symbol,
-        mode="marl",
-        policy_paths=policy_paths,
-        agent_names=agent_names,
-        marl_weights=marl_weights,
-        action_type="ratio",  # v1 は ratio を前提
-        obs_dim=args.obs_dim,
-        device="cpu",
-        log_decisions=args.log_decisions,
-        decisions_log_path=args.decisions_log_path if args.log_decisions else None,
-    )
-    return live_cfg
 
 
 # =========================================================
@@ -415,108 +322,131 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # ログ設定
-    setup_logging(args.log_level)
-    logger.info("auto_trader.py started with args: %s", vars(args))
-
-    # NY時間の現在時刻
-    now_ny = datetime.now(MARKET_TZ)
-    logger.info("Current NY time: %s", now_ny.isoformat())
-
-    # LivePolicyConfig 構築
-    live_cfg = build_live_policy_config_from_args(args)
-    logger.info(
-        "LivePolicyConfig prepared: symbol=%s, mode=%s, agents=%s",
-        live_cfg.symbol,
-        live_cfg.mode,
-        live_cfg.agent_names,
+    # 設定ファイル読み込み
+    cfg = load_live_config(args.config)
+    execution = cfg.get("execution", {})
+    skip_market_check = args.skip_market_check or bool(
+        execution.get("skip_market_check", False)
     )
 
-    # LivePolicyRunner 構築
-    live_runner = LivePolicyRunner.from_config(live_cfg)
-
-    # 依存コンポーネントの生成
-    state_builder = StateBuilder()               # StateBuilderProtocol 実装
-    broker = BrokerClient()                      # BrokerClientProtocol 実装
-    pnl_calculator = PnLCalculator()             # PnLCalculatorProtocol 実装
-    trade_logger = TradeLogger()                 # TradeLoggerProtocol 実装
-
-    # DailyTradingOrchestrator 構築
-    orchestrator = DailyTradingOrchestrator(
-        symbol=live_cfg.symbol,
-        live_runner=live_runner,
-        state_builder=state_builder,
-        broker=broker,
-        pnl_calculator=pnl_calculator,
-        trade_logger=trade_logger,
-        max_leverage=args.max_leverage,
-    )
-
-    mode = args.mode
-
-    # ==============================
-    # auto モード: NY時間から実行フローを自動判定
-    # ==============================
-    if mode == "auto":
-        flow, trading_date = decide_auto_flow(now_ny)
-
-        if flow is None:
-            logger.info("No trading flow to run at this time (auto mode). Exiting.")
-            return
-
-        # autoモードでは --date が指定されていても、基本は NY 日付を優先。
-        # （必要ならここをカスタマイズ可）
-        logger.info(
-            "Auto mode selected flow=%s, trading_date=%s (NY date).",
-            flow,
-            trading_date,
+    # 取引日決定（ロギング前に決める必要がある）
+    try:
+        trading_date = decide_trading_date(
+            date_arg=args.date,
+            skip_market_check=skip_market_check,
         )
+    except MarketClosedError as e:
+        # 休場日は通知なしで正常終了
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+        logger.info("auto_trader.py: %s スキップして終了します。", e)
+        sys.exit(0)
 
-        # 1日1回だけ実行したいのでフラグを確認
-        if is_flow_done(trading_date, flow):
+    # ロギング設定
+    setup_logging(cfg, trading_date)
+    logger.info("auto_trader.py start | trading_date=%s dry_run=%s", trading_date, args.dry_run)
+
+    # notifier を先に生成（Gateway アラートにも使うため setup より前）
+    notifier = build_notifier(cfg)
+
+    # Gateway プリフライトチェック
+    # CONNECTED 以外の場合はアラートを送信して取引をスキップする。
+    # ログインは手動操作のみ（自動化しない）。
+    if not check_gateway_preflight(cfg, trading_date, notifier):
+        logger.info(
+            "auto_trader.py: Gateway not ready. Trading skipped for %s.", trading_date
+        )
+        sys.exit(0)
+
+    # セットアップ（IBKR クライアント・runner 生成）
+    try:
+        broker = build_ibkr_broker(cfg)
+        runner_config = build_runner_config(cfg, dry_run_override=args.dry_run)
+
+        trade_logger_config = TradeLoggerConfig(
+            log_root=Path(runner_config.live_output_root),
+            log_file_pattern="live_daily_log_{symbol}.csv",
+        )
+        trade_logger = TradeLogger(symbol=runner_config.symbol_long, config=trade_logger_config)
+        pnl_calculator = PnLCalculator()
+
+        runner = LiveClosePreRunner(
+            config=runner_config,
+            broker=broker,
+            trade_logger=trade_logger,
+            pnl_calculator=pnl_calculator,
+            notifier=notifier,
+        )
+    except Exception as setup_exc:
+        logger.exception("auto_trader.py setup FAILED: %s", setup_exc)
+        if notifier:
+            try:
+                notifier.notify_failure(
+                    trading_date=trading_date,
+                    error=f"[setup error] {setup_exc}",
+                )
+            except Exception:
+                pass
+        sys.exit(1)
+
+    # t_eff フロー実行
+    # （runner.run() 内の finally が成功/失敗を通知する。main() 側は二重通知を避けるため通知しない）
+    # ModuleNotFoundError（cloudpickle/numpy 初期化タイミング起因の間欠障害）は
+    # broker/runner を再生成して 1 回リトライする。
+    _MAX_RETRIES = 1
+    _RETRY_WAIT_SEC = 10
+
+    run_exc: Optional[Exception] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            result = runner.run(trading_date)
             logger.info(
-                "Flow '%s' for %s is already done. Skipping.",
-                flow,
-                trading_date,
+                "auto_trader.py DONE | status=%s ratio=%.4f elapsed=%.1fs",
+                result.get("status"),
+                float(result.get("ratio_final", 0.0)),
+                float(result.get("elapsed_sec", 0.0)),
             )
-            return
+            run_exc = None
+            break
 
-        if flow == "morning":
-            logger.info("Running morning open flow (auto) for %s", trading_date)
-            orchestrator.run_morning_open_flow(trading_date)
-            mark_flow_done(trading_date, "morning")
-        elif flow == "close":
-            logger.info("Running close pre flow (auto) for %s", trading_date)
-            orchestrator.run_close_pre_flow(trading_date)
-            mark_flow_done(trading_date, "close")
-        else:
-            logger.warning("Unknown auto-selected flow: %s", flow)
+        except ModuleNotFoundError as exc:
+            run_exc = exc
+            if attempt < _MAX_RETRIES:
+                logger.warning(
+                    "[Retry %d/%d] ModuleNotFoundError: %s — %d 秒後にリトライします",
+                    attempt + 1, _MAX_RETRIES, exc, _RETRY_WAIT_SEC,
+                )
+                try:
+                    broker.close()
+                except Exception:
+                    pass
+                time.sleep(_RETRY_WAIT_SEC)
+                try:
+                    broker = build_ibkr_broker(cfg)
+                    runner = LiveClosePreRunner(
+                        config=runner_config,
+                        broker=broker,
+                        trade_logger=trade_logger,
+                        pnl_calculator=pnl_calculator,
+                        notifier=notifier,
+                    )
+                except Exception as rebuild_exc:
+                    logger.exception("auto_trader.py retry setup FAILED: %s", rebuild_exc)
+                    run_exc = rebuild_exc
+                    break
+            else:
+                logger.exception("auto_trader.py FAILED: %s", exc)
 
-        logger.info("auto_trader.py finished successfully (auto mode).")
-        return
+        except Exception as exc:
+            run_exc = exc
+            logger.exception("auto_trader.py FAILED: %s", exc)
+            break
 
-    # ==============================
-    # 手動モード: morning / close / full_day
-    # ==============================
-    if args.date is None:
-        # date指定がない場合は NY 日付を使う
-        trading_date = now_ny.date()
-    else:
-        trading_date = args.date
+    try:
+        broker.close()
+    except Exception:
+        pass
 
-    if mode == "morning":
-        logger.info("Running morning open flow (manual) for %s", trading_date)
-        orchestrator.run_morning_open_flow(trading_date)
-    elif mode == "close":
-        logger.info("Running close pre flow (manual) for %s", trading_date)
-        orchestrator.run_close_pre_flow(trading_date)
-    elif mode == "full_day":
-        logger.info("Running full day flow (manual) for %s", trading_date)
-        orchestrator.run_full_day(trading_date)
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
-
-    logger.info("auto_trader.py finished successfully.")
+    sys.exit(1 if run_exc else 0)
 
 
 if __name__ == "__main__":

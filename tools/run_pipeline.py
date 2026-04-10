@@ -67,6 +67,7 @@ from ai_core.utils.step_contract_utils import (
     validate_step_f,
 )
 from ai_core.utils.timing_logger import TimingLogger
+from tools.run_manifest import _OFFICIAL_STEPE_AGENTS
 class _DateRangeShim:
     """Wrapper for DateRange that can carry extra attributes like `future_end` safely."""
 
@@ -623,20 +624,6 @@ def _parse_steps(s: str) -> Tuple[str, ...]:
 
 
 
-_OFFICIAL_STEPE_AGENTS: Tuple[str, ...] = (
-    "dprime_bnf_h01",
-    "dprime_bnf_h02",
-    "dprime_bnf_3scale",
-    "dprime_mix_h01",
-    "dprime_mix_h02",
-    "dprime_mix_3scale",
-    "dprime_all_features_h01",
-    "dprime_all_features_h02",
-    "dprime_all_features_h03",
-    "dprime_all_features_3scale",
-)
-
-
 def _official_stepe_agent_specs() -> List[Dict[str, Any]]:
     """Return deterministic StepE expert specs for the official 10-agent set."""
     specs: List[Dict[str, Any]] = []
@@ -679,10 +666,10 @@ def _inject_default_stepe_configs(app_config: Any, output_root: Path) -> None:
         cfg.seed = 42 + idx
         cfg.device = "auto"
         cfg.policy_kind = "ppo"
-        cfg.ppo_total_timesteps = 160000
+        cfg.ppo_total_timesteps = 500000
         cfg.ppo_n_steps = 2048
         cfg.ppo_batch_size = 512
-        cfg.ppo_n_epochs = 4
+        cfg.ppo_n_epochs = 100
         cfg.ppo_gamma = 0.99
         cfg.ppo_gae_lambda = 0.95
         cfg.ppo_ent_coef = 0.0
@@ -725,11 +712,11 @@ def _apply_headless_stepe_overrides(app_config: Any, args: Any) -> None:
         if override_ppo_total_timesteps is not None:
             setattr(cfg, "ppo_total_timesteps", int(override_ppo_total_timesteps))
         elif getattr(cfg, "ppo_total_timesteps", None) is None:
-            setattr(cfg, "ppo_total_timesteps", 160000)
+            setattr(cfg, "ppo_total_timesteps", 500000)
         if override_ppo_n_epochs is not None:
             setattr(cfg, "ppo_n_epochs", int(override_ppo_n_epochs))
         elif getattr(cfg, "ppo_n_epochs", None) is None:
-            setattr(cfg, "ppo_n_epochs", 4)
+            setattr(cfg, "ppo_n_epochs", 100)
         if getattr(cfg, "ppo_batch_size", None) is None:
             setattr(cfg, "ppo_batch_size", 512)
         if getattr(cfg, "ppo_n_steps", None) is None:
@@ -784,8 +771,21 @@ def _prepare_missing_data_if_needed(
     auto_prepare_data: bool,
     data_start: str,
     data_end: str,
+    update_prices: bool = False,
 ) -> None:
+    import subprocess as _sp
     required_symbols = _symbols_for_data_prep(primary_symbol)
+
+    # 最新価格を取得（--update-prices 1 のとき、ファイル有無にかかわらず追記）
+    if update_prices:
+        print(f"[headless] update prices: {','.join(required_symbols)}")
+        _sp.run(
+            [sys.executable, str(repo_root / "tools" / "update_prices.py"),
+             "--symbols"] + required_symbols,
+            cwd=str(repo_root),
+            check=True,
+        )
+
     missing = [s for s in required_symbols if not (data_root / f"prices_{s}.csv").exists()]
     if not missing:
         print(f"[headless] data ready: {','.join(required_symbols)}")
@@ -1090,8 +1090,15 @@ def _build_date_range(
         ts = snap_prev_by_prices(test_start_input, dates_sorted)
 
         train_start_raw = ts - pd.DateOffset(years=train_years)
-        train_end_raw = ts - pd.Timedelta(days=1)
-        test_end_raw = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+        latest_dt = pd.to_datetime(dates_sorted.iloc[-1]).normalize()
+        if cli_test_start_dt is None:
+            # デフォルト（実運用）: train を最新まで伸ばす（test 期間と重複）
+            train_end_raw = latest_dt
+            test_end_raw = latest_dt
+        else:
+            # --test-start 明示指定（実験など）: strict OOS
+            train_end_raw = ts - pd.Timedelta(days=1)
+            test_end_raw = ts + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
 
         train_start = snap_prev_by_prices(train_start_raw, dates_sorted)
         train_end = snap_prev_by_prices(train_end_raw, dates_sorted)
@@ -1238,7 +1245,7 @@ def _ensure_stepb_pred_time_all(symbol: str, output_root: Path, mode: str) -> Pa
                 return target
 
     raise FileNotFoundError(f"Missing StepB pred_time_all/pred_close artifacts for {symbol} at {stepb_mode_dir}")
-def _get_app_config(repo_root: Path):
+def _get_app_config(repo_root: Path, config_path: Optional[Path] = None):
     """Load AppConfig from YAML if available, otherwise fall back to a minimal default.
 
     Notes
@@ -1259,7 +1266,7 @@ def _get_app_config(repo_root: Path):
     except Exception as e:
         raise RuntimeError("Failed to import ai_core.config.app_config") from e
 
-    path = repo_root / "config" / "app_config.yaml"
+    path = config_path if config_path is not None else repo_root / "config" / "app_config.yaml"
 
     # 1) Try to load from YAML using known loader entrypoints (module-level then class-level)
     if path.exists():
@@ -2094,15 +2101,164 @@ def _determine_run_type(*, steps: Sequence[str], reuse_output: bool, force_rebui
     return "full_rebuild"
 
 
+def _notify_pipeline(
+    status: str,
+    error: str,
+    symbol: str,
+    test_start: str,
+    steps: str,
+    output_root: str,
+    *,
+    step_results: Optional[Dict[str, Any]] = None,
+    date_range_info: Optional[Dict[str, str]] = None,
+    total_elapsed_sec: Optional[float] = None,
+    mode: str = "sim",
+) -> None:
+    """パイプライン完了・失敗を Discord に通知する。live_config.yaml の webhook_url を使用。"""
+    try:
+        import yaml
+        config_path = _REPO_ROOT / "config" / "live_config.yaml"
+        if not config_path.exists():
+            return
+        with config_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        webhook_url = str(cfg.get("discord", {}).get("webhook_url", "")).strip()
+        if not webhook_url:
+            return
+
+        import urllib.request, urllib.error
+
+        icon = "✅" if status == "success" else "❌"
+        label = "完了" if status == "success" else "失敗"
+        elapsed_str = f"  |  elapsed: {total_elapsed_sec:.0f}s" if total_elapsed_sec is not None else ""
+        lines = [
+            f"{icon} **[ApexTraderAI]** SIM パイプライン{label}",
+            f"symbol: **{symbol}**  |  mode: {mode}{elapsed_str}",
+        ]
+
+        # 期間情報
+        if date_range_info:
+            tr_s = date_range_info.get("train_start", "")
+            tr_e = date_range_info.get("train_end", "")
+            te_s = date_range_info.get("test_start", "")
+            te_e = date_range_info.get("test_end", "")
+            if tr_s or te_s:
+                lines.append("**期間:**")
+            if tr_s and tr_e:
+                lines.append(f"  train: {tr_s} 〜 {tr_e}")
+            if te_s and te_e:
+                lines.append(f"  test:  {te_s} 〜 {te_e}")
+
+        # ステップ別結果
+        _STEP_ORDER = ["A", "B", "C", "DPRIME", "E", "F"]
+        _STEP_ICONS = {"complete": "✅", "failed": "❌", "reuse": "♻️", "pending": "⏸️", "running": "🔄"}
+        if step_results:
+            lines.append("**ステップ結果:**")
+            for _sk in _STEP_ORDER:
+                _sd = step_results.get(_sk) or step_results.get(_sk.lower())
+                if not _sd:
+                    continue
+                _st = str(_sd.get("status", "pending"))
+                _el = _sd.get("elapsed_sec")
+                _au = _sd.get("audit_status", "")
+                _si = _STEP_ICONS.get(_st, "❓")
+                _el_str = f"  {_el:.0f}s" if _el is not None else ""
+                _au_str = f"  [{_au}]" if _au else ""
+                lines.append(f"  {_si} **{_sk}**{_el_str}{_au_str}")
+
+            # StepF reward mode 別結果 + 分析サマリ
+            _f_data = step_results.get("F") or step_results.get("f") or {}
+            _rm_requested = list(_f_data.get("reward_modes_requested") or [])
+            if _rm_requested:
+                _rm_completed = set(_f_data.get("reward_modes_completed") or [])
+                _rm_failed = set(_f_data.get("reward_modes_failed") or [])
+                _rm_reused = set(_f_data.get("reward_modes_reused") or [])
+                lines.append("**StepF reward modes:**")
+                for _rm in _rm_requested:
+                    if _rm in _rm_reused:
+                        _rm_icon = "♻️"
+                    elif _rm in _rm_completed:
+                        _rm_icon = "✅"
+                    elif _rm in _rm_failed:
+                        _rm_icon = "❌"
+                    else:
+                        _rm_icon = "⏸️"
+                    lines.append(f"  {_rm_icon} {_rm}")
+
+                # 分析結果: reward mode ごとに stepF_summary_router を読む
+                _or = Path(output_root) if output_root and output_root != "unknown" else None
+                _any_metrics = False
+                if _or is not None:
+                    for _rm in _rm_requested:
+                        if _rm not in _rm_completed:
+                            continue
+                        _summary_path = _or / "stepF" / mode / f"reward_{_rm}" / f"stepF_summary_router_{symbol}.json"
+                        if not _summary_path.exists():
+                            # canonical publish 後は reward_ サブディレクトリがない場合もある
+                            _summary_path = _or / "stepF" / mode / f"stepF_summary_router_{symbol}.json"
+                        if not _summary_path.exists():
+                            continue
+                        try:
+                            _sm = json.loads(_summary_path.read_text(encoding="utf-8"))
+                            _ret = _sm.get("total_return_pct")
+                            _cagr = _sm.get("cagr_pct")
+                            _dd = _sm.get("max_dd_pct")
+                            _sharpe = _sm.get("sharpe")
+                            _wr = _sm.get("win_rate")
+                            _trades = _sm.get("num_trades")
+                            if _ret is None:
+                                continue
+                            if not _any_metrics:
+                                lines.append("**📊 分析結果 (test):**")
+                                _any_metrics = True
+                            _ret_sign = "+" if float(_ret) >= 0 else ""
+                            _parts = [f"return {_ret_sign}{float(_ret):.1f}%"]
+                            if _cagr is not None:
+                                _parts.append(f"CAGR {float(_cagr):.1f}%")
+                            if _dd is not None:
+                                _parts.append(f"DD {float(_dd):.1f}%")
+                            if _sharpe is not None:
+                                _parts.append(f"Sharpe {float(_sharpe):.2f}")
+                            if _wr is not None:
+                                _parts.append(f"win {float(_wr)*100:.1f}%")
+                            if _trades is not None:
+                                _parts.append(f"trades {int(_trades)}")
+                            lines.append(f"  **{_rm}**: {'  |  '.join(_parts)}")
+                        except Exception:
+                            pass
+
+        # エラー詳細
+        if status != "success" and error:
+            short_err = (error or "")[:400] + ("..." if len(error or "") > 400 else "")
+            lines.append(f"**エラー:**\n```\n{short_err}\n```")
+
+        content = "\n".join(lines)
+        data = json.dumps({"content": content}).encode("utf-8")
+        req = urllib.request.Request(
+            url=webhook_url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass  # 通知失敗はパイプライン結果に影響させない
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default=None)
     ap.add_argument("--steps", default="A,B,C,DPRIME,E,F", help="Comma-separated steps to run. Example: A,B,C,DPRIME,E,F")
     ap.add_argument("--skip-stepe", dest="skip_stepe", action="store_true", help="Debug escape hatch: skip StepE explicitly.")
-    ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-3-months start.")
+    ap.add_argument("--test-start", dest="test_start", default=None, help="YYYY-MM-DD. If omitted, uses last-1-month start.")
     ap.add_argument("--train-years", type=int, default=8)
-    ap.add_argument("--test-months", type=int, default=3)
+    ap.add_argument("--test-months", type=int, default=1)
     ap.add_argument("--output-root", dest="output_root", default=None, help="Output root directory. Defaults to config output_root or 'output'.")
+    ap.add_argument("--app-config", dest="app_config_path", default=None, type=Path, help="Path to app_config YAML. Defaults to config/app_config.yaml.")
     ap.add_argument("--data-dir", dest="data_dir", default=None, help="Data root directory. Defaults to config data_root or 'data'.")
     ap.add_argument("--mode", dest="mode", default=None, choices=["sim", "live", "display"], help="Pipeline mode (legacy-compatible). If set, it overrides default values for --mamba-mode / --stepE-mode.")
     ap.add_argument("--future-end", dest="future_end", default=None, help="YYYY-MM-DD. Future end date for periodic features (can exceed last real price date). If omitted, uses TEST_END.")
@@ -2137,6 +2293,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--enable-mamba", action="store_true", help="Enable Wavelet-Mamba training in StepB (best-effort).")
     ap.add_argument("--enable-mamba-periodic", action="store_true", help="Also generate periodic-only Wavelet-Mamba snapshot predictions (uses periodic features only).")
     ap.add_argument("--auto-prepare-data", type=int, default=1, choices=[0, 1], help="Automatically generate missing data/prices_<SYMBOL>.csv before StepA.")
+    ap.add_argument("--update-prices", type=int, default=0, choices=[0, 1], help="If 1, update prices_<SYMBOL>.csv from yfinance before running (append new rows). Use for live/monthly retrain runs.")
     ap.add_argument("--fail-on-audit", type=int, default=0, choices=[0, 1], help="If 1, fail pipeline when leak audit reports FAIL.")
     ap.add_argument("--data-start", default="2010-01-01", help="Start date for auto data preparation (YYYY-MM-DD).")
     ap.add_argument("--data-end", default=None, help="End date for auto data preparation (YYYY-MM-DD, default=today).")
@@ -2178,7 +2335,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    app_config = _get_app_config(repo_root)
+    app_config = _get_app_config(repo_root, config_path=args.app_config_path)
 
     resolved_mode = (args.mode or "sim").strip().lower()
     canonical_test_start = str(args.test_start or "unknown_test_start")
@@ -2680,6 +2837,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     pipeline_status = "running"
     pipeline_error: Optional[str] = None
+    _t0_pipeline = time.time()
 
     resolved_data_root = _resolve_cli_data_dir(repo_root=repo_root, cli_data_dir=args.data_dir)
     app_config = _apply_config_data_dir(app_config, resolved_data_root)
@@ -2706,6 +2864,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except Exception:
                 app_config = _ConfigShim(app_config, env_horizon_days=env_horizon_base, env_horizons=list(env_horizon_list or []))
     auto_prepare_data = bool(int(args.auto_prepare_data))
+    update_prices = bool(int(args.update_prices))
     data_start = args.data_start
     data_end = args.data_end or date.today().isoformat()
 
@@ -2717,6 +2876,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             auto_prepare_data=auto_prepare_data,
             data_start=data_start,
             data_end=data_end,
+            update_prices=update_prices,
         )
 
     future_end = args.future_end or _env_get("AUTODEBUG_FUTURE_END", "FUTURE_END", "FUTURE_END_DATE")
@@ -3734,9 +3894,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         timing_summary_agent = Path(resolved_output_root) / "timing" / "summary_agent_elapsed.csv"
         mandatory_root_files = [
             Path(resolved_output_root) / "run_manifest.json",
-            Path(resolved_output_root) / "timings.csv",
             Path(resolved_output_root) / "reuse_signature.json",
         ]
+        if timing_enabled:
+            mandatory_root_files.append(Path(resolved_output_root) / "timings.csv")
         missing_root_files = [str(p) for p in mandatory_root_files if not p.exists()]
         if missing_root_files:
             raise RuntimeError(f"missing mandatory root artifacts: {missing_root_files}")
@@ -3765,6 +3926,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             run_id=run_id,
             pipeline_status=pipeline_status,
             error_text=pipeline_error,
+        )
+        _locs = locals()
+        # ステップ別結果を run_manifest から取得
+        _manifest_steps: Optional[Dict[str, Any]] = None
+        if _run_manifest is not None:
+            try:
+                _manifest_steps = dict(_run_manifest._data.get("steps", {}))
+            except Exception:
+                _manifest_steps = None
+        # train/test 期間を date_range から取得
+        _date_range_info: Optional[Dict[str, str]] = None
+        _dr = _locs.get("date_range")
+        if _dr is not None:
+            try:
+                def _dr_str(v: Any) -> str:
+                    if v is None:
+                        return ""
+                    return str(v.date()) if hasattr(v, "date") else str(v)[:10]
+                _date_range_info = {
+                    "train_start": _dr_str(getattr(_dr, "train_start", None)),
+                    "train_end": _dr_str(getattr(_dr, "train_end", None)),
+                    "test_start": _dr_str(getattr(_dr, "test_start", None)),
+                    "test_end": _dr_str(getattr(_dr, "test_end", None)),
+                }
+            except Exception:
+                _date_range_info = None
+        _notify_pipeline(
+            status=pipeline_status,
+            error=pipeline_error,
+            symbol=_locs.get("symbol", "unknown"),
+            test_start=str(getattr(args, "test_start", "") or ""),
+            steps=",".join(_locs["steps"]) if "steps" in _locs else "unknown",
+            output_root=str(_locs.get("resolved_output_root", "unknown")),
+            step_results=_manifest_steps,
+            date_range_info=_date_range_info,
+            total_elapsed_sec=time.time() - _t0_pipeline,
+            mode=str(_locs.get("resolved_mode", "sim")),
         )
 
 

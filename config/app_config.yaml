@@ -72,11 +72,24 @@ stepF:
   ema_alpha: 0.3
   shrink_k: 15
   ratio_smooth_alpha: 0.7
+  max_agent_mixture_weight: 0.25
+  ticc_seed: 42
   # safe_set: agents guaranteed in the allowlist as fallback.
   # dprime_mix_h01 (sharpe=1.16, max_dd=-5.9%) + dprime_mix_3scale (sharpe=1.52) cover both
   # low-risk and high-return profiles. Previously "dprime_all_features_h01" was listed but
   # that profile does not exist in the current agent set and was silently dropped.
-  safe_set: "dprime_mix_h01,dprime_mix_3scale"
+  safe_set: "dprime_all_features_h01,dprime_mix_3scale"
+  exclude_agents: "dprime_all_features_h03,dprime_bnf_h02"
+  # Meta-Router PPO（false=現行の edge_table+EMA、true=PPO Meta-Router に切り替え）
+  use_meta_router: true
+  meta_router_lookback: 10
+  meta_router_timesteps: 200000
+  meta_router_n_regimes: 20
+  meta_router_lambda_regret: 1.0
+  # Cluster-specific expert retraining (B-3)
+  enable_cluster_retrain: true
+  cluster_retrain_min_rows: 30
+  cluster_retrain_steps: 100000
 
 
 timing:
