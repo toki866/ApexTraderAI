@@ -2,7 +2,7 @@
 
 === tail: C:\work\actions-runner\_work\_temp\run_all_local_then_copy_console.log ===
 
-=== tail: C:\work\apex_work\session_logs\23567745624_att1\run_gh23567745624_att1_sim_20260326_073916_f674cee.log ===
+=== tail: C:\work\apex_work\session_logs\24220420752_att1\run_gh24220420752_att1_sim_20260410_093834_6a84dc9.log ===
 
 === tail: C:\work\actions-runner\_work\_temp\diag_out\workflow_console.log ===
 
